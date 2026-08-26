@@ -17,6 +17,7 @@ export interface ModelInfo {
 export interface GenerateRequest {
   readonly model: string;
   readonly prompt: string;
+  readonly responseFormat?: "text" | "json";
 }
 
 export interface GenerateUsage {
@@ -37,6 +38,7 @@ export interface GenerateResponse {
 export interface ProviderCapabilities {
   readonly modelDiscovery: boolean;
   readonly textGeneration: boolean;
+  readonly structuredOutput?: boolean;
 }
 
 export interface ProviderInfo {
@@ -44,4 +46,3 @@ export interface ProviderInfo {
   readonly displayName: string;
   readonly capabilities: ProviderCapabilities;
 }
-

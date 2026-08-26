@@ -85,7 +85,11 @@ describe("OpenAICompatibleProvider", () => {
     });
 
     await expect(
-      provider.generate({ model: "model-1", prompt: "hello" }),
+      provider.generate({
+        model: "model-1",
+        prompt: "hello",
+        responseFormat: "json",
+      }),
     ).resolves.toEqual({
       id: "chat-1",
       provider: "gateway",
@@ -99,6 +103,7 @@ describe("OpenAICompatibleProvider", () => {
       model: "model-1",
       messages: [{ role: "user", content: "hello" }],
       stream: false,
+      response_format: { type: "json_object" },
     });
     expect(new Headers(requestInit?.headers).get("Authorization")).toBe(
       "Bearer test-key",

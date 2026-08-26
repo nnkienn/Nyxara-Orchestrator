@@ -1,7 +1,12 @@
-import { NyxaraOrchestrator } from "@nyxara/core";
+import {
+  EventBus,
+  NyxaraOrchestrator,
+  TaskGraph,
+  type NyxaraEventMap,
+} from "@nyxara/core";
 import type { ModelProvider } from "@nyxara/provider-sdk";
 import { describe, expect, it, vi } from "vitest";
-import { runCli, runInspectCli, type CliIO } from "../src/cli.js";
+import { runCli, runInspectCli, runPlanCli, type CliIO } from "../src/cli.js";
 
 describe("Nyxara CLI", () => {
   it("selects and consumes providers without provider-specific workflow logic", async () => {
@@ -90,5 +95,122 @@ describe("Nyxara inspect CLI", () => {
     expect(output.join("")).toContain("NYXARA REPOSITORY INSPECT");
     expect(output.join("")).toContain("src/notification.service.ts");
     expect(output.join("")).not.toContain("hidden source");
+  });
+});
+
+describe("Nyxara plan CLI", () => {
+  it("requests and renders a Core-produced plan without owning planning logic", async () => {
+    const events = new EventBus<NyxaraEventMap>();
+    const configureAgent = vi.fn();
+    const createPlan = vi.fn(async () => {
+      events.emit("context.completed", {
+        workspaceRoot: "/workspace",
+        fileCount: 2,
+        estimatedTokens: 120,
+        truncated: false,
+      });
+      events.emit("planner.started", {
+        providerId: "fake",
+        modelId: "model-1",
+        contextFileCount: 2,
+      });
+      events.emit("planner.completed", {
+        providerId: "fake",
+        modelId: "model-1",
+        planId: "18d64629-e102-4b50-9a7d-23ea14e99891",
+        taskCount: 2,
+      });
+
+      const plan = {
+        id: "18d64629-e102-4b50-9a7d-23ea14e99891",
+        objective: "Add pagination",
+        tasks: [
+          {
+            id: "T1",
+            title: "Analyze notification flow",
+            description: "Understand the existing behavior.",
+            dependencies: [],
+            acceptanceCriteria: ["Current flow is documented"],
+          },
+          {
+            id: "T2",
+            title: "Plan pagination changes",
+            description: "Define the bounded implementation work.",
+            dependencies: ["T1"],
+            acceptanceCriteria: ["Affected modules are identified"],
+          },
+        ],
+        createdAt: "2026-08-26T00:00:00.000Z",
+      } as const;
+
+      return {
+        plan,
+        context: {
+          workspaceRoot: "/workspace",
+          prompt: "Add pagination",
+          files: [],
+          git: {
+            status: {
+              isRepository: false,
+              files: [],
+              truncated: false,
+            },
+            diff: {
+              isRepository: false,
+              diff: "",
+              files: [],
+              truncated: false,
+            },
+          },
+          totalBytes: 0,
+          estimatedTokens: 0,
+          truncated: false,
+        },
+        model: {
+          role: "planner",
+          providerId: "fake",
+          modelId: "model-1",
+        },
+        graph: new TaskGraph(plan),
+      };
+    });
+    const nyxara = {
+      events,
+      listProviders: () => [
+        { id: "fake", displayName: "Fake Provider", capabilities: {} },
+      ],
+      listModels: async () => [
+        { id: "model-1", name: "Model One", provider: "fake" },
+      ],
+      configureAgent,
+      createPlan,
+    } as unknown as NyxaraOrchestrator;
+    const answers = ["1", "1"];
+    const output: string[] = [];
+    const io: CliIO = {
+      write(message) {
+        output.push(message);
+      },
+      async question() {
+        return answers.shift() ?? "";
+      },
+    };
+
+    await runPlanCli(io, nyxara, "/workspace", "Add pagination");
+
+    expect(configureAgent).toHaveBeenCalledWith({
+      role: "planner",
+      providerId: "fake",
+      modelId: "model-1",
+    });
+    expect(createPlan).toHaveBeenCalledWith({
+      workspaceRoot: "/workspace",
+      prompt: "Add pagination",
+    });
+    expect(output.join("")).toContain("✓ Repository context built");
+    expect(output.join("")).toContain("✓ Plan created");
+    expect(output.join("")).toContain("Objective\nAdd pagination");
+    expect(output.join("")).toContain("T2\nPlan pagination changes");
+    expect(output.join("")).toContain("Depends on: T1");
   });
 });

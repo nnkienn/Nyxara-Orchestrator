@@ -467,6 +467,19 @@ cwd, direct executable invocation, timeouts, output limits, and blocked command
 classes. They are a permission boundary, not OS-level process isolation; container
 or sandbox runtimes are intentionally deferred.
 
+### Phase 3 structured planning
+
+Select a Planner provider/model, build repository context, and produce a validated
+structured task graph without modifying files:
+
+```bash
+export NYXARA_OPENAI_API_KEY="your-api-key"
+pnpm --filter @nyxara/cli dev -- plan "Add pagination to notification API"
+```
+
+The plan exists as validated runtime data. Nyxara does not create `PLAN.md` or run
+the planned tasks during Phase 3.
+
 ### Install globally
 
 ```bash

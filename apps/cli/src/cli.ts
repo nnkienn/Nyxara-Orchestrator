@@ -72,6 +72,54 @@ export async function runInspectCli(
   }
 }
 
+export async function runPlanCli(
+  io: CliIO,
+  nyxara: NyxaraOrchestrator,
+  workspaceRoot: string,
+  prompt: string,
+): Promise<void> {
+  io.write("NYXARA ORCHESTRATOR\n\n");
+  io.write(`Workspace\n${workspaceRoot}\n\n`);
+
+  const provider = await selectProvider(io, nyxara.listProviders());
+  const models = await nyxara.listModels(provider.id);
+  const model = await selectModel(io, models);
+  nyxara.configureAgent({
+    role: "planner",
+    providerId: provider.id,
+    modelId: model.id,
+  });
+  io.write(`\nPlanner\n${provider.displayName} / ${model.name}\n\n`);
+
+  const unsubscribers = [
+    nyxara.events.on("context.completed", ({ fileCount, estimatedTokens }) => {
+      io.write(
+        `✓ Repository context built (${fileCount} files, ~${estimatedTokens} tokens)\n`,
+      );
+    }),
+    nyxara.events.on("planner.started", () => {
+      io.write("● Planner started\n");
+    }),
+    nyxara.events.on("planner.completed", () => {
+      io.write("✓ Plan created\n");
+    }),
+  ];
+
+  try {
+    const result = await nyxara.createPlan({ workspaceRoot, prompt });
+    io.write(`\nObjective\n${result.plan.objective}\n\nTasks\n\n`);
+    for (const task of result.plan.tasks) {
+      io.write(`${task.id}\n${task.title}\n`);
+      if (task.dependencies.length > 0) {
+        io.write(`Depends on: ${task.dependencies.join(", ")}\n`);
+      }
+      io.write("\n");
+    }
+  } finally {
+    unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }
+}
+
 function formatBytes(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 }

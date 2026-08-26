@@ -4,7 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { NyxaraOrchestrator } from "@nyxara/core";
 import { OpenAICompatibleProvider } from "@nyxara/providers";
-import { runCli, runInspectCli } from "./cli.js";
+import { runCli, runInspectCli, runPlanCli } from "./cli.js";
 import { EnvironmentCredentialStore } from "./environment-credential-store.js";
 
 const readline = createInterface({ input: stdin, output: stdout });
@@ -37,6 +37,10 @@ try {
     const argumentPrompt = cliArguments.slice(1).join(" ").trim();
     const prompt = argumentPrompt || (await io.question("Context prompt:\n> "));
     await runInspectCli(io, nyxara, workspaceRoot, prompt);
+  } else if (cliArguments[0] === "plan") {
+    const argumentPrompt = cliArguments.slice(1).join(" ").trim();
+    const prompt = argumentPrompt || (await io.question("Planning prompt:\n> "));
+    await runPlanCli(io, nyxara, workspaceRoot, prompt);
   } else {
     await runCli(io, nyxara);
   }

@@ -80,6 +80,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
           model: request.model,
           messages: [{ role: "user", content: request.prompt }],
           stream: false,
+          ...(request.responseFormat === "json"
+            ? { response_format: { type: "json_object" } }
+            : {}),
         }),
       },
       "generate",

@@ -92,6 +92,39 @@ export interface ContextFailedEvent {
   readonly code: string;
 }
 
+export interface PlannerStartedEvent {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly contextFileCount: number;
+}
+
+export interface PlannerCompletedEvent {
+  readonly planId: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly taskCount: number;
+}
+
+export interface PlannerFailedEvent {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly code: string;
+}
+
+export interface PlanValidationStartedEvent {
+  readonly providerId: string;
+  readonly modelId: string;
+}
+
+export interface PlanValidationFailedEvent extends PlanValidationStartedEvent {
+  readonly code: string;
+}
+
+export interface PlanValidationPassedEvent {
+  readonly planId: string;
+  readonly taskCount: number;
+}
+
 export interface NyxaraEventMap {
   readonly "workflow.started": WorkflowStartedEvent;
   readonly "workflow.completed": WorkflowCompletedEvent;
@@ -110,4 +143,10 @@ export interface NyxaraEventMap {
   readonly "context.completed": ContextCompletedEvent;
   readonly "context.truncated": ContextTruncatedEvent;
   readonly "context.failed": ContextFailedEvent;
+  readonly "planner.started": PlannerStartedEvent;
+  readonly "planner.completed": PlannerCompletedEvent;
+  readonly "planner.failed": PlannerFailedEvent;
+  readonly "plan.validation_started": PlanValidationStartedEvent;
+  readonly "plan.validation_failed": PlanValidationFailedEvent;
+  readonly "plan.validation_passed": PlanValidationPassedEvent;
 }
