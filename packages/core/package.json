@@ -18,6 +18,7 @@
   "dependencies": {
     "@nyxara/provider-sdk": "workspace:*",
     "@nyxara/shared": "workspace:*",
+    "@nyxara/tools": "workspace:*",
     "zod": "^3.24.2"
   }
 }

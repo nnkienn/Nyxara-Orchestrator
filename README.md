@@ -453,6 +453,20 @@ export NYXARA_OPENAI_BASE_URL="http://localhost:11434/v1"
 pnpm --filter @nyxara/cli dev
 ```
 
+### Phase 2 repository inspection
+
+Build a deterministic, bounded context bundle without calling an AI provider:
+
+```bash
+pnpm --filter @nyxara/cli dev -- inspect "notification API"
+```
+
+Repository reads, searches, Git inspection, and commands go through the Nyxara
+tool and permission boundary. Phase 2 local command controls enforce the workspace
+cwd, direct executable invocation, timeouts, output limits, and blocked command
+classes. They are a permission boundary, not OS-level process isolation; container
+or sandbox runtimes are intentionally deferred.
+
 ### Install globally
 
 ```bash

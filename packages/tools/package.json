@@ -2,5 +2,18 @@
   "name": "@nyxara/tools",
   "version": "0.0.0",
   "private": true,
-  "description": "Reserved for the Nyxara tool system after Phase 0"
+  "description": "Permission-gated repository tools for Nyxara",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
 }

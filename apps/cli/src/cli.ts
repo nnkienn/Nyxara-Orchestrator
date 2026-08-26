@@ -42,6 +42,40 @@ export async function runCli(
   }
 }
 
+export async function runInspectCli(
+  io: CliIO,
+  nyxara: NyxaraOrchestrator,
+  workspaceRoot: string,
+  prompt: string,
+): Promise<void> {
+  io.write("NYXARA REPOSITORY INSPECT\n\n");
+  io.write(`Workspace\n${workspaceRoot}\n\n`);
+
+  const context = await nyxara.inspectRepository({ workspaceRoot, prompt });
+
+  io.write(`Context for:\n\"${prompt}\"\n\n`);
+  io.write("Relevant files:\n");
+  if (context.files.length === 0) {
+    io.write("- No relevant files found\n");
+  } else {
+    context.files.forEach((file, index) => {
+      io.write(`${index + 1}. ${file.path}\n   Reason: ${file.reason}\n`);
+    });
+  }
+
+  io.write(`\nGit\n${context.git.status.files.length} changed files\n`);
+  io.write(
+    `\nContext\n${context.files.length} files\n${formatBytes(context.totalBytes)}\n~${context.estimatedTokens} estimated tokens\n`,
+  );
+  if (context.truncated) {
+    io.write("Context was truncated to the configured budget.\n");
+  }
+}
+
+function formatBytes(bytes: number): string {
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
 async function selectProvider(
   io: CliIO,
   providers: readonly ProviderInfo[],
