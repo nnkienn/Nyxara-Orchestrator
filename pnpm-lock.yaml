@@ -23,11 +23,20 @@ importers:
       '@nyxara/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@nyxara/provider-sdk':
+        specifier: workspace:*
+        version: link:../../packages/provider-sdk
+      '@nyxara/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
 
   apps/vscode: {}
 
   packages/core:
     dependencies:
+      '@nyxara/provider-sdk':
+        specifier: workspace:*
+        version: link:../provider-sdk
       '@nyxara/shared':
         specifier: workspace:*
         version: link:../shared
@@ -37,7 +46,11 @@ importers:
 
   packages/provider-sdk: {}
 
-  packages/providers: {}
+  packages/providers:
+    dependencies:
+      '@nyxara/provider-sdk':
+        specifier: workspace:*
+        version: link:../provider-sdk
 
   packages/shared: {}
 

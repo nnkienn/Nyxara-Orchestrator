@@ -2,6 +2,18 @@
   "name": "@nyxara/provider-sdk",
   "version": "0.0.0",
   "private": true,
-  "description": "Reserved for provider contracts after Phase 0"
+  "description": "Provider contracts and normalized model types for Nyxara",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
 }
-

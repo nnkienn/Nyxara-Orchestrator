@@ -16,8 +16,8 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@nyxara/provider-sdk": "workspace:*",
     "@nyxara/shared": "workspace:*",
     "zod": "^3.24.2"
   }
 }
-

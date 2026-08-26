@@ -434,6 +434,25 @@ Nyxara should never require credentials to be committed into a repository.
 * Git
 * npm or pnpm
 
+### Phase 1 development CLI
+
+The current local provider flow uses an OpenAI-compatible API. Provide credentials
+through the process environment; Nyxara does not write them to workspace files.
+
+```bash
+pnpm install
+export NYXARA_OPENAI_API_KEY="your-api-key"
+pnpm --filter @nyxara/cli dev
+```
+
+For a local or self-hosted compatible gateway, set its versioned API base URL. An
+API key is optional when the gateway does not require one.
+
+```bash
+export NYXARA_OPENAI_BASE_URL="http://localhost:11434/v1"
+pnpm --filter @nyxara/cli dev
+```
+
 ### Install globally
 
 ```bash

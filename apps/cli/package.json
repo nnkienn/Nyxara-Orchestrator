@@ -11,6 +11,8 @@
     "dev": "pnpm --filter @nyxara/cli... build && node dist/index.js"
   },
   "dependencies": {
-    "@nyxara/core": "workspace:*"
+    "@nyxara/core": "workspace:*",
+    "@nyxara/provider-sdk": "workspace:*",
+    "@nyxara/providers": "workspace:*"
   }
 }
