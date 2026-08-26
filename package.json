@@ -1,0 +1,20 @@
+{
+  "name": "nyxara",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local-first AI orchestration for software engineering",
+  "type": "module",
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

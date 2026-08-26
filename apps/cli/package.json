@@ -1,0 +1,16 @@
+{
+  "name": "@nyxara/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "nyxara": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "pnpm --filter @nyxara/cli... build && node dist/index.js"
+  },
+  "dependencies": {
+    "@nyxara/core": "workspace:*"
+  }
+}
