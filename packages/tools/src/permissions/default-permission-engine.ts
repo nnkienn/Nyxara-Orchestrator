@@ -32,11 +32,21 @@ export class DefaultPermissionEngine implements PermissionEngine {
   private readonly safeCommandDecision: PermissionDecision;
   private readonly unknownCommandDecision: PermissionDecision;
   private readonly writeWorkspaceFileDecision: PermissionDecision;
+  private readonly createWorkspaceFileDecision: PermissionDecision;
+  private readonly modifyWorkspaceFileDecision: PermissionDecision;
+  private readonly largeFileWriteDecision: PermissionDecision;
+  private readonly environmentFileWriteDecision: PermissionDecision;
+  private readonly credentialFileWriteDecision: PermissionDecision;
 
   constructor(policy: DefaultPermissionPolicy = {}) {
     this.safeCommandDecision = policy.safeCommand ?? "ask";
     this.unknownCommandDecision = policy.unknownCommand ?? "ask";
     this.writeWorkspaceFileDecision = policy.writeWorkspaceFile ?? "ask";
+    this.createWorkspaceFileDecision = policy.createWorkspaceFile ?? "allow";
+    this.modifyWorkspaceFileDecision = policy.modifyWorkspaceFile ?? "allow";
+    this.largeFileWriteDecision = policy.largeFileWrite ?? "ask";
+    this.environmentFileWriteDecision = policy.environmentFileWrite ?? "ask";
+    this.credentialFileWriteDecision = policy.credentialFileWrite ?? "deny";
   }
 
   async evaluate(request: PermissionRequest): Promise<PermissionDecision> {
@@ -55,6 +65,9 @@ export class DefaultPermissionEngine implements PermissionEngine {
         return this.commandDecision(request.command);
       case "write_workspace_file":
         return this.writeWorkspaceFileDecision;
+      case "create_workspace_file":
+      case "modify_workspace_file":
+        return this.writeDecision(request);
       case "delete_workspace_file":
       case "outside_workspace":
       case "sudo":
@@ -62,6 +75,21 @@ export class DefaultPermissionEngine implements PermissionEngine {
       case "production_deploy":
         return "deny";
     }
+  }
+
+  private writeDecision(request: PermissionRequest): PermissionDecision {
+    if (request.write?.sensitivity === "credential") {
+      return this.credentialFileWriteDecision;
+    }
+    if (request.write?.sensitivity === "environment") {
+      return this.environmentFileWriteDecision;
+    }
+    if (request.write?.large) {
+      return this.largeFileWriteDecision;
+    }
+    return request.capability === "create_workspace_file"
+      ? this.createWorkspaceFileDecision
+      : this.modifyWorkspaceFileDecision;
   }
 
   private commandDecision(command: CommandRequest | undefined): PermissionDecision {
@@ -126,4 +154,3 @@ export function classifyCommand(request: CommandRequest): CommandSafety {
 
   return SAFE_COMMANDS.has(command) ? "safe" : "unknown";
 }
-

@@ -10,6 +10,8 @@ export type ToolCapability =
   | "git_diff"
   | "run_command"
   | "write_workspace_file"
+  | "create_workspace_file"
+  | "modify_workspace_file"
   | "delete_workspace_file"
   | "outside_workspace"
   | "sudo"
@@ -21,6 +23,11 @@ export interface PermissionRequest {
   readonly workspaceRoot: string;
   readonly resource?: string;
   readonly command?: CommandRequest;
+  readonly write?: {
+    readonly bytes: number;
+    readonly large: boolean;
+    readonly sensitivity?: "environment" | "credential";
+  };
 }
 
 export interface PermissionEngine {
@@ -31,5 +38,9 @@ export interface DefaultPermissionPolicy {
   readonly safeCommand?: PermissionDecision;
   readonly unknownCommand?: PermissionDecision;
   readonly writeWorkspaceFile?: PermissionDecision;
+  readonly createWorkspaceFile?: PermissionDecision;
+  readonly modifyWorkspaceFile?: PermissionDecision;
+  readonly largeFileWrite?: PermissionDecision;
+  readonly environmentFileWrite?: PermissionDecision;
+  readonly credentialFileWrite?: PermissionDecision;
 }
-

@@ -7,9 +7,11 @@ import type { PermissionEngine } from "./permissions/permission.types.js";
 import { DefaultPermissionEngine } from "./permissions/default-permission-engine.js";
 import { ListDirectoryTool } from "./repository/list-directory-tool.js";
 import { ReadFileTool } from "./repository/read-file-tool.js";
+import { ApplyPatchTool } from "./repository/apply-patch-tool.js";
 import type { RepositoryToolOptions } from "./repository/repository.types.js";
 import { SearchCodeTool } from "./repository/search-code-tool.js";
 import { SearchFilesTool } from "./repository/search-files-tool.js";
+import { WriteFileTool } from "./repository/write-file-tool.js";
 import { ToolRegistry } from "./tool-registry.js";
 import type { ToolEventObserver } from "./tool.types.js";
 
@@ -37,10 +39,11 @@ export function createDefaultToolRegistry(
   registry.register(new SearchFilesTool(repositoryOptions));
   registry.register(new SearchCodeTool(repositoryOptions));
   registry.register(new ReadFileTool());
+  registry.register(new WriteFileTool());
+  registry.register(new ApplyPatchTool(runtime));
   registry.register(new GitStatusTool(runtime));
   registry.register(new GitDiffTool(runtime));
   registry.register(new RunCommandTool(runtime));
 
   return registry;
 }
-

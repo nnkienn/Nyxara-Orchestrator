@@ -5,6 +5,7 @@ export interface CommandRequest {
   readonly timeoutMs?: number;
   readonly maxOutputBytes?: number;
   readonly signal?: AbortSignal;
+  readonly stdin?: string;
 }
 
 export interface CommandResult {
@@ -20,4 +21,3 @@ export interface CommandResult {
 export interface ExecutionRuntime {
   run(request: CommandRequest): Promise<CommandResult>;
 }
-

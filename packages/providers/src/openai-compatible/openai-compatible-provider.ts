@@ -5,8 +5,10 @@ import {
   type GenerateResponse,
   type GenerateUsage,
   type ModelCapabilities,
+  type ModelConversationMessage,
   type ModelInfo,
   type ModelProvider,
+  type ModelToolCall,
   type ProviderCapabilities,
   type ProviderErrorCode,
 } from "@nyxara/provider-sdk";
@@ -55,6 +57,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return {
       modelDiscovery: true,
       textGeneration: true,
+      toolCalling: true,
     };
   }
 
@@ -78,8 +81,26 @@ export class OpenAICompatibleProvider implements ModelProvider {
         method: "POST",
         body: JSON.stringify({
           model: request.model,
-          messages: [{ role: "user", content: request.prompt }],
+          messages: [
+            { role: "user", content: request.prompt },
+            ...(request.conversation?.map((message) =>
+              this.serializeMessage(message),
+            ) ?? []),
+          ],
           stream: false,
+          ...(request.tools && request.tools.length > 0
+            ? {
+                tools: request.tools.map((tool) => ({
+                  type: "function",
+                  function: {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.inputSchema,
+                  },
+                })),
+                tool_choice: "auto",
+              }
+            : {}),
           ...(request.responseFormat === "json"
             ? { response_format: { type: "json_object" } }
             : {}),
@@ -91,8 +112,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const choice = Array.isArray(record.choices) ? record.choices[0] : undefined;
     const choiceRecord = this.requireRecord(choice, "generation choice");
     const message = this.requireRecord(choiceRecord.message, "generation message");
+    const toolCalls = this.normalizeToolCalls(message.tool_calls);
 
-    if (typeof message.content !== "string") {
+    if (typeof message.content !== "string" && toolCalls.length === 0) {
       throw this.invalidResponse("Provider returned no text content");
     }
 
@@ -106,12 +128,76 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ...(typeof record.id === "string" ? { id: record.id } : {}),
       provider: this.id,
       model: responseModel,
-      text: message.content,
+      text: typeof message.content === "string" ? message.content : "",
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
       ...(typeof choiceRecord.finish_reason === "string"
         ? { finishReason: choiceRecord.finish_reason }
         : {}),
       ...(usage ? { usage } : {}),
     };
+  }
+
+  private serializeMessage(message: ModelConversationMessage): UnknownRecord {
+    if (message.role === "assistant") {
+      return {
+        role: "assistant",
+        content: message.content ?? null,
+        ...(message.toolCalls && message.toolCalls.length > 0
+          ? {
+              tool_calls: message.toolCalls.map((call) => ({
+                id: call.id,
+                type: "function",
+                function: {
+                  name: call.name,
+                  arguments: JSON.stringify(call.arguments),
+                },
+              })),
+            }
+          : {}),
+      };
+    }
+
+    const payload = message.toolResult.error
+      ? { error: message.toolResult.error }
+      : { result: message.toolResult.result ?? null };
+    return {
+      role: "tool",
+      tool_call_id: message.toolResult.callId,
+      name: message.toolResult.name,
+      content: JSON.stringify(payload),
+    };
+  }
+
+  private normalizeToolCalls(value: unknown): ModelToolCall[] {
+    if (value === undefined) {
+      return [];
+    }
+    if (!Array.isArray(value)) {
+      throw this.invalidResponse("Provider returned invalid tool calls");
+    }
+
+    return value.map((rawCall) => {
+      const call = this.requireRecord(rawCall, "tool call");
+      const fn = this.requireRecord(call.function, "tool call function");
+      if (
+        typeof call.id !== "string" ||
+        call.id.length === 0 ||
+        typeof fn.name !== "string" ||
+        fn.name.length === 0 ||
+        typeof fn.arguments !== "string"
+      ) {
+        throw this.invalidResponse("Provider returned an invalid tool call");
+      }
+
+      let args: unknown;
+      try {
+        args = JSON.parse(fn.arguments);
+      } catch {
+        throw this.invalidResponse("Provider returned invalid tool arguments");
+      }
+
+      return { id: call.id, name: fn.name, arguments: args };
+    });
   }
 
   private async request(

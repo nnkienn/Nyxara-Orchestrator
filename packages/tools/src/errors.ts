@@ -2,13 +2,16 @@ export type ToolErrorCode =
   | "tool_error"
   | "permission_error"
   | "permission_required"
+  | "write_permission_denied"
   | "workspace_error"
   | "path_outside_workspace"
   | "file_not_found"
   | "command_timeout"
   | "command_blocked"
   | "context_error"
-  | "git_error";
+  | "git_error"
+  | "patch_failed"
+  | "file_too_large";
 
 export class NyxaraToolError extends Error {
   constructor(
@@ -33,4 +36,3 @@ export class ToolRegistryError extends Error {
     this.name = "ToolRegistryError";
   }
 }
-

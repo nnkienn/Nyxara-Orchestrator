@@ -1,6 +1,7 @@
 import type { ModelProvider } from "@nyxara/provider-sdk";
 import type { ToolRegistry } from "@nyxara/tools";
 import type { AgentModelConfig } from "../agents/agent.types.js";
+import type { ExecutorLimits } from "../executor/executor.types.js";
 
 export interface RunInput {
   readonly workspace: string;
@@ -11,6 +12,7 @@ export interface NyxaraOrchestratorConfig {
   readonly providers?: readonly ModelProvider[];
   readonly toolRegistry?: ToolRegistry;
   readonly agents?: readonly AgentModelConfig[];
+  readonly executorLimits?: Partial<ExecutorLimits>;
 }
 
 export interface ModelGenerateInput {

@@ -5,6 +5,10 @@ export type {
   ContextFailedEvent,
   ContextStartedEvent,
   ContextTruncatedEvent,
+  ExecutorCompletedEvent,
+  ExecutorFailedEvent,
+  ExecutorStartedEvent,
+  FileWriteEvent,
   NyxaraEventMap,
   PermissionDecisionEvent,
   PermissionRequestedEvent,
@@ -14,6 +18,8 @@ export type {
   PlanValidationFailedEvent,
   PlanValidationPassedEvent,
   PlanValidationStartedEvent,
+  PatchEvent,
+  PatchFailedEvent,
   ProviderGenerationCompletedEvent,
   ProviderModelsCompletedEvent,
   ProviderOperationFailedEvent,
@@ -21,6 +27,9 @@ export type {
   ToolCompletedEvent,
   ToolFailedEvent,
   ToolStartedEvent,
+  TaskExecutionCompletedEvent,
+  TaskExecutionFailedEvent,
+  TaskExecutionStartedEvent,
   WorkflowCompletedEvent,
   WorkflowFailedEvent,
   WorkflowStartedEvent,
@@ -31,6 +40,29 @@ export {
 } from "./agents/agent-model-registry.js";
 export type { AgentModelConfigErrorCode } from "./agents/agent-model-registry.js";
 export type { AgentModelConfig, AgentRole } from "./agents/agent.types.js";
+export { Executor } from "./executor/executor.js";
+export { ExecutorError } from "./executor/executor-error.js";
+export type {
+  ExecutorErrorCode,
+} from "./executor/executor-error.js";
+export { ExecutorPromptBuilder } from "./executor/executor-prompt-builder.js";
+export { EXECUTOR_TOOL_DEFINITIONS } from "./executor/executor-tools.js";
+export { TaskExecutionStore } from "./executor/task-execution-store.js";
+export {
+  ExecutionDecisionSchema,
+} from "./executor/executor.types.js";
+export type {
+  ExecuteTaskInput,
+  ExecuteTaskResult,
+  ExecutionDecision,
+  ExecutionGitEvidence,
+  ExecutionResult,
+  ExecutorInput,
+  ExecutorLimits,
+  ExecutorRunInput,
+  TaskExecutionState,
+  TaskExecutionStatus,
+} from "./executor/executor.types.js";
 export { ContextEngine, extractSearchTerms } from "./context/context-engine.js";
 export type {
   BuildContextInput,

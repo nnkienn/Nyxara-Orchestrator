@@ -9,8 +9,12 @@ export type {
   GenerateRequest,
   GenerateResponse,
   GenerateUsage,
+  ModelConversationMessage,
   ModelCapabilities,
   ModelInfo,
+  ModelToolCall,
+  ModelToolDefinition,
+  ModelToolResult,
   ProviderCapabilities,
   ProviderInfo,
 } from "./provider.types.js";

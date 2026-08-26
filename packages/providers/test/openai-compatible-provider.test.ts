@@ -146,6 +146,115 @@ describe("OpenAICompatibleProvider", () => {
     expect(consoleWarn).not.toHaveBeenCalled();
   });
 
+  it("normalizes native tool calls and serializes tool results", async () => {
+    const requestBodies: unknown[] = [];
+    const fetchMock = vi.fn(async (_url, init) => {
+      requestBodies.push(JSON.parse(String(init?.body)));
+      if (requestBodies.length === 1) {
+        return jsonResponse({
+          model: "tool-model",
+          choices: [
+            {
+              finish_reason: "tool_calls",
+              message: {
+                content: null,
+                tool_calls: [
+                  {
+                    id: "call-1",
+                    type: "function",
+                    function: {
+                      name: "read_file",
+                      arguments: '{"path":"src/index.ts"}',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      }
+
+      return jsonResponse({
+        model: "tool-model",
+        choices: [
+          {
+            finish_reason: "stop",
+            message: { content: '{"status":"completed"}' },
+          },
+        ],
+      });
+    }) as unknown as typeof fetch;
+    const provider = new OpenAICompatibleProvider({ fetch: fetchMock });
+    const tools = [
+      {
+        name: "read_file",
+        description: "Read a workspace file",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      },
+    ] as const;
+
+    const first = await provider.generate({
+      model: "tool-model",
+      prompt: "Execute one task",
+      tools,
+    });
+    expect(first.toolCalls).toEqual([
+      {
+        id: "call-1",
+        name: "read_file",
+        arguments: { path: "src/index.ts" },
+      },
+    ]);
+
+    await provider.generate({
+      model: "tool-model",
+      prompt: "Execute one task",
+      tools,
+      conversation: [
+        {
+          role: "assistant",
+          toolCalls: first.toolCalls,
+        },
+        {
+          role: "tool",
+          toolResult: {
+            callId: "call-1",
+            name: "read_file",
+            result: { content: "export {};" },
+          },
+        },
+      ],
+    });
+
+    expect(requestBodies[1]).toMatchObject({
+      messages: [
+        { role: "user", content: "Execute one task" },
+        {
+          role: "assistant",
+          tool_calls: [
+            {
+              id: "call-1",
+              function: {
+                name: "read_file",
+                arguments: '{"path":"src/index.ts"}',
+              },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call-1",
+          name: "read_file",
+          content: '{"result":{"content":"export {};"}}',
+        },
+      ],
+    });
+  });
+
   it("returns invalid_response for malformed provider output", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ data: [{}] })) as unknown as
       typeof fetch;

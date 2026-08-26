@@ -24,6 +24,21 @@ export class TaskGraph {
     );
   }
 
+  getTask(taskId: string): PlannedTask {
+    return this.requireTask(taskId);
+  }
+
+  isReady(
+    taskId: string,
+    completedTaskIds: ReadonlySet<string> = new Set(),
+  ): boolean {
+    const task = this.requireTask(taskId);
+    return (
+      !completedTaskIds.has(taskId) &&
+      task.dependencies.every((dependency) => completedTaskIds.has(dependency))
+    );
+  }
+
   getBlockedTasks(
     completedTaskIds: ReadonlySet<string> = new Set(),
   ): PlannedTask[] {
@@ -93,4 +108,3 @@ export function detectTaskCycle(tasks: readonly PlannedTask[]): boolean {
 
   return tasks.some((task) => visit(task.id));
 }
-

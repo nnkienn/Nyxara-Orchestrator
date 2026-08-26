@@ -2,7 +2,10 @@ import {
   NyxaraToolError,
   ToolRegistryError,
 } from "./errors.js";
-import type { PermissionEngine } from "./permissions/permission.types.js";
+import type {
+  PermissionEngine,
+  PermissionRequest,
+} from "./permissions/permission.types.js";
 import type {
   Tool,
   ToolContext,
@@ -53,45 +56,83 @@ export class ToolRegistry {
     context: ToolContext,
   ): Promise<TOutput> {
     const tool = this.get<TInput, TOutput>(name);
-    const permission = tool.permission(input, context);
-    this.observer?.({
-      type: "permission.requested",
-      tool: name,
-      capability: permission.capability,
-      ...(permission.resource ? { resource: permission.resource } : {}),
-      ...(permission.command ? { command: permission.command.command } : {}),
-    });
-
-    const decision = await this.permissionEngine.evaluate(permission);
-    if (decision !== "allow") {
+    let permissions: readonly PermissionRequest[];
+    try {
+      const requested = await tool.permission(input, context);
+      permissions = Array.isArray(requested)
+        ? requested
+        : [requested as PermissionRequest];
+      if (permissions.length === 0) {
+        throw new NyxaraToolError(
+          "permission_error",
+          `Tool did not declare a permission request: ${name}`,
+          name,
+        );
+      }
+    } catch (error: unknown) {
       this.observer?.({
-        type: "permission.denied",
+        type: "tool.failed",
         tool: name,
-        capability: permission.capability,
+        code: error instanceof NyxaraToolError ? error.code : "tool_error",
       });
-      const code =
-        decision === "ask"
-          ? "permission_required"
-          : permission.capability === "run_command"
-            ? "command_blocked"
-            : "permission_error";
-      const error = new NyxaraToolError(
-        code,
-        decision === "ask"
-          ? `Permission is required to execute tool: ${name}`
-          : `Permission denied for tool: ${name}`,
-        name,
-      );
-      this.observer?.({ type: "tool.failed", tool: name, code: error.code });
       throw error;
     }
 
+    for (const permission of permissions) {
+      this.observer?.({
+        type: "permission.requested",
+        tool: name,
+        capability: permission.capability,
+        ...(permission.resource ? { resource: permission.resource } : {}),
+        ...(permission.command ? { command: permission.command.command } : {}),
+      });
+
+      const decision = await this.permissionEngine.evaluate(permission);
+      if (decision !== "allow") {
+        this.observer?.({
+          type: "permission.denied",
+          tool: name,
+          capability: permission.capability,
+        });
+        const isWrite = [
+          "write_workspace_file",
+          "create_workspace_file",
+          "modify_workspace_file",
+        ].includes(permission.capability);
+        const code =
+          decision === "ask"
+            ? "permission_required"
+            : permission.capability === "run_command"
+              ? "command_blocked"
+              : isWrite
+                ? "write_permission_denied"
+                : "permission_error";
+        const error = new NyxaraToolError(
+          code,
+          decision === "ask"
+            ? `Permission is required to execute tool: ${name}`
+            : `Permission denied for tool: ${name}`,
+          name,
+        );
+        this.observer?.({ type: "tool.failed", tool: name, code: error.code });
+        throw error;
+      }
+
+      this.observer?.({
+        type: "permission.allowed",
+        tool: name,
+        capability: permission.capability,
+      });
+    }
+
+    const resources = permissions
+      .map((permission) => permission.resource)
+      .filter((resource): resource is string => resource !== undefined);
     this.observer?.({
-      type: "permission.allowed",
+      type: "tool.started",
       tool: name,
-      capability: permission.capability,
+      ...(resources.length > 0 ? { resources } : {}),
     });
-    this.observer?.({ type: "tool.started", tool: name });
     const startedAt = Date.now();
 
     try {
@@ -100,6 +141,7 @@ export class ToolRegistry {
         type: "tool.completed",
         tool: name,
         durationMs: Date.now() - startedAt,
+        ...(resources.length > 0 ? { resources } : {}),
       });
       return output;
     } catch (error: unknown) {
@@ -107,6 +149,7 @@ export class ToolRegistry {
         type: "tool.failed",
         tool: name,
         code: error instanceof NyxaraToolError ? error.code : "tool_error",
+        ...(resources.length > 0 ? { resources } : {}),
       });
       throw error;
     }

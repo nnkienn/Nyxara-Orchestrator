@@ -34,8 +34,12 @@ export class LocalExecutionRuntime implements ExecutionRuntime {
       const child = spawn(request.command, [...(request.args ?? [])], {
         cwd: request.cwd,
         shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [request.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       });
+
+      if (request.stdin !== undefined && child.stdin) {
+        child.stdin.end(request.stdin);
+      }
 
       const append = (target: "stdout" | "stderr", chunk: Buffer): void => {
         const usedBytes = stdout.byteLength + stderr.byteLength;
@@ -53,8 +57,8 @@ export class LocalExecutionRuntime implements ExecutionRuntime {
         }
       };
 
-      child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
-      child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
+      child.stdout!.on("data", (chunk: Buffer) => append("stdout", chunk));
+      child.stderr!.on("data", (chunk: Buffer) => append("stderr", chunk));
 
       const timeout = setTimeout(() => {
         timedOut = true;

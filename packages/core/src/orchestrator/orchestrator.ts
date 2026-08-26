@@ -20,8 +20,18 @@ import type {
 } from "../context/context.types.js";
 import { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
+import { Executor } from "../executor/executor.js";
+import { ExecutorError } from "../executor/executor-error.js";
+import { TaskExecutionStore } from "../executor/task-execution-store.js";
+import type {
+  ExecuteTaskInput,
+  ExecuteTaskResult,
+  ExecutorLimits,
+  TaskExecutionState,
+} from "../executor/executor.types.js";
 import { ProviderRegistry } from "../providers/provider-registry.js";
 import { Planner } from "../planner/planner.js";
+import { PlanValidator } from "../planner/plan-validator.js";
 import { TaskGraph } from "../planner/task-graph.js";
 import type {
   CreatePlanInput,
@@ -43,6 +53,9 @@ export class NyxaraOrchestrator {
   private readonly toolRegistry: ToolRegistry;
   private readonly contextEngine: ContextEngine;
   private readonly planner: Planner;
+  private readonly executor: Executor;
+  private readonly taskExecutions = new TaskExecutionStore();
+  private readonly executorLimits: Partial<ExecutorLimits> | undefined;
 
   constructor(config: NyxaraOrchestratorConfig = {}) {
     this.toolRegistry =
@@ -53,6 +66,12 @@ export class NyxaraOrchestrator {
     this.contextEngine = new ContextEngine(this.toolRegistry, this.events);
     this.agentModels = new AgentModelRegistry(config.agents ?? []);
     this.planner = new Planner(this.providerRegistry, this.events);
+    this.executor = new Executor(
+      this.providerRegistry,
+      this.toolRegistry,
+      this.events,
+    );
+    this.executorLimits = config.executorLimits;
 
     for (const provider of config.providers ?? []) {
       this.registerProvider(provider);
@@ -155,6 +174,77 @@ export class NyxaraOrchestrator {
     return { plan, context, model, graph: new TaskGraph(plan) };
   }
 
+  getTaskExecutionStates(
+    plan: import("../planner/planner.types.js").ExecutionPlan,
+  ): TaskExecutionState[] {
+    return this.taskExecutions.list(plan);
+  }
+
+  async executeTask(input: ExecuteTaskInput): Promise<ExecuteTaskResult> {
+    const plan = new PlanValidator().validate(input.plan);
+    let model: AgentModelConfig;
+    try {
+      model = this.agentModels.get("executor");
+    } catch {
+      throw new ExecutorError(
+        "executor_not_configured",
+        "No provider/model is configured for the Executor role",
+      );
+    }
+
+    const started = this.taskExecutions.begin(plan, input.taskId);
+    this.events.emit("task.execution_started", {
+      taskId: started.task.id,
+      attempt: started.state.attempts,
+    });
+
+    try {
+      const context = await this.contextEngine.build({
+        workspaceRoot: input.workspaceRoot,
+        prompt: taskContextQuery(started.task),
+        ...(input.contextBudget ? { budget: input.contextBudget } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      const result = await this.executor.run({
+        input: {
+          task: started.task,
+          objective: plan.objective,
+          workspaceRoot: input.workspaceRoot,
+          context,
+          attempt: started.state.attempts,
+          ...(input.signal ? { signal: input.signal } : {}),
+        },
+        model,
+        ...((input.limits ?? this.executorLimits)
+          ? { limits: { ...this.executorLimits, ...input.limits } }
+          : {}),
+      });
+      const state = this.taskExecutions.finish(plan, result);
+      if (result.status === "completed") {
+        this.events.emit("task.execution_completed", {
+          taskId: result.taskId,
+          attempt: state.attempts,
+          changedFileCount: result.changedFiles.length,
+        });
+      } else {
+        this.events.emit("task.execution_failed", {
+          taskId: result.taskId,
+          attempt: state.attempts,
+          code: "executor_error",
+        });
+      }
+      return { result, state, context, model };
+    } catch (error: unknown) {
+      const state = this.taskExecutions.fail(plan, input.taskId);
+      this.events.emit("task.execution_failed", {
+        taskId: input.taskId,
+        attempt: state.attempts,
+        code: errorCode(error),
+      });
+      throw error;
+    }
+  }
+
   private emitProviderFailure(
     providerId: string,
     operation: "list_models" | "generate",
@@ -188,16 +278,63 @@ export class NyxaraOrchestrator {
         break;
       case "tool.started":
         this.events.emit(event.type, { tool: event.tool });
+        if (event.tool === "write_file") {
+          this.events.emit("file.write_started", {
+            path: event.resources?.[0] ?? "unknown",
+          });
+        } else if (event.tool === "apply_patch") {
+          this.events.emit("patch.started", {
+            paths: event.resources ?? [],
+          });
+        }
         break;
       case "tool.completed":
         this.events.emit(event.type, {
           tool: event.tool,
           durationMs: event.durationMs,
         });
+        if (event.tool === "write_file") {
+          this.events.emit("file.write_completed", {
+            path: event.resources?.[0] ?? "unknown",
+          });
+        } else if (event.tool === "apply_patch") {
+          this.events.emit("patch.completed", {
+            paths: event.resources ?? [],
+          });
+        }
         break;
       case "tool.failed":
         this.events.emit(event.type, { tool: event.tool, code: event.code });
+        if (event.tool === "apply_patch") {
+          this.events.emit("patch.failed", {
+            paths: event.resources ?? [],
+            code: event.code,
+          });
+        }
         break;
     }
   }
+}
+
+function taskContextQuery(
+  task: import("../planner/planner.types.js").PlannedTask,
+): string {
+  return [
+    ...(task.relevantFiles ?? []),
+    task.title,
+    task.description,
+    ...task.acceptanceCriteria,
+  ].join("\n");
+}
+
+function errorCode(error: unknown): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code;
+  }
+  return "executor_error";
 }

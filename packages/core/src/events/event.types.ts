@@ -125,6 +125,55 @@ export interface PlanValidationPassedEvent {
   readonly taskCount: number;
 }
 
+export interface ExecutorStartedEvent {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly attempt: number;
+  readonly contextFileCount: number;
+}
+
+export interface ExecutorCompletedEvent {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly changedFileCount: number;
+  readonly toolCalls: number;
+  readonly modelTurns: number;
+}
+
+export interface ExecutorFailedEvent {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly code: string;
+}
+
+export interface TaskExecutionStartedEvent {
+  readonly taskId: string;
+  readonly attempt: number;
+}
+
+export interface TaskExecutionCompletedEvent extends TaskExecutionStartedEvent {
+  readonly changedFileCount: number;
+}
+
+export interface TaskExecutionFailedEvent extends TaskExecutionStartedEvent {
+  readonly code: string;
+}
+
+export interface FileWriteEvent {
+  readonly path: string;
+}
+
+export interface PatchEvent {
+  readonly paths: readonly string[];
+}
+
+export interface PatchFailedEvent extends PatchEvent {
+  readonly code: string;
+}
+
 export interface NyxaraEventMap {
   readonly "workflow.started": WorkflowStartedEvent;
   readonly "workflow.completed": WorkflowCompletedEvent;
@@ -149,4 +198,15 @@ export interface NyxaraEventMap {
   readonly "plan.validation_started": PlanValidationStartedEvent;
   readonly "plan.validation_failed": PlanValidationFailedEvent;
   readonly "plan.validation_passed": PlanValidationPassedEvent;
+  readonly "executor.started": ExecutorStartedEvent;
+  readonly "executor.completed": ExecutorCompletedEvent;
+  readonly "executor.failed": ExecutorFailedEvent;
+  readonly "task.execution_started": TaskExecutionStartedEvent;
+  readonly "task.execution_completed": TaskExecutionCompletedEvent;
+  readonly "task.execution_failed": TaskExecutionFailedEvent;
+  readonly "file.write_started": FileWriteEvent;
+  readonly "file.write_completed": FileWriteEvent;
+  readonly "patch.started": PatchEvent;
+  readonly "patch.completed": PatchEvent;
+  readonly "patch.failed": PatchFailedEvent;
 }

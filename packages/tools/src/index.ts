@@ -41,8 +41,20 @@ export {
   ListDirectoryTool,
 } from "./repository/list-directory-tool.js";
 export { ReadFileTool } from "./repository/read-file-tool.js";
+export { ApplyPatchTool } from "./repository/apply-patch-tool.js";
+export type {
+  ApplyPatchInput,
+  ApplyPatchResult,
+  ApplyPatchToolOptions,
+} from "./repository/apply-patch-tool.js";
 export { SearchCodeTool } from "./repository/search-code-tool.js";
 export { SearchFilesTool } from "./repository/search-files-tool.js";
+export { WriteFileTool } from "./repository/write-file-tool.js";
+export type {
+  WriteFileInput,
+  WriteFileResult,
+  WriteFileToolOptions,
+} from "./repository/write-file-tool.js";
 export type {
   CodeSearchMatch,
   DirectoryEntry,

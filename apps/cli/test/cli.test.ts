@@ -6,7 +6,13 @@ import {
 } from "@nyxara/core";
 import type { ModelProvider } from "@nyxara/provider-sdk";
 import { describe, expect, it, vi } from "vitest";
-import { runCli, runInspectCli, runPlanCli, type CliIO } from "../src/cli.js";
+import {
+  runCli,
+  runExecuteCli,
+  runInspectCli,
+  runPlanCli,
+  type CliIO,
+} from "../src/cli.js";
 
 describe("Nyxara CLI", () => {
   it("selects and consumes providers without provider-specific workflow logic", async () => {
@@ -212,5 +218,116 @@ describe("Nyxara plan CLI", () => {
     expect(output.join("")).toContain("Objective\nAdd pagination");
     expect(output.join("")).toContain("T2\nPlan pagination changes");
     expect(output.join("")).toContain("Depends on: T1");
+  });
+});
+
+describe("Nyxara execute CLI", () => {
+  it("selects roles and delegates one ready task to Core", async () => {
+    const events = new EventBus<NyxaraEventMap>();
+    const plan = {
+      id: "18d64629-e102-4b50-9a7d-23ea14e99891",
+      objective: "Add pagination",
+      tasks: [
+        {
+          id: "T1",
+          title: "Add pagination DTO",
+          description: "Add page and limit fields.",
+          dependencies: [],
+          acceptanceCriteria: ["DTO exposes page and limit"],
+        },
+      ],
+      createdAt: "2026-08-26T00:00:00.000Z",
+    } as const;
+    const configureAgent = vi.fn();
+    const createPlan = vi.fn(async () => {
+      events.emit("planner.completed", {
+        planId: plan.id,
+        providerId: "fake",
+        modelId: "model-1",
+        taskCount: 1,
+      });
+      return {
+        plan,
+        context: {} as never,
+        model: { role: "planner", providerId: "fake", modelId: "model-1" },
+        graph: new TaskGraph(plan),
+      };
+    });
+    const executeTask = vi.fn(async () => {
+      events.emit("executor.started", {
+        taskId: "T1",
+        providerId: "fake",
+        modelId: "model-1",
+        attempt: 1,
+        contextFileCount: 1,
+      });
+      events.emit("tool.started", { tool: "apply_patch" });
+      events.emit("executor.completed", {
+        taskId: "T1",
+        providerId: "fake",
+        modelId: "model-1",
+        changedFileCount: 1,
+        toolCalls: 1,
+        modelTurns: 2,
+      });
+      return {
+        result: {
+          taskId: "T1",
+          status: "completed",
+          summary: "Added pagination DTO",
+          changedFiles: ["src/pagination.dto.ts"],
+          toolCalls: 1,
+          modelTurns: 2,
+          diff: { files: ["src/pagination.dto.ts"], truncated: false },
+          git: {} as never,
+        },
+        state: { taskId: "T1", status: "completed", attempts: 1 },
+        context: {} as never,
+        model: { role: "executor", providerId: "fake", modelId: "model-1" },
+      } as const;
+    });
+    const nyxara = {
+      events,
+      listProviders: () => [
+        { id: "fake", displayName: "Fake Provider", capabilities: {} },
+      ],
+      listModels: async () => [
+        { id: "model-1", name: "Model One", provider: "fake" },
+      ],
+      configureAgent,
+      createPlan,
+      executeTask,
+    } as unknown as NyxaraOrchestrator;
+    const answers = ["1", "1", "1", "1"];
+    const output: string[] = [];
+    const io: CliIO = {
+      write(message) {
+        output.push(message);
+      },
+      async question() {
+        return answers.shift() ?? "";
+      },
+    };
+
+    await runExecuteCli(io, nyxara, "/workspace", "Add pagination");
+
+    expect(configureAgent).toHaveBeenNthCalledWith(1, {
+      role: "planner",
+      providerId: "fake",
+      modelId: "model-1",
+    });
+    expect(configureAgent).toHaveBeenNthCalledWith(2, {
+      role: "executor",
+      providerId: "fake",
+      modelId: "model-1",
+    });
+    expect(executeTask).toHaveBeenCalledWith({
+      plan,
+      taskId: "T1",
+      workspaceRoot: "/workspace",
+    });
+    expect(output.join("")).toContain("Executing T1");
+    expect(output.join("")).toContain("  apply_patch");
+    expect(output.join("")).toContain("- src/pagination.dto.ts");
   });
 });

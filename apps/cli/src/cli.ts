@@ -120,6 +120,87 @@ export async function runPlanCli(
   }
 }
 
+export async function runExecuteCli(
+  io: CliIO,
+  nyxara: NyxaraOrchestrator,
+  workspaceRoot: string,
+  prompt: string,
+): Promise<void> {
+  io.write("NYXARA ORCHESTRATOR\n\n");
+  io.write(`Workspace\n${workspaceRoot}\n\n`);
+
+  io.write("Planner configuration\n");
+  const plannerProvider = await selectProvider(io, nyxara.listProviders());
+  const plannerModel = await selectModel(
+    io,
+    await nyxara.listModels(plannerProvider.id),
+  );
+  nyxara.configureAgent({
+    role: "planner",
+    providerId: plannerProvider.id,
+    modelId: plannerModel.id,
+  });
+
+  io.write("\nExecutor configuration\n");
+  const executorProvider = await selectProvider(io, nyxara.listProviders());
+  const executorModel = await selectModel(
+    io,
+    await nyxara.listModels(executorProvider.id),
+  );
+  nyxara.configureAgent({
+    role: "executor",
+    providerId: executorProvider.id,
+    modelId: executorModel.id,
+  });
+
+  let executorActive = false;
+  const unsubscribers = [
+    nyxara.events.on("planner.completed", () => io.write("✓ Plan created\n")),
+    nyxara.events.on("executor.started", () => {
+      executorActive = true;
+      io.write(
+        `\n● Executor\n  Provider: ${executorProvider.displayName}\n  Model: ${executorModel.name}\n`,
+      );
+    }),
+    nyxara.events.on("tool.started", ({ tool }) => {
+      if (executorActive) io.write(`  ${tool}\n`);
+    }),
+    nyxara.events.on("executor.completed", () => {
+      executorActive = false;
+      io.write("✓ Task completed\n");
+    }),
+    nyxara.events.on("executor.failed", () => {
+      executorActive = false;
+    }),
+  ];
+
+  try {
+    const planned = await nyxara.createPlan({ workspaceRoot, prompt });
+    const readyTask = planned.graph.getReadyTasks()[0];
+    if (!readyTask) {
+      throw new Error("The plan has no ready task to execute");
+    }
+    io.write(`\nExecuting ${readyTask.id}\n${readyTask.title}\n`);
+
+    const executed = await nyxara.executeTask({
+      plan: planned.plan,
+      taskId: readyTask.id,
+      workspaceRoot,
+    });
+    io.write("\nChanged files\n");
+    if (executed.result.changedFiles.length === 0) {
+      io.write("- No repository changes\n");
+    } else {
+      executed.result.changedFiles.forEach((path) => io.write(`- ${path}\n`));
+    }
+    io.write(
+      `\nGit diff ${executed.result.diff.truncated ? "truncated" : "available"}.\n`,
+    );
+  } finally {
+    unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }
+}
+
 function formatBytes(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 }

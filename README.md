@@ -480,6 +480,19 @@ pnpm --filter @nyxara/cli dev -- plan "Add pagination to notification API"
 The plan exists as validated runtime data. Nyxara does not create `PLAN.md` or run
 the planned tasks during Phase 3.
 
+### Phase 4 single-task execution
+
+Plan the request and execute only the first ready task through permission-gated
+native model tool calls:
+
+```bash
+export NYXARA_OPENAI_API_KEY="your-api-key"
+pnpm --filter @nyxara/cli dev -- execute "Add pagination to notification API"
+```
+
+Phase 4 stops after safe repository modification and bounded Git evidence capture.
+It does not run validation, review, or automatic repair.
+
 ### Install globally
 
 ```bash
