@@ -35,9 +35,18 @@ import { PlanValidator } from "../planner/plan-validator.js";
 import { TaskGraph } from "../planner/task-graph.js";
 import type {
   CreatePlanInput,
+  ExecutionPlan,
   PlanResult,
+  PlannedTask,
 } from "../planner/planner.types.js";
 import { WorkflowEngine } from "../workflow/workflow-engine.js";
+import { ValidationEngine } from "../validation/validation-engine.js";
+import { ValidationStore } from "../validation/validation-store.js";
+import type {
+  ValidateInput,
+  ValidationConfig,
+  ValidationResult,
+} from "../validation/validation.types.js";
 import type {
   ModelGenerateInput,
   NyxaraOrchestratorConfig,
@@ -56,6 +65,9 @@ export class NyxaraOrchestrator {
   private readonly executor: Executor;
   private readonly taskExecutions = new TaskExecutionStore();
   private readonly executorLimits: Partial<ExecutorLimits> | undefined;
+  private readonly validationEngine: ValidationEngine;
+  private readonly validationStore = new ValidationStore();
+  private readonly validationConfig: ValidationConfig | undefined;
 
   constructor(config: NyxaraOrchestratorConfig = {}) {
     this.toolRegistry =
@@ -72,6 +84,8 @@ export class NyxaraOrchestrator {
       this.events,
     );
     this.executorLimits = config.executorLimits;
+    this.validationEngine = new ValidationEngine(this.toolRegistry, this.events);
+    this.validationConfig = config.validation;
 
     for (const provider of config.providers ?? []) {
       this.registerProvider(provider);
@@ -175,7 +189,7 @@ export class NyxaraOrchestrator {
   }
 
   getTaskExecutionStates(
-    plan: import("../planner/planner.types.js").ExecutionPlan,
+    plan: ExecutionPlan,
   ): TaskExecutionState[] {
     return this.taskExecutions.list(plan);
   }
@@ -243,6 +257,20 @@ export class NyxaraOrchestrator {
       });
       throw error;
     }
+  }
+
+  async validate(input: ValidateInput): Promise<ValidationResult> {
+    const config = mergeValidationConfig(this.validationConfig, input.config);
+    const result = await this.validationEngine.run({
+      ...input,
+      ...(config ? { config } : {}),
+    });
+    this.validationStore.set(result);
+    return result;
+  }
+
+  getLatestValidationResult(): ValidationResult | undefined {
+    return this.validationStore.getLatest();
   }
 
   private emitProviderFailure(
@@ -316,8 +344,24 @@ export class NyxaraOrchestrator {
   }
 }
 
+function mergeValidationConfig(
+  base: ValidationConfig | undefined,
+  override: ValidationConfig | undefined,
+): ValidationConfig | undefined {
+  if (!base && !override) return undefined;
+  const merged: ValidationConfig = { ...base, ...override };
+  for (const kind of ["typecheck", "lint", "test", "build"] as const) {
+    if (base?.[kind] || override?.[kind]) {
+      Object.assign(merged, {
+        [kind]: { ...base?.[kind], ...override?.[kind] },
+      });
+    }
+  }
+  return merged;
+}
+
 function taskContextQuery(
-  task: import("../planner/planner.types.js").PlannedTask,
+  task: PlannedTask,
 ): string {
   return [
     ...(task.relevantFiles ?? []),

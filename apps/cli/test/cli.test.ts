@@ -11,6 +11,7 @@ import {
   runExecuteCli,
   runInspectCli,
   runPlanCli,
+  runValidationCli,
   type CliIO,
 } from "../src/cli.js";
 
@@ -329,5 +330,50 @@ describe("Nyxara execute CLI", () => {
     expect(output.join("")).toContain("Executing T1");
     expect(output.join("")).toContain("  apply_patch");
     expect(output.join("")).toContain("- src/pagination.dto.ts");
+  });
+});
+
+describe("Nyxara validation CLI", () => {
+  it("delegates validation to Core and renders structured results", async () => {
+    const events = new EventBus<NyxaraEventMap>();
+    const validate = vi.fn(async () => {
+      events.emit("validation.step_passed", {
+        kind: "typecheck",
+        status: "passed",
+        durationMs: 1200,
+        exitCode: 0,
+      });
+      events.emit("validation.step_skipped", {
+        kind: "lint",
+        status: "skipped",
+        durationMs: 0,
+      });
+      return {
+        status: "passed",
+        packageManager: "pnpm",
+        steps: [],
+        startedAt: "2026-08-26T00:00:00.000Z",
+        completedAt: "2026-08-26T00:00:01.200Z",
+        durationMs: 1200,
+      } as const;
+    });
+    const nyxara = { events, validate } as unknown as NyxaraOrchestrator;
+    const output: string[] = [];
+    const io: CliIO = {
+      write(message) {
+        output.push(message);
+      },
+      async question() {
+        return "";
+      },
+    };
+
+    await runValidationCli(io, nyxara, "/workspace");
+
+    expect(validate).toHaveBeenCalledWith({ workspaceRoot: "/workspace" });
+    expect(output.join("")).toContain("NYXARA VALIDATION");
+    expect(output.join("")).toContain("✓ Typecheck");
+    expect(output.join("")).toContain("- Lint (skipped)");
+    expect(output.join("")).toContain("Validation\nPASS");
   });
 });

@@ -40,6 +40,9 @@ describe("TaskGraph", () => {
     expect(
       taskGraph.getReadyTasks(new Set(["T1"])).map((task) => task.id),
     ).toEqual(["T2", "T3"]);
+    expect(taskGraph.isReady("T2", new Set(["T1"]))).toBe(true);
+    expect(taskGraph.isReady("T4", new Set(["T1"]))).toBe(false);
+    expect(taskGraph.getTask("T4").dependencies).toEqual(["T2", "T3"]);
   });
 
   it("traverses dependencies and dependents", () => {
@@ -61,4 +64,3 @@ describe("TaskGraph", () => {
     ).toBe(true);
   });
 });
-

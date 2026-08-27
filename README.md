@@ -493,6 +493,21 @@ pnpm --filter @nyxara/cli dev -- execute "Add pagination to notification API"
 Phase 4 stops after safe repository modification and bounded Git evidence capture.
 It does not run validation, review, or automatic repair.
 
+### Phase 5 deterministic validation
+
+Discover and run repository validation scripts without calling an AI provider:
+
+```bash
+pnpm --filter @nyxara/cli dev -- validate
+```
+
+Nyxara checks discovered commands in `typecheck → lint → test → build` order,
+uses fail-fast by default, and reports missing checks as skipped. Commands run
+inside the canonical workspace through the existing permission and local runtime
+boundary, with per-step timeouts and bounded output. A validation command that
+changes tracked files causes a controlled failure. Phase 5 stops after returning
+structured deterministic evidence; it does not review or repair failures.
+
 ### Install globally
 
 ```bash

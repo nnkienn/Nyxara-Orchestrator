@@ -174,6 +174,37 @@ export interface PatchFailedEvent extends PatchEvent {
   readonly code: string;
 }
 
+export interface ValidationStartedEvent {
+  readonly workspaceRoot: string;
+  readonly planId?: string;
+  readonly taskId?: string;
+}
+
+export interface ValidationStepEvent {
+  readonly kind: "typecheck" | "lint" | "test" | "build";
+  readonly status: "passed" | "failed" | "skipped" | "timed_out" | "errored";
+  readonly durationMs: number;
+  readonly command?: readonly string[];
+  readonly exitCode?: number;
+  readonly errorCode?: string;
+}
+
+export interface ValidationStepStartedEvent {
+  readonly kind: "typecheck" | "lint" | "test" | "build";
+  readonly command: readonly string[];
+}
+
+export interface ValidationCompletedEvent {
+  readonly durationMs: number;
+  readonly stepCount: number;
+}
+
+export interface ValidationFailedEvent {
+  readonly durationMs: number;
+  readonly errorCode: string;
+  readonly failedKinds: readonly ("typecheck" | "lint" | "test" | "build")[];
+}
+
 export interface NyxaraEventMap {
   readonly "workflow.started": WorkflowStartedEvent;
   readonly "workflow.completed": WorkflowCompletedEvent;
@@ -209,4 +240,12 @@ export interface NyxaraEventMap {
   readonly "patch.started": PatchEvent;
   readonly "patch.completed": PatchEvent;
   readonly "patch.failed": PatchFailedEvent;
+  readonly "validation.started": ValidationStartedEvent;
+  readonly "validation.completed": ValidationCompletedEvent;
+  readonly "validation.failed": ValidationFailedEvent;
+  readonly "validation.step_started": ValidationStepStartedEvent;
+  readonly "validation.step_passed": ValidationStepEvent;
+  readonly "validation.step_failed": ValidationStepEvent;
+  readonly "validation.step_skipped": ValidationStepEvent;
+  readonly "validation.step_timed_out": ValidationStepEvent;
 }

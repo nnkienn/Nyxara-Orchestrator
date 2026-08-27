@@ -36,6 +36,7 @@ export interface PermissionEngine {
 
 export interface DefaultPermissionPolicy {
   readonly safeCommand?: PermissionDecision;
+  readonly validationCommand?: PermissionDecision;
   readonly unknownCommand?: PermissionDecision;
   readonly writeWorkspaceFile?: PermissionDecision;
   readonly createWorkspaceFile?: PermissionDecision;

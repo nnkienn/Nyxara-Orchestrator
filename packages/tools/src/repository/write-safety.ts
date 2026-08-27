@@ -50,6 +50,9 @@ export function classifySensitivePath(
   path: string,
 ): "environment" | "credential" | undefined {
   const name = basename(path).toLocaleLowerCase();
+  const segments = path
+    .split("/")
+    .map((segment) => segment.toLocaleLowerCase());
   if (name === ".env" || name.startsWith(".env.")) {
     return "environment";
   }
@@ -57,6 +60,7 @@ export function classifySensitivePath(
     name.endsWith(".pem") ||
     name.endsWith(".key") ||
     name.startsWith("credentials") ||
+    segments.some((segment) => segment.startsWith("credentials")) ||
     name === "id_rsa" ||
     name === "id_ed25519"
   ) {

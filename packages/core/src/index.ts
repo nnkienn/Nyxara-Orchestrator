@@ -30,6 +30,11 @@ export type {
   TaskExecutionCompletedEvent,
   TaskExecutionFailedEvent,
   TaskExecutionStartedEvent,
+  ValidationCompletedEvent,
+  ValidationFailedEvent,
+  ValidationStartedEvent,
+  ValidationStepEvent,
+  ValidationStepStartedEvent,
   WorkflowCompletedEvent,
   WorkflowFailedEvent,
   WorkflowStartedEvent,
@@ -42,15 +47,11 @@ export type { AgentModelConfigErrorCode } from "./agents/agent-model-registry.js
 export type { AgentModelConfig, AgentRole } from "./agents/agent.types.js";
 export { Executor } from "./executor/executor.js";
 export { ExecutorError } from "./executor/executor-error.js";
-export type {
-  ExecutorErrorCode,
-} from "./executor/executor-error.js";
+export type { ExecutorErrorCode } from "./executor/executor-error.js";
 export { ExecutorPromptBuilder } from "./executor/executor-prompt-builder.js";
 export { EXECUTOR_TOOL_DEFINITIONS } from "./executor/executor-tools.js";
 export { TaskExecutionStore } from "./executor/task-execution-store.js";
-export {
-  ExecutionDecisionSchema,
-} from "./executor/executor.types.js";
+export { ExecutionDecisionSchema } from "./executor/executor.types.js";
 export type {
   ExecuteTaskInput,
   ExecuteTaskResult,
@@ -98,6 +99,41 @@ export type {
   PlanRisk,
 } from "./planner/planner.types.js";
 export { detectTaskCycle, TaskGraph } from "./planner/task-graph.js";
+export {
+  detectPackageManager,
+  ValidationCommandDiscovery,
+} from "./validation/validation-command-discovery.js";
+export {
+  DEFAULT_MAX_OUTPUT_BYTES,
+  DEFAULT_TIMEOUTS,
+  SCRIPT_CANDIDATES,
+} from "./validation/validation-command-discovery.js";
+export {
+  normalizeValidationConfig,
+} from "./validation/validation-config.js";
+export type {
+  NormalizedValidationConfig,
+} from "./validation/validation-config.js";
+export {
+  detectTrackedChanges,
+  ValidationEngine,
+} from "./validation/validation-engine.js";
+export { ValidationError } from "./validation/validation.errors.js";
+export type { ValidationErrorCode } from "./validation/validation.errors.js";
+export { ValidationStore } from "./validation/validation-store.js";
+export { VALIDATION_KINDS } from "./validation/validation.types.js";
+export type {
+  PackageManager,
+  ResolvedValidationStep,
+  ValidateInput,
+  ValidationConfig,
+  ValidationDiscoveryResult,
+  ValidationKind,
+  ValidationResult,
+  ValidationStepConfig,
+  ValidationStepResult,
+  ValidationStepStatus,
+} from "./validation/validation.types.js";
 export { NyxaraOrchestrator } from "./orchestrator/orchestrator.js";
 export type {
   ModelGenerateInput,

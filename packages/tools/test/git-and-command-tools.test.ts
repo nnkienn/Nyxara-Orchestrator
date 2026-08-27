@@ -161,6 +161,38 @@ describe("run_command", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("allows exact validation commands but rejects appended shell arguments", async () => {
+    const run = vi.fn(async (): Promise<CommandResult> => ({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 0,
+      timedOut: false,
+      aborted: false,
+      truncated: false,
+    }));
+    const registry = createDefaultToolRegistry({ executionRuntime: { run } });
+
+    for (const input of [
+      { command: "pnpm", args: ["run", "typecheck"] },
+      { command: "npm", args: ["test"] },
+      { command: "yarn", args: ["lint"] },
+      { command: "npx", args: ["tsc", "--noEmit"] },
+    ]) {
+      await expect(
+        registry.execute("run_command", input, { workspaceRoot: workspace }),
+      ).resolves.toMatchObject({ exitCode: 0 });
+    }
+    await expect(
+      registry.execute(
+        "run_command",
+        { command: "npm", args: ["run", "test", ";", "touch", "owned"] },
+        { workspaceRoot: workspace },
+      ),
+    ).rejects.toMatchObject({ code: "permission_required" });
+    expect(run).toHaveBeenCalledTimes(4);
+  });
+
   it("keeps LocalExecutionRuntime as the local V1 implementation", () => {
     expect(new LocalExecutionRuntime()).toBeDefined();
   });

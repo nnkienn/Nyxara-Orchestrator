@@ -201,8 +201,71 @@ export async function runExecuteCli(
   }
 }
 
+export async function runValidationCli(
+  io: CliIO,
+  nyxara: NyxaraOrchestrator,
+  workspaceRoot: string,
+): Promise<void> {
+  io.write("NYXARA VALIDATION\n\n");
+  io.write(`Workspace\n${workspaceRoot}\n\n`);
+
+  const unsubscribers = [
+    nyxara.events.on("validation.step_passed", ({ kind, durationMs }) => {
+      io.write(`✓ ${validationLabel(kind)}\n  ${formatDuration(durationMs)}\n\n`);
+    }),
+    nyxara.events.on("validation.step_failed", ({ kind, durationMs }) => {
+      io.write(`✗ ${validationLabel(kind)}\n  ${formatDuration(durationMs)}\n\n`);
+    }),
+    nyxara.events.on("validation.step_timed_out", ({ kind, durationMs }) => {
+      io.write(`✗ ${validationLabel(kind)} (timed out)\n  ${formatDuration(durationMs)}\n\n`);
+    }),
+    nyxara.events.on("validation.step_skipped", ({ kind, errorCode }) => {
+      io.write(`- ${validationLabel(kind)} (skipped${errorCode ? `: ${errorCode}` : ""})\n`);
+    }),
+  ];
+
+  try {
+    const result = await nyxara.validate({ workspaceRoot });
+    const failedStep = result.steps.find((step) =>
+      ["failed", "timed_out", "errored"].includes(step.status),
+    );
+    if (failedStep) {
+      if (failedStep.command) {
+        io.write(`\nCommand\n${failedStep.command.join(" ")}\n`);
+      }
+      if (failedStep.exitCode !== undefined) {
+        io.write(`\nExit code\n${failedStep.exitCode}\n`);
+      }
+      const output = [failedStep.stdout, failedStep.stderr]
+        .filter((value): value is string => Boolean(value))
+        .join("\n")
+        .trim();
+      if (output) {
+        io.write(`\nOutput\n${output}\n`);
+      }
+      if (failedStep.errorCode) {
+        io.write(`\nError\n${failedStep.errorCode}\n`);
+      }
+    }
+
+    io.write(`\nValidation\n${result.status === "passed" ? "PASS" : "FAIL"}\n`);
+    io.write(`\nDuration\n${formatDuration(result.durationMs)}\n`);
+  } finally {
+    unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }
+}
+
 function formatBytes(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+function validationLabel(kind: string): string {
+  if (kind === "test") return "Tests";
+  return kind.charAt(0).toUpperCase() + kind.slice(1);
+}
+
+function formatDuration(durationMs: number): string {
+  return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
 async function selectProvider(

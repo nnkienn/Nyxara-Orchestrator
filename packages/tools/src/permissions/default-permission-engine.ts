@@ -7,7 +7,7 @@ import type {
   PermissionRequest,
 } from "./permission.types.js";
 
-type CommandSafety = "safe" | "unknown" | "dangerous";
+type CommandSafety = "safe" | "validation" | "unknown" | "dangerous";
 
 const SAFE_COMMANDS = new Set(["pwd", "ls", "rg"]);
 const SHELL_COMMANDS = new Set([
@@ -27,9 +27,19 @@ const PRODUCTION_COMMANDS = new Set([
   "vercel",
   "flyctl",
 ]);
+const VALIDATION_SCRIPTS = new Set([
+  "typecheck",
+  "type-check",
+  "check-types",
+  "lint",
+  "test",
+  "test:unit",
+  "build",
+]);
 
 export class DefaultPermissionEngine implements PermissionEngine {
   private readonly safeCommandDecision: PermissionDecision;
+  private readonly validationCommandDecision: PermissionDecision;
   private readonly unknownCommandDecision: PermissionDecision;
   private readonly writeWorkspaceFileDecision: PermissionDecision;
   private readonly createWorkspaceFileDecision: PermissionDecision;
@@ -40,6 +50,7 @@ export class DefaultPermissionEngine implements PermissionEngine {
 
   constructor(policy: DefaultPermissionPolicy = {}) {
     this.safeCommandDecision = policy.safeCommand ?? "ask";
+    this.validationCommandDecision = policy.validationCommand ?? "allow";
     this.unknownCommandDecision = policy.unknownCommand ?? "ask";
     this.writeWorkspaceFileDecision = policy.writeWorkspaceFile ?? "ask";
     this.createWorkspaceFileDecision = policy.createWorkspaceFile ?? "allow";
@@ -101,6 +112,9 @@ export class DefaultPermissionEngine implements PermissionEngine {
     if (safety === "dangerous") {
       return "deny";
     }
+    if (safety === "validation") {
+      return this.validationCommandDecision;
+    }
 
     return safety === "safe"
       ? this.safeCommandDecision
@@ -148,9 +162,49 @@ export function classifyCommand(request: CommandRequest): CommandSafety {
       : "unknown";
   }
 
+  if (isValidationCommand(command, args)) {
+    return "validation";
+  }
+
   if (command === "node" && args.length === 1 && args[0] === "--version") {
     return "safe";
   }
 
   return SAFE_COMMANDS.has(command) ? "safe" : "unknown";
+}
+
+function isValidationCommand(
+  command: string,
+  args: readonly string[],
+): boolean {
+  if (
+    command === "pnpm" &&
+    args.length === 3 &&
+    args[0] === "exec" &&
+    args[1] === "tsc" &&
+    args[2] === "--noEmit"
+  ) {
+    return true;
+  }
+
+  if (["pnpm", "npm", "yarn"].includes(command)) {
+    const script = args[0] === "run" ? args[1] : args[0];
+    return (
+      typeof script === "string" &&
+      VALIDATION_SCRIPTS.has(script) &&
+      (args.length === 1 || (args[0] === "run" && args.length === 2))
+    );
+  }
+
+  if (command === "npx") {
+    return (
+      (args.length === 2 && args[0] === "tsc" && args[1] === "--noEmit") ||
+      (args.length === 3 &&
+        args[0] === "--no-install" &&
+        args[1] === "tsc" &&
+        args[2] === "--noEmit")
+    );
+  }
+
+  return false;
 }

@@ -4,7 +4,13 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { NyxaraOrchestrator } from "@nyxara/core";
 import { OpenAICompatibleProvider } from "@nyxara/providers";
-import { runCli, runExecuteCli, runInspectCli, runPlanCli } from "./cli.js";
+import {
+  runCli,
+  runExecuteCli,
+  runInspectCli,
+  runPlanCli,
+  runValidationCli,
+} from "./cli.js";
 import { EnvironmentCredentialStore } from "./environment-credential-store.js";
 
 const readline = createInterface({ input: stdin, output: stdout });
@@ -45,6 +51,8 @@ try {
     const argumentPrompt = cliArguments.slice(1).join(" ").trim();
     const prompt = argumentPrompt || (await io.question("Execution prompt:\n> "));
     await runExecuteCli(io, nyxara, workspaceRoot, prompt);
+  } else if (cliArguments[0] === "validate") {
+    await runValidationCli(io, nyxara, workspaceRoot);
   } else {
     await runCli(io, nyxara);
   }

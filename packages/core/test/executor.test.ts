@@ -49,6 +49,8 @@ describe("Executor", () => {
   it("executes one ready task through normalized tools and derives Git evidence", async () => {
     const generate = vi.fn(async (request: GenerateRequest) => {
       if (!request.conversation) {
+        expect(request.prompt).toContain("Assigned task T1");
+        expect(request.prompt).not.toContain("Update notification queries");
         return response({
           toolCalls: [
             {
@@ -79,10 +81,12 @@ describe("Executor", () => {
     });
     const nyxara = orchestrator(generate);
     const emitted: string[] = [];
+    nyxara.events.on("task.execution_started", () => emitted.push("task.started"));
     nyxara.events.on("executor.started", () => emitted.push("executor.started"));
     nyxara.events.on("file.write_started", () => emitted.push("file.started"));
     nyxara.events.on("file.write_completed", () => emitted.push("file.completed"));
     nyxara.events.on("executor.completed", () => emitted.push("executor.completed"));
+    nyxara.events.on("task.execution_completed", () => emitted.push("task.completed"));
     const plan = executionPlan();
 
     const executed = await nyxara.executeTask({
@@ -108,16 +112,23 @@ describe("Executor", () => {
       status: "completed",
       attempts: 1,
     });
+    expect(executed.model).toEqual({
+      role: "executor",
+      providerId: "fake",
+      modelId: "executor-model",
+    });
     expect(nyxara.getTaskExecutionStates(plan)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ taskId: "T2", status: "ready" }),
       ]),
     );
     expect(emitted).toEqual([
+      "task.started",
       "executor.started",
       "file.started",
       "file.completed",
       "executor.completed",
+      "task.completed",
     ]);
     await expect(readFile(join(workspace, "src/pagination.ts"), "utf8")).resolves.toContain(
       "interface Pagination",
@@ -152,13 +163,16 @@ describe("Executor", () => {
       });
       return response({
         text: JSON.stringify({
-          status: "failed",
-          summary: "Patch context did not match",
-          unresolvedIssues: ["The target must be read again"],
+          status: "completed",
+          summary: "The model claimed completion",
         }),
       });
     });
     const nyxara = orchestrator(generate);
+    const patchFailed = vi.fn();
+    const executorFailed = vi.fn();
+    nyxara.events.on("patch.failed", patchFailed);
+    nyxara.events.on("executor.failed", executorFailed);
 
     const executed = await nyxara.executeTask({
       plan: executionPlan(),
@@ -169,9 +183,17 @@ describe("Executor", () => {
     expect(executed.result).toMatchObject({
       status: "failed",
       changedFiles: [],
-      unresolvedIssues: ["The target must be read again"],
+      summary: "Executor stopped with unresolved tool failures",
+      unresolvedIssues: ["apply_patch failed with patch_failed"],
     });
     expect(executed.state.status).toBe("failed");
+    expect(patchFailed).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "patch_failed" }),
+    );
+    expect(executorFailed).toHaveBeenCalledOnce();
+    expect(nyxara.getTaskExecutionStates(executionPlan())).toContainEqual(
+      expect.objectContaining({ taskId: "T2", status: "blocked" }),
+    );
   });
 
   it("rejects unknown and blocked tasks before calling the model", async () => {
@@ -202,6 +224,8 @@ describe("Executor", () => {
     ).rejects.toMatchObject({ code: "executor_not_configured" });
 
     const unsupported = orchestrator(generate, false);
+    const failed = vi.fn();
+    unsupported.events.on("executor.failed", failed);
     await expect(
       unsupported.executeTask({
         plan: executionPlan(),
@@ -209,6 +233,9 @@ describe("Executor", () => {
         workspaceRoot: workspace,
       }),
     ).rejects.toMatchObject({ code: "unsupported_tool_calling" });
+    expect(failed).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "unsupported_tool_calling" }),
+    );
   });
 
   it("enforces tool-call and model-turn limits before executing tools", async () => {
