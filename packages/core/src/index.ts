@@ -35,6 +35,14 @@ export type {
   ValidationStartedEvent,
   ValidationStepEvent,
   ValidationStepStartedEvent,
+  ReviewerCompletedEvent,
+  ReviewerFailedEvent,
+  ReviewerStartedEvent,
+  ReviewContextExpandedEvent,
+  ReviewContextRequestedEvent,
+  ReviewValidationFailedEvent,
+  ReviewValidationPassedEvent,
+  ReviewValidationStartedEvent,
   WorkflowCompletedEvent,
   WorkflowFailedEvent,
   WorkflowStartedEvent,
@@ -70,6 +78,8 @@ export type {
   ContextBudget,
   ContextBundle,
   ContextFile,
+  ExpandedContext,
+  ExpandContextInput,
 } from "./context/context.types.js";
 export {
   ApproximateTokenEstimator,
@@ -134,6 +144,53 @@ export type {
   ValidationStepResult,
   ValidationStepStatus,
 } from "./validation/validation.types.js";
+export {
+  DEFAULT_REVIEW_EVIDENCE_BUDGET,
+  reviewContextBytes,
+  ReviewEvidenceBuilder,
+  resolveReviewEvidenceBudget,
+  truncateUtf8,
+} from "./review/review-evidence-builder.js";
+export { ReviewerError } from "./review/reviewer.errors.js";
+export type { ReviewerErrorCode } from "./review/reviewer.errors.js";
+export { Reviewer } from "./review/reviewer.js";
+export { ReviewerPromptBuilder } from "./review/reviewer-prompt-builder.js";
+export {
+  ReviewContextRequestSchema,
+  ReviewCriterionResultSchema,
+  ReviewFindingDraftSchema,
+  ReviewResultDraftSchema,
+} from "./review/reviewer.schema.js";
+export type { ReviewResultDraft } from "./review/reviewer.schema.js";
+export { ReviewStore } from "./review/review-store.js";
+export {
+  ReviewValidator,
+  validateReviewContextRequest,
+} from "./review/review-validator.js";
+export type {
+  ReviewContextEvidence,
+  ReviewContextExpansion,
+  ReviewContextRequest,
+  ReviewCriterionResult,
+  ReviewCriterionStatus,
+  ReviewDiffEvidence,
+  ReviewEvidenceBudget,
+  ReviewEvidenceBundle,
+  ReviewEvidenceInput,
+  ReviewerInput,
+  ReviewerLimits,
+  ReviewerRunInput,
+  ReviewerRunResult,
+  ReviewFinding,
+  ReviewFindingCategory,
+  ReviewFindingSeverity,
+  ReviewResult,
+  ReviewStatus,
+  ReviewTaskInput,
+  ReviewTaskResult,
+  ReviewValidationEvidence,
+  ReviewValidationStepEvidence,
+} from "./review/reviewer.types.js";
 export { NyxaraOrchestrator } from "./orchestrator/orchestrator.js";
 export type {
   ModelGenerateInput,

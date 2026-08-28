@@ -508,6 +508,23 @@ boundary, with per-step timeouts and bounded output. A validation command that
 changes tracked files causes a controlled failure. Phase 5 stops after returning
 structured deterministic evidence; it does not review or repair failures.
 
+### Phase 6 bounded AI review
+
+Run the development pipeline through one ready task, deterministic validation,
+and evidence-bounded review:
+
+```bash
+export NYXARA_OPENAI_API_KEY="your-api-key"
+pnpm --filter @nyxara/cli dev -- review "Add pagination to notification API"
+```
+
+The Reviewer receives the current task, acceptance criteria, filtered Git diff,
+bounded validation excerpts, and deduplicated Planner/Executor context. It has no
+repository or command tools. One specific, bounded context expansion is allowed
+through Core's Context Engine; broad scans are rejected. A deterministic
+validation failure cannot become a review PASS, and Phase 6 never invokes an
+automatic repair.
+
 ### Install globally
 
 ```bash

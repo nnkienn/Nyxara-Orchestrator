@@ -11,6 +11,7 @@ import {
   runExecuteCli,
   runInspectCli,
   runPlanCli,
+  runReviewCli,
   runValidationCli,
   type CliIO,
 } from "../src/cli.js";
@@ -375,5 +376,147 @@ describe("Nyxara validation CLI", () => {
     expect(output.join("")).toContain("✓ Typecheck");
     expect(output.join("")).toContain("- Lint (skipped)");
     expect(output.join("")).toContain("Validation\nPASS");
+  });
+});
+
+describe("Nyxara review CLI", () => {
+  it("renders Core evidence and review results without owning review logic", async () => {
+    const events = new EventBus<NyxaraEventMap>();
+    const task = {
+      id: "T1",
+      title: "Add pagination",
+      description: "Add page and limit",
+      dependencies: [],
+      acceptanceCriteria: ["Page works", "Limit works"],
+    } as const;
+    const plan = {
+      id: "18d64629-e102-4b50-9a7d-23ea14e99891",
+      objective: "Paginate notifications",
+      tasks: [task],
+      createdAt: "2026-08-28T00:00:00.000Z",
+    } as const;
+    const plannerContext = { marker: "planner-context" } as never;
+    const executorContext = { marker: "executor-context" } as never;
+    const execution = {
+      taskId: "T1",
+      status: "completed",
+      summary: "Implemented pagination",
+      changedFiles: ["src/notification.ts"],
+      toolCalls: 1,
+      modelTurns: 2,
+      diff: { files: ["src/notification.ts"], truncated: false },
+      git: {} as never,
+    } as const;
+    const validation = {
+      status: "passed",
+      packageManager: "pnpm",
+      steps: [],
+      startedAt: "2026-08-28T00:00:00.000Z",
+      completedAt: "2026-08-28T00:00:01.000Z",
+      durationMs: 1000,
+      taskId: "T1",
+    } as const;
+    const configureAgent = vi.fn();
+    const createPlan = vi.fn(async () => ({
+      plan,
+      context: plannerContext,
+      graph: new TaskGraph(plan),
+      model: {} as never,
+    }));
+    const executeTask = vi.fn(async () => {
+      events.emit("executor.completed", {
+        taskId: "T1",
+        providerId: "fake",
+        modelId: "model-1",
+        changedFileCount: 1,
+        toolCalls: 1,
+        modelTurns: 2,
+      });
+      return {
+        result: execution,
+        context: executorContext,
+        state: {} as never,
+        model: {} as never,
+      };
+    });
+    const validate = vi.fn(async () => {
+      events.emit("validation.step_passed", {
+        kind: "test",
+        status: "passed",
+        durationMs: 1000,
+      });
+      return validation;
+    });
+    const reviewTask = vi.fn(async () => {
+      events.emit("reviewer.started", {
+        taskId: "T1",
+        providerId: "fake",
+        modelId: "model-1",
+        diffBytes: 120,
+        contextBytes: 60,
+      });
+      return {
+        result: {
+          status: "passed",
+          summary: "Looks correct",
+          findings: [],
+          criteria: task.acceptanceCriteria.map((criterion) => ({
+            criterion,
+            status: "satisfied" as const,
+            reason: "Evidence supports it",
+          })),
+          reviewedAt: "2026-08-28T00:00:02.000Z",
+        },
+        evidence: {
+          changedFiles: ["src/notification.ts"],
+          diff: { content: "bounded diff" },
+          context: [{ content: "bounded context" }],
+        },
+        turns: 1,
+        contextExpansions: 0,
+        model: {},
+      } as never;
+    });
+    const nyxara = {
+      events,
+      listProviders: () => [
+        { id: "fake", displayName: "Fake Provider", capabilities: {} },
+      ],
+      listModels: async () => [
+        { id: "model-1", name: "Model One", provider: "fake" },
+      ],
+      configureAgent,
+      createPlan,
+      executeTask,
+      validate,
+      reviewTask,
+    } as unknown as NyxaraOrchestrator;
+    const answers = ["1", "1", "1", "1", "1", "1"];
+    const output: string[] = [];
+    const io: CliIO = {
+      write(message) {
+        output.push(message);
+      },
+      async question() {
+        return answers.shift() ?? "";
+      },
+    };
+
+    await runReviewCli(io, nyxara, "/workspace", "Add pagination");
+
+    expect(configureAgent).toHaveBeenCalledTimes(3);
+    expect(reviewTask).toHaveBeenCalledWith({
+      requirement: "Add pagination",
+      objective: plan.objective,
+      task,
+      execution,
+      validation,
+      executorContext,
+      plannerContext,
+    });
+    expect(output.join("")).toContain("✓ Tests");
+    expect(output.join("")).toContain("Review Evidence");
+    expect(output.join("")).toContain("✓ Page works");
+    expect(output.join("")).toContain("Review\nPASS");
   });
 });

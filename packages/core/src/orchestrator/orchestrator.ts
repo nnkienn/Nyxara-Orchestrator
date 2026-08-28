@@ -11,7 +11,10 @@ import {
   type ToolRegistry,
   type ToolRegistryEvent,
 } from "@nyxara/tools";
-import { AgentModelRegistry } from "../agents/agent-model-registry.js";
+import {
+  AgentModelConfigError,
+  AgentModelRegistry,
+} from "../agents/agent-model-registry.js";
 import type { AgentModelConfig, AgentRole } from "../agents/agent.types.js";
 import { ContextEngine } from "../context/context-engine.js";
 import type {
@@ -47,6 +50,22 @@ import type {
   ValidationConfig,
   ValidationResult,
 } from "../validation/validation.types.js";
+import {
+  reviewContextBytes,
+  ReviewEvidenceBuilder,
+  resolveReviewEvidenceBudget,
+} from "../review/review-evidence-builder.js";
+import { ReviewerError } from "../review/reviewer.errors.js";
+import { Reviewer } from "../review/reviewer.js";
+import { ReviewStore } from "../review/review-store.js";
+import { validateReviewContextRequest } from "../review/review-validator.js";
+import type {
+  ReviewEvidenceBudget,
+  ReviewerLimits,
+  ReviewResult,
+  ReviewTaskInput,
+  ReviewTaskResult,
+} from "../review/reviewer.types.js";
 import type {
   ModelGenerateInput,
   NyxaraOrchestratorConfig,
@@ -68,6 +87,11 @@ export class NyxaraOrchestrator {
   private readonly validationEngine: ValidationEngine;
   private readonly validationStore = new ValidationStore();
   private readonly validationConfig: ValidationConfig | undefined;
+  private readonly reviewer: Reviewer;
+  private readonly reviewEvidenceBuilder = new ReviewEvidenceBuilder();
+  private readonly reviewStore = new ReviewStore();
+  private readonly reviewEvidenceBudget: Partial<ReviewEvidenceBudget> | undefined;
+  private readonly reviewerLimits: Partial<ReviewerLimits> | undefined;
 
   constructor(config: NyxaraOrchestratorConfig = {}) {
     this.toolRegistry =
@@ -86,6 +110,9 @@ export class NyxaraOrchestrator {
     this.executorLimits = config.executorLimits;
     this.validationEngine = new ValidationEngine(this.toolRegistry, this.events);
     this.validationConfig = config.validation;
+    this.reviewer = new Reviewer(this.providerRegistry, this.events);
+    this.reviewEvidenceBudget = config.reviewEvidenceBudget;
+    this.reviewerLimits = config.reviewerLimits;
 
     for (const provider of config.providers ?? []) {
       this.registerProvider(provider);
@@ -271,6 +298,108 @@ export class NyxaraOrchestrator {
 
   getLatestValidationResult(): ValidationResult | undefined {
     return this.validationStore.getLatest();
+  }
+
+  async reviewTask(input: ReviewTaskInput): Promise<ReviewTaskResult> {
+    if (
+      input.execution.taskId !== input.task.id ||
+      (input.validation.taskId && input.validation.taskId !== input.task.id) ||
+      (input.plannerContext &&
+        input.plannerContext.workspaceRoot !== input.executorContext.workspaceRoot)
+    ) {
+      throw new ReviewerError(
+        "invalid_review",
+        "Review evidence must belong to the current task and workspace",
+      );
+    }
+    let model: AgentModelConfig;
+    try {
+      model = this.agentModels.get("reviewer");
+    } catch (error: unknown) {
+      if (error instanceof AgentModelConfigError) {
+        throw new ReviewerError(
+          "reviewer_not_configured",
+          "No provider/model is configured for the Reviewer role",
+        );
+      }
+      throw error;
+    }
+
+    const budget = resolveReviewEvidenceBudget({
+      ...this.reviewEvidenceBudget,
+      ...input.evidenceBudget,
+    });
+    const maxReviewerTurns =
+      input.limits?.maxReviewerTurns ??
+      this.reviewerLimits?.maxReviewerTurns ??
+      2;
+    const limits = {
+      ...this.reviewerLimits,
+      ...input.limits,
+      maxReviewerTurns,
+      maxContextExpansions: Math.min(
+        input.limits?.maxContextExpansions ??
+          this.reviewerLimits?.maxContextExpansions ??
+          budget.maxContextExpansions,
+        budget.maxContextExpansions,
+        maxReviewerTurns - 1,
+      ),
+    };
+    const evidence = this.reviewEvidenceBuilder.build({
+      requirement: input.requirement,
+      objective: input.objective,
+      task: input.task,
+      execution: input.execution,
+      validation: input.validation,
+      contexts: [
+        input.executorContext,
+        ...(input.plannerContext ? [input.plannerContext] : []),
+      ],
+      budget,
+    });
+    const reviewerInput = {
+      requirement: evidence.requirement,
+      objective: evidence.objective,
+      task: input.task,
+      execution: input.execution,
+      validation: input.validation,
+      evidence,
+    };
+    const reviewed = await this.reviewer.run({
+      input: reviewerInput,
+      model,
+      limits,
+      expandContext: async (request, currentEvidence) => {
+        validateReviewContextRequest(request);
+        const expanded = await this.contextEngine.expandTargeted({
+          workspaceRoot: input.executorContext.workspaceRoot,
+          ...(request.paths ? { paths: request.paths } : {}),
+          ...(request.symbols ? { symbols: request.symbols } : {}),
+          budget: {
+            maxFiles: budget.maxContextFiles,
+            maxBytes: budget.maxContextBytes,
+            maxBytesPerFile: budget.maxBytesPerContextFile,
+          },
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+        const expandedEvidence = this.reviewEvidenceBuilder.expand(
+          currentEvidence,
+          expanded.files,
+          budget,
+        );
+        return {
+          evidence: expandedEvidence,
+          fileCount: expanded.files.length,
+          contextBytes: reviewContextBytes(expandedEvidence),
+        };
+      },
+    });
+    this.reviewStore.set(input.task.id, reviewed.result);
+    return { ...reviewed, model };
+  }
+
+  getLatestReviewResult(taskId: string): ReviewResult | undefined {
+    return this.reviewStore.get(taskId);
   }
 
   private emitProviderFailure(

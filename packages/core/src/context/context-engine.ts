@@ -7,6 +7,8 @@ import type {
   ContextBudget,
   ContextBundle,
   ContextFile,
+  ExpandContextInput,
+  ExpandedContext,
 } from "./context.types.js";
 import {
   ApproximateTokenEstimator,
@@ -145,6 +147,67 @@ export class ContextEngine {
       });
       throw error;
     }
+  }
+
+  async expandTargeted(input: ExpandContextInput): Promise<ExpandedContext> {
+    const budget = this.resolveBudget(input.budget);
+    const paths = [...new Set(input.paths ?? [])];
+    const symbols = [...new Set(input.symbols ?? [])];
+    if (paths.length + symbols.length === 0) {
+      throw new NyxaraToolError(
+        "context_error",
+        "Targeted context expansion requires a path or symbol",
+      );
+    }
+
+    const repository = new Repository(
+      input.workspaceRoot,
+      this.tools,
+      input.signal,
+    );
+    const candidates = new Map<string, string>();
+    for (const path of paths) {
+      candidates.set(path, "Reviewer requested this specific path");
+    }
+    for (const symbol of symbols) {
+      const matches = await repository.searchCode(symbol, budget.maxFiles * 4);
+      for (const match of matches.matches) {
+        if (!candidates.has(match.path)) {
+          candidates.set(match.path, `Reviewer requested symbol "${symbol}"`);
+        }
+      }
+    }
+
+    const files: ContextFile[] = [];
+    let totalBytes = 0;
+    let truncated = false;
+    for (const [path, reason] of candidates) {
+      if (files.length >= budget.maxFiles || totalBytes >= budget.maxBytes) {
+        truncated = true;
+        break;
+      }
+      const readLimit = Math.min(
+        budget.maxBytesPerFile,
+        budget.maxBytes - totalBytes,
+      );
+      if (readLimit <= 0) {
+        truncated = true;
+        break;
+      }
+      const result = await repository.readFile(path, readLimit);
+      const contentBytes = Buffer.byteLength(result.content, "utf8");
+      files.push({
+        path: result.path,
+        content: result.content,
+        reason,
+        size: result.size,
+        truncated: result.truncated,
+      });
+      totalBytes += contentBytes;
+      truncated ||= result.truncated;
+    }
+
+    return { files, totalBytes, truncated };
   }
 
   private async findCandidates(

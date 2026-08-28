@@ -3,6 +3,10 @@ import type { ToolRegistry } from "@nyxara/tools";
 import type { AgentModelConfig } from "../agents/agent.types.js";
 import type { ExecutorLimits } from "../executor/executor.types.js";
 import type { ValidationConfig } from "../validation/validation.types.js";
+import type {
+  ReviewerLimits,
+  ReviewEvidenceBudget,
+} from "../review/reviewer.types.js";
 
 export interface RunInput {
   readonly workspace: string;
@@ -15,6 +19,8 @@ export interface NyxaraOrchestratorConfig {
   readonly agents?: readonly AgentModelConfig[];
   readonly executorLimits?: Partial<ExecutorLimits>;
   readonly validation?: ValidationConfig;
+  readonly reviewEvidenceBudget?: Partial<ReviewEvidenceBudget>;
+  readonly reviewerLimits?: Partial<ReviewerLimits>;
 }
 
 export interface ModelGenerateInput {

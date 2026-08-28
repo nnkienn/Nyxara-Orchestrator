@@ -255,6 +255,99 @@ export async function runValidationCli(
   }
 }
 
+export async function runReviewCli(
+  io: CliIO,
+  nyxara: NyxaraOrchestrator,
+  workspaceRoot: string,
+  prompt: string,
+): Promise<void> {
+  io.write("NYXARA ORCHESTRATOR\n\n");
+  io.write(`Workspace\n${workspaceRoot}\n\n`);
+
+  const roles = [] as Array<{
+    role: "planner" | "executor" | "reviewer";
+    provider: ProviderInfo;
+    model: ModelInfo;
+  }>;
+  for (const role of ["planner", "executor", "reviewer"] as const) {
+    io.write(`${validationLabel(role)} configuration\n`);
+    const provider = await selectProvider(io, nyxara.listProviders());
+    const model = await selectModel(io, await nyxara.listModels(provider.id));
+    nyxara.configureAgent({ role, providerId: provider.id, modelId: model.id });
+    roles.push({ role, provider, model });
+    io.write("\n");
+  }
+  const reviewerRole = roles.find((entry) => entry.role === "reviewer")!;
+
+  const unsubscribers = [
+    nyxara.events.on("planner.completed", () => io.write("✓ Plan created\n")),
+    nyxara.events.on("executor.completed", () => io.write("✓ Task executed\n")),
+    nyxara.events.on("validation.step_passed", ({ kind }) =>
+      io.write(`✓ ${validationLabel(kind)}\n`),
+    ),
+    nyxara.events.on("reviewer.started", () => {
+      io.write(
+        `\n● Reviewer\n  Provider: ${reviewerRole.provider.displayName}\n  Model: ${reviewerRole.model.name}\n`,
+      );
+    }),
+    nyxara.events.on("review.context_requested", () => {
+      io.write("Additional targeted context required\n");
+    }),
+    nyxara.events.on("review.context_expanded", ({ fileCount }) => {
+      io.write(`✓ Context expanded (${fileCount} files)\n`);
+    }),
+  ];
+
+  try {
+    const planned = await nyxara.createPlan({ workspaceRoot, prompt });
+    const task = planned.graph.getReadyTasks()[0];
+    if (!task) throw new Error("The plan has no ready task to review");
+    const executed = await nyxara.executeTask({
+      plan: planned.plan,
+      taskId: task.id,
+      workspaceRoot,
+    });
+    const validation = await nyxara.validate({
+      workspaceRoot,
+      planId: planned.plan.id,
+      taskId: task.id,
+    });
+    if (validation.status === "failed") {
+      io.write("\nValidation\nFAIL\n\nReview skipped: deterministic validation failed.\n");
+      return;
+    }
+    const reviewed = await nyxara.reviewTask({
+      requirement: prompt,
+      objective: planned.plan.objective,
+      task,
+      execution: executed.result,
+      validation,
+      executorContext: executed.context,
+      plannerContext: planned.context,
+    });
+
+    io.write("\nReview Evidence\n\n");
+    io.write(`Task\n${task.title}\n\n`);
+    io.write(`Acceptance Criteria\n${task.acceptanceCriteria.length}\n\n`);
+    io.write(`Changed Files\n${reviewed.evidence.changedFiles.length}\n\n`);
+    io.write(`Diff\n${formatBytes(Buffer.byteLength(reviewed.evidence.diff.content, "utf8"))}\n\n`);
+    io.write(
+      `Relevant Context\n${reviewed.evidence.context.length} snippets / ${formatBytes(reviewed.evidence.context.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0))}\n\n`,
+    );
+    io.write(`Validation\n${validation.status === "passed" ? "PASS" : "FAIL"}\n\n`);
+    io.write("Acceptance Criteria\n\n");
+    for (const criterion of reviewed.result.criteria) {
+      const marker = criterion.status === "satisfied" ? "✓" : "✗";
+      io.write(`${marker} ${criterion.criterion}\n`);
+    }
+    io.write(
+      `\nReview\n${reviewed.result.status === "passed" ? "PASS" : "FAIL"}\n`,
+    );
+  } finally {
+    unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }
+}
+
 function formatBytes(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 }

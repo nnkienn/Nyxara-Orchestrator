@@ -205,6 +205,58 @@ export interface ValidationFailedEvent {
   readonly failedKinds: readonly ("typecheck" | "lint" | "test" | "build")[];
 }
 
+export interface ReviewerStartedEvent {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly diffBytes: number;
+  readonly contextBytes: number;
+}
+
+export interface ReviewerCompletedEvent {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly status: "passed" | "failed";
+  readonly findingCount: number;
+  readonly durationMs: number;
+  readonly turns: number;
+  readonly contextExpansions: number;
+}
+
+export interface ReviewerFailedEvent {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly code: string;
+  readonly durationMs: number;
+}
+
+export interface ReviewValidationStartedEvent {
+  readonly taskId: string;
+}
+
+export interface ReviewValidationPassedEvent extends ReviewValidationStartedEvent {
+  readonly status: "passed" | "failed" | "needs_more_context";
+  readonly criterionCount: number;
+}
+
+export interface ReviewValidationFailedEvent extends ReviewValidationStartedEvent {
+  readonly code: string;
+}
+
+export interface ReviewContextRequestedEvent extends ReviewValidationStartedEvent {
+  readonly pathCount: number;
+  readonly symbolCount: number;
+  readonly reasonCount: number;
+}
+
+export interface ReviewContextExpandedEvent extends ReviewValidationStartedEvent {
+  readonly fileCount: number;
+  readonly contextBytes: number;
+  readonly expansion: number;
+}
+
 export interface NyxaraEventMap {
   readonly "workflow.started": WorkflowStartedEvent;
   readonly "workflow.completed": WorkflowCompletedEvent;
@@ -248,4 +300,12 @@ export interface NyxaraEventMap {
   readonly "validation.step_failed": ValidationStepEvent;
   readonly "validation.step_skipped": ValidationStepEvent;
   readonly "validation.step_timed_out": ValidationStepEvent;
+  readonly "reviewer.started": ReviewerStartedEvent;
+  readonly "reviewer.completed": ReviewerCompletedEvent;
+  readonly "reviewer.failed": ReviewerFailedEvent;
+  readonly "review.validation_started": ReviewValidationStartedEvent;
+  readonly "review.validation_passed": ReviewValidationPassedEvent;
+  readonly "review.validation_failed": ReviewValidationFailedEvent;
+  readonly "review.context_requested": ReviewContextRequestedEvent;
+  readonly "review.context_expanded": ReviewContextExpandedEvent;
 }

@@ -34,3 +34,16 @@ export interface BuildContextInput {
   readonly signal?: AbortSignal;
 }
 
+export interface ExpandContextInput {
+  readonly workspaceRoot: string;
+  readonly paths?: readonly string[];
+  readonly symbols?: readonly string[];
+  readonly budget?: Partial<ContextBudget>;
+  readonly signal?: AbortSignal;
+}
+
+export interface ExpandedContext {
+  readonly files: readonly ContextFile[];
+  readonly totalBytes: number;
+  readonly truncated: boolean;
+}

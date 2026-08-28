@@ -9,6 +9,7 @@ import {
   runExecuteCli,
   runInspectCli,
   runPlanCli,
+  runReviewCli,
   runValidationCli,
 } from "./cli.js";
 import { EnvironmentCredentialStore } from "./environment-credential-store.js";
@@ -53,6 +54,10 @@ try {
     await runExecuteCli(io, nyxara, workspaceRoot, prompt);
   } else if (cliArguments[0] === "validate") {
     await runValidationCli(io, nyxara, workspaceRoot);
+  } else if (cliArguments[0] === "review") {
+    const argumentPrompt = cliArguments.slice(1).join(" ").trim();
+    const prompt = argumentPrompt || (await io.question("Review prompt:\n> "));
+    await runReviewCli(io, nyxara, workspaceRoot, prompt);
   } else {
     await runCli(io, nyxara);
   }
