@@ -316,6 +316,88 @@ describe("Executor", () => {
     ).rejects.toMatchObject({ code: "write_permission_denied" });
   });
 
+  it("keeps the same permission boundary for automatic repair writes", async () => {
+    let turn = 0;
+    const generate = vi.fn(async (request: GenerateRequest) => {
+      turn += 1;
+      if (turn === 1) {
+        return response({
+          toolCalls: [
+            {
+              id: "initial-write",
+              name: "write_file",
+              arguments: {
+                path: "src/initial.ts",
+                content: "export const initial = true;\n",
+              },
+            },
+          ],
+        });
+      }
+      if (turn === 2) {
+        return response({
+          text: JSON.stringify({ status: "completed", summary: "Initial task done" }),
+        });
+      }
+      expect(request.prompt).toContain("You are repairing an existing implementation.");
+      if (turn === 3) {
+        return response({
+          toolCalls: [
+            {
+              id: "repair-unsafe-write",
+              name: "write_file",
+              arguments: { path: ".env", content: "SECRET=do-not-write\n" },
+            },
+          ],
+        });
+      }
+      return response({
+        text: JSON.stringify({ status: "completed", summary: "Claimed repair" }),
+      });
+    });
+    const nyxara = orchestrator(generate);
+    const executed = await nyxara.executeTask({
+      plan: executionPlan(),
+      taskId: "T1",
+      workspaceRoot: workspace,
+    });
+    const repaired = await nyxara.repairTask({
+      requirement: "Add notification pagination",
+      objective: "Add pagination contract",
+      plan: executionPlan(),
+      taskId: "T1",
+      workspaceRoot: workspace,
+      execution: executed.result,
+      validation: {
+        status: "failed",
+        packageManager: "pnpm",
+        startedAt: "2026-08-29T00:00:00.000Z",
+        completedAt: "2026-08-29T00:00:01.000Z",
+        durationMs: 1000,
+        taskId: "T1",
+        steps: [
+          {
+            kind: "typecheck",
+            status: "failed",
+            required: true,
+            source: "discovered",
+            durationMs: 100,
+            stderr: "src/notification.ts(1,1): error TS2322: broken",
+            errorCode: "validation_failed",
+          },
+        ],
+      },
+      executorContext: executed.context,
+    });
+
+    expect(repaired.status).toBe("failed");
+    expect(repaired.finalValidation?.status).toBe("failed");
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: expect.stringContaining("You are repairing") }),
+    );
+    await expect(readFile(join(workspace, ".env"), "utf8")).rejects.toThrow();
+  });
+
   it("reports obvious concurrent workspace changes", async () => {
     let turn = 0;
     const generate = vi.fn(async () => {

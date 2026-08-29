@@ -43,10 +43,54 @@ export type {
   ReviewValidationFailedEvent,
   ReviewValidationPassedEvent,
   ReviewValidationStartedEvent,
+  RepairEvent,
   WorkflowCompletedEvent,
   WorkflowFailedEvent,
   WorkflowStartedEvent,
 } from "./events/event.types.js";
+export {
+  relevantDiff,
+  RepairEvidenceBuilder,
+} from "./repair/repair-evidence-builder.js";
+export {
+  deduplicateFindings,
+  findingKey,
+  RepairTaskBuilder,
+  reviewFindings,
+  validationFailureDetails,
+  validationFindings,
+} from "./repair/repair-task-builder.js";
+export {
+  DEFAULT_REPAIR_LIMITS,
+  RepairOrchestrator,
+  resolveRepairLimits,
+} from "./repair/repair-orchestrator.js";
+export { RepairCycleStore } from "./repair/repair-cycle-store.js";
+export { RepairError } from "./repair/repair.errors.js";
+export type { RepairErrorCode } from "./repair/repair.errors.js";
+export type { BuildRepairTaskInput } from "./repair/repair-task-builder.js";
+export type { BuildRepairEvidenceInput } from "./repair/repair-evidence-builder.js";
+export type {
+  RepairContextEvidence,
+  RepairContextRequest,
+  RepairCycleHistory,
+  RepairCycleState,
+  RepairCycleStatus,
+  RepairEvidence,
+  RepairExecutorInput as RepairExecutorTaskInput,
+  RepairFinding,
+  RepairLimits,
+  RepairOperations,
+  RepairReason,
+  RepairResult,
+  RepairResultStatus,
+  RepairReviewEvidence,
+  RepairReviewRequest,
+  RepairTask,
+  RepairValidationEvidence,
+  RepairValidateRequest,
+  RepairWorkflowInput,
+} from "./repair/repair.types.js";
 export {
   AgentModelConfigError,
   AgentModelRegistry,
@@ -69,6 +113,8 @@ export type {
   ExecutorInput,
   ExecutorLimits,
   ExecutorRunInput,
+  RepairExecutorInput,
+  RepairExecutorRunInput,
   TaskExecutionState,
   TaskExecutionStatus,
 } from "./executor/executor.types.js";
@@ -195,6 +241,8 @@ export { NyxaraOrchestrator } from "./orchestrator/orchestrator.js";
 export type {
   ModelGenerateInput,
   NyxaraOrchestratorConfig,
+  RepairTaskInput,
+  RepairTaskResult,
   RunInput,
 } from "./orchestrator/orchestrator.types.js";
 export {

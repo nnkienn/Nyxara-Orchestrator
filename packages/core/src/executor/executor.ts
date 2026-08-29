@@ -28,6 +28,8 @@ import {
   type ExecutorLimits,
   type ExecutorRunInput,
   type ExecutorToolOutcome,
+  type RepairExecutorInput,
+  type RepairExecutorRunInput,
 } from "./executor.types.js";
 
 const DEFAULT_LIMITS: ExecutorLimits = {
@@ -45,6 +47,38 @@ export class Executor {
   ) {}
 
   async run(runInput: ExecutorRunInput): Promise<ExecutionResult> {
+    return this.runInternal(runInput);
+  }
+
+  /**
+   * Bounded repair turn for an already-executed task. The Executor is reused as
+   * is: same tools, same permissions, same limits. Only the prompt and the
+   * bounded failure evidence change.
+   */
+  async executeRepair(
+    runInput: RepairExecutorRunInput,
+  ): Promise<ExecutionResult> {
+    return this.runInternal(
+      {
+        input: {
+          task: runInput.input.originalTask,
+          objective: runInput.input.repairTask.objective,
+          workspaceRoot: runInput.input.workspaceRoot,
+          context: runInput.input.context,
+          attempt: runInput.input.attempt,
+          ...(runInput.input.signal ? { signal: runInput.input.signal } : {}),
+        },
+        model: runInput.model,
+        ...(runInput.limits ? { limits: runInput.limits } : {}),
+      },
+      runInput.input,
+    );
+  }
+
+  private async runInternal(
+    runInput: ExecutorRunInput,
+    repairInput?: RepairExecutorInput,
+  ): Promise<ExecutionResult> {
     const { input, model } = runInput;
     const limits = resolveLimits(runInput.limits);
     this.events.emit("executor.started", {
@@ -91,10 +125,9 @@ export class Executor {
         );
       }
 
-      const prompt = this.promptBuilder.build(
-        input,
-        EXECUTOR_TOOL_DEFINITIONS,
-      );
+      const prompt = repairInput
+        ? this.promptBuilder.buildRepair(repairInput, EXECUTOR_TOOL_DEFINITIONS)
+        : this.promptBuilder.build(input, EXECUTOR_TOOL_DEFINITIONS);
       const conversation: ModelConversationMessage[] = [];
       const callIds = new Set<string>();
       const changedPaths = new Set<string>();

@@ -11,6 +11,7 @@ import {
   runExecuteCli,
   runInspectCli,
   runPlanCli,
+  runRepairCli,
   runReviewCli,
   runValidationCli,
   type CliIO,
@@ -518,5 +519,170 @@ describe("Nyxara review CLI", () => {
     expect(output.join("")).toContain("Review Evidence");
     expect(output.join("")).toContain("✓ Page works");
     expect(output.join("")).toContain("Review\nPASS");
+  });
+});
+
+describe("Nyxara repair CLI", () => {
+  it("runs the bounded development flow and renders repair progress", async () => {
+    const events = new EventBus<NyxaraEventMap>();
+    const task = {
+      id: "T1",
+      title: "Add pagination metadata",
+      description: "Return totalPages",
+      dependencies: [],
+      acceptanceCriteria: ["Response exposes totalPages"],
+      relevantFiles: ["src/notification.ts"],
+    } as const;
+    const plan = {
+      id: "18d64629-e102-4b50-9a7d-23ea14e99891",
+      objective: "Paginate notifications",
+      tasks: [task],
+      createdAt: "2026-08-30T00:00:00.000Z",
+    } as const;
+    const plannerContext = { marker: "planner" } as never;
+    const executorContext = { marker: "executor" } as never;
+    const execution = {
+      taskId: "T1",
+      status: "completed",
+      summary: "Added metadata",
+      changedFiles: ["src/notification.ts"],
+      toolCalls: 1,
+      modelTurns: 2,
+      diff: { files: ["src/notification.ts"], truncated: false },
+      git: {} as never,
+    } as const;
+    const validation = {
+      status: "passed",
+      packageManager: "pnpm",
+      steps: [],
+      startedAt: "2026-08-30T00:00:00.000Z",
+      completedAt: "2026-08-30T00:00:01.000Z",
+      durationMs: 1000,
+      taskId: "T1",
+    } as const;
+    const review = {
+      status: "failed",
+      summary: "Boundary handling is missing",
+      findings: [
+        {
+          id: "F1",
+          severity: "error",
+          category: "correctness",
+          message: "Missing totalPages boundary handling",
+          file: "src/notification.ts",
+          line: 42,
+          taskId: "T1",
+        },
+      ],
+      criteria: [
+        {
+          criterion: "Response exposes totalPages",
+          status: "unsatisfied",
+          reason: "Boundary handling is missing",
+        },
+      ],
+      reviewedAt: "2026-08-30T00:00:02.000Z",
+    } as const;
+    const configureAgent = vi.fn();
+    const createPlan = vi.fn(async () => {
+      events.emit("planner.completed", {
+        planId: plan.id,
+        providerId: "fake",
+        modelId: "model-1",
+        taskCount: 1,
+      });
+      return {
+        plan,
+        context: plannerContext,
+        graph: new TaskGraph(plan),
+        model: {} as never,
+      };
+    });
+    const executeTask = vi.fn(async () => ({
+      result: execution,
+      context: executorContext,
+      state: {} as never,
+      model: {} as never,
+    }));
+    const validate = vi.fn(async () => validation);
+    const reviewTask = vi.fn(async () => ({ result: review } as never));
+    const repairTask = vi.fn(async () => {
+      events.emit("repair.cycle_started", { taskId: "T1", cycle: 1 });
+      events.emit("repair.task_created", {
+        taskId: "T1",
+        cycle: 1,
+        repairTaskId: "repair-T1-1",
+        findingCount: 1,
+      });
+      events.emit("repair.execution_started", { taskId: "T1", cycle: 1 });
+      events.emit("repair.execution_completed", {
+        taskId: "T1",
+        cycle: 1,
+        changedFileCount: 1,
+      });
+      events.emit("repair.validation_passed", { taskId: "T1", cycle: 1 });
+      events.emit("repair.review_started", { taskId: "T1", cycle: 1 });
+      events.emit("repair.review_passed", { taskId: "T1", cycle: 1 });
+      return {
+        taskId: "T1",
+        status: "passed",
+        cycles: 1,
+        executorAttempts: 1,
+        validationAttempts: 1,
+        reviewAttempts: 1,
+        finalExecution: execution,
+        finalValidation: validation,
+        changedFiles: ["src/notification.ts"],
+        history: [],
+        completedAt: "2026-08-30T00:00:03.000Z",
+      } as const;
+    });
+    const nyxara = {
+      events,
+      listProviders: () => [
+        { id: "fake", displayName: "Fake Provider", capabilities: {} },
+      ],
+      listModels: async () => [
+        { id: "model-1", name: "Model One", provider: "fake" },
+      ],
+      configureAgent,
+      createPlan,
+      executeTask,
+      validate,
+      reviewTask,
+      repairTask,
+    } as unknown as NyxaraOrchestrator;
+    const answers = ["1", "1", "1", "1", "1", "1"];
+    const output: string[] = [];
+    const io: CliIO = {
+      write(message) {
+        output.push(message);
+      },
+      async question() {
+        return answers.shift() ?? "";
+      },
+    };
+
+    await runRepairCli(io, nyxara, "/workspace", "Add pagination");
+
+    expect(configureAgent).toHaveBeenCalledTimes(3);
+    expect(repairTask).toHaveBeenCalledWith({
+      requirement: "Add pagination",
+      objective: plan.objective,
+      plan,
+      taskId: "T1",
+      workspaceRoot: "/workspace",
+      execution,
+      validation,
+      review,
+      executorContext,
+      plannerContext,
+    });
+    const rendered = output.join("");
+    expect(rendered).toContain("Repair Cycle 1");
+    expect(rendered).toContain("● Executor repairing");
+    expect(rendered).toContain("✓ Validation passed");
+    expect(rendered).toContain("✓ Acceptance criteria satisfied");
+    expect(rendered).toContain("Repair\nPASS");
   });
 });

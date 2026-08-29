@@ -257,6 +257,17 @@ export interface ReviewContextExpandedEvent extends ReviewValidationStartedEvent
   readonly expansion: number;
 }
 
+export interface RepairEvent {
+  readonly taskId: string;
+  readonly cycle?: number;
+  readonly status?: string;
+  readonly repairTaskId?: string;
+  readonly attempt?: number;
+  readonly changedFileCount?: number;
+  readonly findingCount?: number;
+  readonly reason?: string;
+}
+
 export interface NyxaraEventMap {
   readonly "workflow.started": WorkflowStartedEvent;
   readonly "workflow.completed": WorkflowCompletedEvent;
@@ -308,4 +319,19 @@ export interface NyxaraEventMap {
   readonly "review.validation_failed": ReviewValidationFailedEvent;
   readonly "review.context_requested": ReviewContextRequestedEvent;
   readonly "review.context_expanded": ReviewContextExpandedEvent;
+  readonly "repair.started": RepairEvent;
+  readonly "repair.cycle_started": RepairEvent;
+  readonly "repair.task_created": RepairEvent;
+  readonly "repair.execution_started": RepairEvent;
+  readonly "repair.execution_completed": RepairEvent;
+  readonly "repair.validation_started": RepairEvent;
+  readonly "repair.validation_failed": RepairEvent;
+  readonly "repair.validation_passed": RepairEvent;
+  readonly "repair.review_started": RepairEvent;
+  readonly "repair.review_failed": RepairEvent;
+  readonly "repair.review_passed": RepairEvent;
+  readonly "repair.stalled": RepairEvent;
+  readonly "repair.limit_reached": RepairEvent;
+  readonly "repair.completed": RepairEvent;
+  readonly "repair.failed": RepairEvent;
 }

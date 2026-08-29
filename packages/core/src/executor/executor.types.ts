@@ -8,6 +8,7 @@ import type {
   ExecutionPlan,
   PlannedTask,
 } from "../planner/planner.types.js";
+import type { RepairEvidence, RepairTask } from "../repair/repair.types.js";
 
 export type TaskExecutionStatus =
   | "pending"
@@ -34,6 +35,22 @@ export interface ExecutorLimits {
 
 export interface ExecutorRunInput {
   readonly input: ExecutorInput;
+  readonly model: AgentModelConfig;
+  readonly limits?: Partial<ExecutorLimits>;
+}
+
+export interface RepairExecutorInput {
+  readonly originalTask: PlannedTask;
+  readonly repairTask: RepairTask;
+  readonly workspaceRoot: string;
+  readonly context: ContextBundle;
+  readonly evidence: RepairEvidence;
+  readonly attempt: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface RepairExecutorRunInput {
+  readonly input: RepairExecutorInput;
   readonly model: AgentModelConfig;
   readonly limits?: Partial<ExecutorLimits>;
 }

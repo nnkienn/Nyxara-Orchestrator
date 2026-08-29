@@ -9,6 +9,7 @@ import {
   runExecuteCli,
   runInspectCli,
   runPlanCli,
+  runRepairCli,
   runReviewCli,
   runValidationCli,
 } from "./cli.js";
@@ -58,6 +59,10 @@ try {
     const argumentPrompt = cliArguments.slice(1).join(" ").trim();
     const prompt = argumentPrompt || (await io.question("Review prompt:\n> "));
     await runReviewCli(io, nyxara, workspaceRoot, prompt);
+  } else if (cliArguments[0] === "repair") {
+    const argumentPrompt = cliArguments.slice(1).join(" ").trim();
+    const prompt = argumentPrompt || (await io.question("Repair prompt:\n> "));
+    await runRepairCli(io, nyxara, workspaceRoot, prompt);
   } else {
     await runCli(io, nyxara);
   }

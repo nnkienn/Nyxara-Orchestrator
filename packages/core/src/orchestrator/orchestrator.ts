@@ -66,9 +66,17 @@ import type {
   ReviewTaskInput,
   ReviewTaskResult,
 } from "../review/reviewer.types.js";
+import { RepairOrchestrator } from "../repair/repair-orchestrator.js";
+import { RepairError } from "../repair/repair.errors.js";
+import type {
+  RepairLimits,
+  RepairOperations,
+  RepairResult,
+} from "../repair/repair.types.js";
 import type {
   ModelGenerateInput,
   NyxaraOrchestratorConfig,
+  RepairTaskInput,
   RunInput,
 } from "./orchestrator.types.js";
 
@@ -92,6 +100,8 @@ export class NyxaraOrchestrator {
   private readonly reviewStore = new ReviewStore();
   private readonly reviewEvidenceBudget: Partial<ReviewEvidenceBudget> | undefined;
   private readonly reviewerLimits: Partial<ReviewerLimits> | undefined;
+  private readonly repairOrchestrator: RepairOrchestrator;
+  private readonly repairLimits: Partial<RepairLimits> | undefined;
 
   constructor(config: NyxaraOrchestratorConfig = {}) {
     this.toolRegistry =
@@ -113,6 +123,8 @@ export class NyxaraOrchestrator {
     this.reviewer = new Reviewer(this.providerRegistry, this.events);
     this.reviewEvidenceBudget = config.reviewEvidenceBudget;
     this.reviewerLimits = config.reviewerLimits;
+    this.repairLimits = config.repairLimits;
+    this.repairOrchestrator = new RepairOrchestrator(this.executor, this.events);
 
     for (const provider of config.providers ?? []) {
       this.registerProvider(provider);
@@ -400,6 +412,104 @@ export class NyxaraOrchestrator {
 
   getLatestReviewResult(taskId: string): ReviewResult | undefined {
     return this.reviewStore.get(taskId);
+  }
+
+  /**
+   * Bounded automatic repair for one already-executed task. The loop reuses the
+   * existing Executor, Validation, and Reviewer boundaries: it never replans and
+   * never rescans the repository.
+   */
+  async repairTask(input: RepairTaskInput): Promise<RepairResult> {
+    const plan = new PlanValidator().validate(input.plan);
+    const task = plan.tasks.find((candidate) => candidate.id === input.taskId);
+    if (!task) {
+      throw new RepairError(
+        "task_not_found",
+        `Plan task does not exist: ${input.taskId}`,
+      );
+    }
+    if (input.execution.taskId !== task.id) {
+      throw new RepairError(
+        "repair_error",
+        "Repair evidence must belong to the task being repaired",
+      );
+    }
+    let model: AgentModelConfig;
+    try {
+      model = this.agentModels.get("executor");
+    } catch {
+      throw new ExecutorError(
+        "executor_not_configured",
+        "No provider/model is configured for the Executor role",
+      );
+    }
+
+    const operations: RepairOperations = {
+      validate: (request) =>
+        this.validate({
+          workspaceRoot: request.workspaceRoot,
+          taskId: request.taskId,
+          planId: plan.id,
+          ...(request.config ? { config: request.config } : {}),
+          ...(request.signal ? { signal: request.signal } : {}),
+        }),
+      review: async (request) => {
+        const reviewed = await this.reviewTask({
+          requirement: request.requirement,
+          objective: request.objective,
+          task: request.task,
+          execution: request.execution,
+          validation: request.validation,
+          executorContext: request.executorContext,
+          ...(request.plannerContext
+            ? { plannerContext: request.plannerContext }
+            : {}),
+          ...(request.evidenceBudget
+            ? { evidenceBudget: request.evidenceBudget }
+            : {}),
+          ...(request.limits ? { limits: request.limits } : {}),
+          ...(request.signal ? { signal: request.signal } : {}),
+        });
+        return reviewed.result;
+      },
+      expandContext: async (request) => {
+        const expanded = await this.contextEngine.expandTargeted({
+          workspaceRoot: request.workspaceRoot,
+          paths: request.paths,
+          ...(request.symbols.length > 0 ? { symbols: request.symbols } : {}),
+          ...(request.signal ? { signal: request.signal } : {}),
+        });
+        return expanded.files;
+      },
+    };
+
+    const executorLimits = { ...this.executorLimits, ...input.executorLimits };
+    const limits = { ...this.repairLimits, ...input.limits };
+    return this.repairOrchestrator.run(
+      {
+        requirement: input.requirement,
+        objective: input.objective,
+        originalTask: task,
+        workspaceRoot: input.workspaceRoot,
+        execution: input.execution,
+        validation: input.validation,
+        ...(input.review ? { review: input.review } : {}),
+        executorContext: input.executorContext,
+        ...(input.plannerContext ? { plannerContext: input.plannerContext } : {}),
+        ...(input.validationConfig
+          ? { validationConfig: input.validationConfig }
+          : {}),
+        ...(Object.keys(executorLimits).length > 0 ? { executorLimits } : {}),
+        ...(input.reviewerLimits ? { reviewerLimits: input.reviewerLimits } : {}),
+        ...(input.reviewEvidenceBudget
+          ? { reviewEvidenceBudget: input.reviewEvidenceBudget }
+          : {}),
+        ...(Object.keys(limits).length > 0 ? { limits } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+      },
+      model,
+      operations,
+    );
   }
 
   private emitProviderFailure(

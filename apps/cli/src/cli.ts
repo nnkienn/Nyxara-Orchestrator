@@ -1,5 +1,7 @@
 import {
   type NyxaraOrchestrator,
+  type RepairResult,
+  type ReviewResult,
 } from "@nyxara/core";
 import type { ModelInfo, ProviderInfo } from "@nyxara/provider-sdk";
 
@@ -427,4 +429,151 @@ async function selectOption(
   }
 
   return selected.id;
+}
+
+export async function runRepairCli(
+  io: CliIO,
+  nyxara: NyxaraOrchestrator,
+  workspaceRoot: string,
+  prompt: string,
+): Promise<void> {
+  io.write("NYXARA AUTONOMOUS DEVELOPMENT\n\n");
+  io.write("Workspace\n" + workspaceRoot + "\n\n");
+
+  for (const role of ["planner", "executor", "reviewer"] as const) {
+    io.write(roleLabel(role) + " configuration\n");
+    const provider = await selectProvider(io, nyxara.listProviders());
+    const model = await selectModel(io, await nyxara.listModels(provider.id));
+    nyxara.configureAgent({ role, providerId: provider.id, modelId: model.id });
+    io.write("\n");
+  }
+
+  const unsubscribers = [
+    nyxara.events.on("planner.completed", () => io.write("✓ Plan created\n")),
+    nyxara.events.on("executor.completed", () => io.write("✓ Task executed\n")),
+    nyxara.events.on("validation.step_passed", ({ kind }) =>
+      io.write("✓ " + validationLabel(kind) + "\n"),
+    ),
+    nyxara.events.on("validation.step_failed", ({ kind }) =>
+      io.write("✗ " + validationLabel(kind) + "\n"),
+    ),
+    nyxara.events.on("repair.cycle_started", ({ cycle }) =>
+      io.write("\n────────────────────\n\nRepair Cycle " + cycle + "\n\n"),
+    ),
+    nyxara.events.on("repair.task_created", ({ findingCount }) =>
+      io.write("● Repair task created (" + (findingCount ?? 0) + " finding(s))\n"),
+    ),
+    nyxara.events.on("repair.execution_started", () =>
+      io.write("● Executor repairing\n"),
+    ),
+    nyxara.events.on("repair.execution_completed", ({ changedFileCount }) =>
+      io.write("✓ Patch applied (" + (changedFileCount ?? 0) + " file(s))\n"),
+    ),
+    nyxara.events.on("repair.validation_failed", () =>
+      io.write("✗ Validation failed; Reviewer skipped\n"),
+    ),
+    nyxara.events.on("repair.validation_passed", () =>
+      io.write("✓ Validation passed\n"),
+    ),
+    nyxara.events.on("repair.review_started", () => io.write("● Reviewer\n")),
+    nyxara.events.on("repair.review_passed", () =>
+      io.write("✓ Acceptance criteria satisfied\n"),
+    ),
+    nyxara.events.on("repair.review_failed", ({ findingCount }) =>
+      io.write("✗ Review failed (" + (findingCount ?? 0) + " finding(s))\n"),
+    ),
+    nyxara.events.on("repair.stalled", ({ reason }) =>
+      io.write("✗ Repair stalled (" + (reason ?? "unknown") + ")\n"),
+    ),
+    nyxara.events.on("repair.limit_reached", () =>
+      io.write("✗ Repair limit reached\n"),
+    ),
+  ];
+
+  try {
+    const planned = await nyxara.createPlan({ workspaceRoot, prompt });
+    const task = planned.graph.getReadyTasks()[0];
+    if (!task) throw new Error("The plan has no ready task to execute");
+
+    const executed = await nyxara.executeTask({
+      plan: planned.plan,
+      taskId: task.id,
+      workspaceRoot,
+    });
+    const validation = await nyxara.validate({
+      workspaceRoot,
+      planId: planned.plan.id,
+      taskId: task.id,
+    });
+
+    // Validation-first: the Reviewer only runs on code that already passes
+    // deterministic checks.
+    let review: ReviewResult | undefined;
+    if (validation.status === "passed") {
+      const reviewed = await nyxara.reviewTask({
+        requirement: prompt,
+        objective: planned.plan.objective,
+        task,
+        execution: executed.result,
+        validation,
+        executorContext: executed.context,
+        plannerContext: planned.context,
+      });
+      review = reviewed.result;
+      io.write(
+        review.status === "passed" ? "✓ Review passed\n" : "✗ Review failed\n",
+      );
+      for (const finding of review.findings) {
+        io.write("\nFinding\n" + finding.message + "\n");
+      }
+    }
+
+    if (validation.status === "passed" && review?.status === "passed") {
+      io.write("\nWorkflow\nPASS\n");
+      return;
+    }
+
+    const repaired = await nyxara.repairTask({
+      requirement: prompt,
+      objective: planned.plan.objective,
+      plan: planned.plan,
+      taskId: task.id,
+      workspaceRoot,
+      execution: executed.result,
+      validation,
+      ...(review ? { review } : {}),
+      executorContext: executed.context,
+      plannerContext: planned.context,
+    });
+
+    io.write("\nRepair Cycles\n" + repaired.cycles + "\n");
+    io.write("Executor attempts\n" + repaired.executorAttempts + "\n");
+    io.write("\nChanged files\n");
+    if (repaired.changedFiles.length === 0) {
+      io.write("- No repository changes\n");
+    } else {
+      for (const path of repaired.changedFiles) io.write("- " + path + "\n");
+    }
+    if (repaired.remainingFindings?.length) {
+      io.write("\nRemaining findings\n");
+      for (const finding of repaired.remainingFindings) {
+        io.write("- [" + finding.source + "] " + finding.message + "\n");
+      }
+    }
+    io.write("\nRepair\n" + repairVerdict(repaired.status) + "\n");
+  } finally {
+    unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }
+}
+
+function repairVerdict(status: RepairResult["status"]): string {
+  if (status === "passed") return "PASS";
+  if (status === "limit_reached") return "LIMIT REACHED";
+  if (status === "stalled") return "STALLED";
+  if (status === "aborted") return "ABORTED";
+  return "FAIL";
+}
+
+function roleLabel(role: "planner" | "executor" | "reviewer"): string {
+  return role.charAt(0).toUpperCase() + role.slice(1);
 }
