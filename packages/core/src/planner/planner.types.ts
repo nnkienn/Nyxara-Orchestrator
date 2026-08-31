@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AgentModelConfig } from "../agents/agent.types.js";
 import type { ContextBudget, ContextBundle } from "../context/context.types.js";
 import type { TaskGraph } from "./task-graph.js";
+import type { PlanningProfile, PlanningProfileMetadata } from "./planning-profile.js";
 
 export const PlanRiskSchema = z.object({
   description: z.string().trim().min(1),
@@ -54,11 +55,14 @@ export interface CreatePlanInput {
   readonly constraints?: readonly string[];
   readonly contextBudget?: Partial<ContextBudget>;
   readonly signal?: AbortSignal;
+  /** Omit to use the built-in default. An explicit unknown ID fails before provider use. */
+  readonly planningProfileId?: string;
 }
 
 export interface PlannerRunInput {
   readonly input: PlannerInput;
   readonly model: AgentModelConfig;
+  readonly planningProfile?: PlanningProfile;
 }
 
 export interface PlanResult {
@@ -66,6 +70,9 @@ export interface PlanResult {
   readonly context: ContextBundle;
   readonly model: AgentModelConfig;
   readonly graph: TaskGraph;
+  /** Compact generation metadata; it is not part of the execution plan fingerprint. */
+  readonly planningProfile: PlanningProfileMetadata;
+  readonly planningProfileId: string;
 }
 
 export function normalizePlannerInput(input: PlannerInput): PlannerInput {

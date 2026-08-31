@@ -19,6 +19,7 @@ export type {
   PlannerCompletedEvent,
   PlannerFailedEvent,
   PlannerStartedEvent,
+  PlannerProfileResolvedEvent,
   PlanValidationFailedEvent,
   PlanValidationPassedEvent,
   PlanValidationStartedEvent,
@@ -158,6 +159,24 @@ export { Planner } from "./planner/planner.js";
 export { PlannerPromptBuilder } from "./planner/planner-prompt-builder.js";
 export { PlannerError } from "./planner/planner-error.js";
 export type { PlannerErrorCode } from "./planner/planner-error.js";
+export {
+  BUILT_IN_PLANNING_PROFILES,
+  DEFAULT_PLANNING_PROFILE,
+  PLANNING_PROFILE_LIMITS,
+  PlanningProfileError,
+  PlanningProfileSchema,
+  parsePlanningProfile,
+  planningProfileMetadata,
+} from "./planner/planning-profile.js";
+export type {
+  PlanningProfile,
+  PlanningProfileErrorCode,
+  PlanningProfileMetadata,
+  PlanStyle,
+  RiskMode,
+} from "./planner/planning-profile.js";
+export { PlanningProfileRegistry } from "./planner/planning-profile-registry.js";
+export { compilePlanningProfile } from "./planner/planning-profile-compiler.js";
 export { PlanValidator } from "./planner/plan-validator.js";
 export {
   ExecutionPlanDraftSchema,

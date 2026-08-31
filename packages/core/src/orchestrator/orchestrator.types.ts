@@ -11,6 +11,7 @@ import type {
   ExecutorLimits,
 } from "../executor/executor.types.js";
 import type { ExecutionPlan } from "../planner/planner.types.js";
+import type { PlanningProfile } from "../planner/planning-profile.js";
 import type { RepairLimits, RepairResult } from "../repair/repair.types.js";
 import type {
   ReviewerLimits,
@@ -105,6 +106,8 @@ export interface NyxaraOrchestratorConfig {
   readonly reviewerLimits?: Partial<ReviewerLimits>;
   readonly repairLimits?: Partial<RepairLimits>;
   readonly workflowLimits?: Partial<WorkflowLimits>;
+  /** Validated process-local custom profiles, in addition to built-in presets. */
+  readonly planningProfiles?: readonly PlanningProfile[];
 }
 
 export interface ModelGenerateInput {

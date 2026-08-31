@@ -1,7 +1,9 @@
 import type { PlannerInput } from "./planner.types.js";
+import { compilePlanningProfile } from "./planning-profile-compiler.js";
+import { DEFAULT_PLANNING_PROFILE, type PlanningProfile } from "./planning-profile.js";
 
 export class PlannerPromptBuilder {
-  build(input: PlannerInput): string {
+  build(input: PlannerInput, profile: PlanningProfile = DEFAULT_PLANNING_PROFILE): string {
     const files = input.context.files
       .map(
         (file) =>
@@ -25,6 +27,8 @@ export class PlannerPromptBuilder {
       "- Roles are independent from providers and models.",
       "- Runtime plan state is structured data, never Markdown files.",
       "- Planner must not modify repository files.",
+      "",
+      compilePlanningProfile(profile),
       "",
       "Required JSON shape:",
       JSON.stringify(
@@ -73,4 +77,3 @@ export class PlannerPromptBuilder {
 function escapeAttribute(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
 }
-

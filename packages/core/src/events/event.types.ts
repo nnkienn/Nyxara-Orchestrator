@@ -147,6 +147,14 @@ export interface PlannerStartedEvent {
   readonly contextFileCount: number;
 }
 
+export interface PlannerProfileResolvedEvent {
+  readonly profileId: string;
+  readonly locale?: string;
+  readonly outputLanguage: string;
+  readonly planStyle: "concise" | "balanced" | "detailed";
+  readonly riskMode: "fast" | "balanced" | "conservative";
+}
+
 export interface PlannerCompletedEvent {
   readonly planId: string;
   readonly providerId: string;
@@ -357,6 +365,7 @@ export interface NyxaraEventMap {
   readonly "context.truncated": ContextTruncatedEvent;
   readonly "context.failed": ContextFailedEvent;
   readonly "planner.started": PlannerStartedEvent;
+  readonly "planner.profile_resolved": PlannerProfileResolvedEvent;
   readonly "planner.completed": PlannerCompletedEvent;
   readonly "planner.failed": PlannerFailedEvent;
   readonly "plan.validation_started": PlanValidationStartedEvent;

@@ -9,6 +9,7 @@ import {
   runExecuteCli,
   runInspectCli,
   runPlanCli,
+  runProfilesCli,
   runApprovedPlanCli,
   runRuntimeControlCli,
   runRepairCli,
@@ -44,9 +45,9 @@ try {
   };
 
   if (cliArguments[0] === "run") {
-    const argumentPrompt = cliArguments.slice(1).join(" " ).trim();
+    const { prompt: argumentPrompt, profileId } = parsePromptAndProfile(cliArguments.slice(1));
     const prompt = argumentPrompt || (await io.question("Run prompt:\n> "));
-    await runApprovedPlanCli(io, nyxara, workspaceRoot, prompt);
+    await runApprovedPlanCli(io, nyxara, workspaceRoot, prompt, profileId);
   } else if (["pause", "resume", "abort"].includes(cliArguments[0] ?? "")) {
     const action = cliArguments[0] as "pause" | "resume" | "abort";
     const workflowId = cliArguments[1] ?? "";
@@ -59,13 +60,15 @@ try {
     const prompt = argumentPrompt || (await io.question("Context prompt:\n> "));
     await runInspectCli(io, nyxara, workspaceRoot, prompt);
   } else if (cliArguments[0] === "plan") {
-    const argumentPrompt = cliArguments.slice(1).join(" ").trim();
+    const { prompt: argumentPrompt, profileId } = parsePromptAndProfile(cliArguments.slice(1));
     const prompt = argumentPrompt || (await io.question("Planning prompt:\n> "));
-    await runPlanCli(io, nyxara, workspaceRoot, prompt);
+    await runPlanCli(io, nyxara, workspaceRoot, prompt, profileId);
   } else if (cliArguments[0] === "execute") {
-    const argumentPrompt = cliArguments.slice(1).join(" ").trim();
+    const { prompt: argumentPrompt, profileId } = parsePromptAndProfile(cliArguments.slice(1));
     const prompt = argumentPrompt || (await io.question("Execution prompt:\n> "));
-    await runExecuteCli(io, nyxara, workspaceRoot, prompt);
+    await runExecuteCli(io, nyxara, workspaceRoot, prompt, profileId);
+  } else if (cliArguments[0] === "profiles") {
+    runProfilesCli(io, nyxara);
   } else if (cliArguments[0] === "validate") {
     await runValidationCli(io, nyxara, workspaceRoot);
   } else if (cliArguments[0] === "review") {
@@ -85,4 +88,14 @@ try {
   stdout.write(`\nNyxara stopped: ${message}\n`);
 } finally {
   readline.close();
+}
+
+function parsePromptAndProfile(argumentsList: readonly string[]): { prompt: string; profileId?: string } {
+  const remaining = [...argumentsList];
+  const profileIndex = remaining.indexOf("--profile");
+  if (profileIndex < 0) return { prompt: remaining.join(" ").trim() };
+  const profileId = remaining[profileIndex + 1]?.trim();
+  if (!profileId) throw new Error("--profile requires a profile ID");
+  remaining.splice(profileIndex, 2);
+  return { prompt: remaining.join(" ").trim(), profileId };
 }

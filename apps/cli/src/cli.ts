@@ -75,11 +75,20 @@ export async function runInspectCli(
   }
 }
 
+export function runProfilesCli(io: CliIO, nyxara: NyxaraOrchestrator): void {
+  io.write("Planning profiles\n\n");
+  io.write("ID\tName\tLanguage\tStyle\tRisk\n");
+  for (const profile of nyxara.listPlanningProfiles()) {
+    io.write(`${profile.id}\t${profile.name}\t${profile.outputLanguage}\t${profile.planStyle}\t${profile.riskMode}\n`);
+  }
+}
+
 export async function runPlanCli(
   io: CliIO,
   nyxara: NyxaraOrchestrator,
   workspaceRoot: string,
   prompt: string,
+  planningProfileId?: string,
 ): Promise<void> {
   io.write("NYXARA ORCHESTRATOR\n\n");
   io.write(`Workspace\n${workspaceRoot}\n\n`);
@@ -112,7 +121,7 @@ export async function runPlanCli(
     const workflow = typeof (nyxara as any).startWorkflow === "function"
       ? nyxara.startWorkflow({ workspace: workspaceRoot, prompt })
       : undefined;
-    const result = await nyxara.createPlan({ workspaceRoot, prompt, ...(workflow ? { workflowId: workflow.id } : {}) });
+    const result = await nyxara.createPlan({ workspaceRoot, prompt, ...(workflow ? { workflowId: workflow.id } : {}), ...(planningProfileId ? { planningProfileId } : {}) });
     io.write(`\nObjective\n${result.plan.objective}\n\nTasks\n\n`);
     for (const task of result.plan.tasks) {
       io.write(`${task.id}\n${task.title}\n`);
@@ -146,6 +155,7 @@ export async function runApprovedPlanCli(
   nyxara: NyxaraOrchestrator,
   workspaceRoot: string,
   prompt: string,
+  planningProfileId?: string,
 ): Promise<void> {
   io.write("NYXARA APPROVE & RUN\n\n");
   for (const role of ["planner", "executor", "reviewer"] as const) {
@@ -163,7 +173,7 @@ export async function runApprovedPlanCli(
   ];
   try {
     const workflow = nyxara.startWorkflow({ workspace: workspaceRoot, prompt });
-    const planned = await nyxara.createPlan({ workflowId: workflow.id, workspaceRoot, prompt });
+    const planned = await nyxara.createPlan({ workflowId: workflow.id, workspaceRoot, prompt, ...(planningProfileId ? { planningProfileId } : {}) });
     io.write(`\nObjective\n${planned.plan.objective}\n\nTasks\n`);
     for (const task of planned.plan.tasks) io.write(`- ${task.id}: ${task.title}\n`);
     const decision = (await io.question("[A] Approve & Run\n[R] Reject\n[X] Exit\n> " )).trim().toUpperCase();
@@ -231,6 +241,7 @@ export async function runExecuteCli(
   nyxara: NyxaraOrchestrator,
   workspaceRoot: string,
   prompt: string,
+  planningProfileId?: string,
 ): Promise<void> {
   io.write("NYXARA ORCHESTRATOR\n\n");
   io.write(`Workspace\n${workspaceRoot}\n\n`);
@@ -281,7 +292,7 @@ export async function runExecuteCli(
   ];
 
   try {
-    const planned = await nyxara.createPlan({ workspaceRoot, prompt });
+    const planned = await nyxara.createPlan({ workspaceRoot, prompt, ...(planningProfileId ? { planningProfileId } : {}) });
     const readyTask = planned.graph.getReadyTasks()[0];
     if (!readyTask) {
       throw new Error("The plan has no ready task to execute");

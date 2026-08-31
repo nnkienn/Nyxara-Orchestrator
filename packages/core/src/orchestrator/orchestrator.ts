@@ -48,6 +48,8 @@ import type {
 } from "../executor/executor.types.js";
 import { ProviderRegistry } from "../providers/provider-registry.js";
 import { Planner } from "../planner/planner.js";
+import { PlanningProfileRegistry } from "../planner/planning-profile-registry.js";
+import { planningProfileMetadata, type PlanningProfile } from "../planner/planning-profile.js";
 import { PlanValidator } from "../planner/plan-validator.js";
 import { PlanRuntimeError, PlanRuntimeStore } from "../planner/plan-runtime-store.js";
 import type { PlanRuntimeState } from "../planner/plan-runtime-store.js";
@@ -121,6 +123,7 @@ export class NyxaraOrchestrator {
   private readonly toolRegistry: ToolRegistry;
   private readonly contextEngine: ContextEngine;
   private readonly planner: Planner;
+  private readonly planningProfiles: PlanningProfileRegistry;
   private readonly planRuntime = new PlanRuntimeStore();
   private readonly executor: Executor;
   private readonly taskExecutions = new TaskExecutionStore();
@@ -150,6 +153,7 @@ export class NyxaraOrchestrator {
     );
     this.contextEngine = new ContextEngine(this.toolRegistry, this.events);
     this.agentModels = new AgentModelRegistry(config.agents ?? []);
+    this.planningProfiles = new PlanningProfileRegistry(config.planningProfiles ?? []);
     this.planner = new Planner(this.providerRegistry, this.events);
     this.executor = new Executor(
       this.providerRegistry,
@@ -420,10 +424,35 @@ export class NyxaraOrchestrator {
     return this.agentModels.list();
   }
 
+  registerPlanningProfile(profile: PlanningProfile): PlanningProfile {
+    return this.planningProfiles.register(profile);
+  }
+
+  getPlanningProfile(id: string): PlanningProfile {
+    return this.planningProfiles.get(id);
+  }
+
+  listPlanningProfiles(): PlanningProfile[] {
+    return this.planningProfiles.list();
+  }
+
   async createPlan(input: CreatePlanInput): Promise<PlanResult> {
     const workflowId = input.workflowId;
+    // Resolve and snapshot once before repository or provider work. Registry
+    // mutations cannot produce mixed instructions within this operation.
+    const planningProfile = this.planningProfiles.resolve(input.planningProfileId);
     const model = this.agentModels.get("planner");
-    this.enterWorkflowStatus(workflowId, "planning");
+    const profileMetadata = planningProfileMetadata(planningProfile);
+    const replacingDraft = workflowId !== undefined
+      && this.workflowEngine.get(workflowId).status === "awaiting_plan_approval";
+    this.events.emit("planner.profile_resolved", {
+      profileId: profileMetadata.id,
+      ...(profileMetadata.locale ? { locale: profileMetadata.locale } : {}),
+      outputLanguage: profileMetadata.outputLanguage,
+      planStyle: profileMetadata.planStyle,
+      riskMode: profileMetadata.riskMode,
+    });
+    if (!replacingDraft) this.enterWorkflowStatus(workflowId, "planning");
 
     try {
       const context = await this.contextEngine.build({
@@ -440,24 +469,37 @@ export class NyxaraOrchestrator {
           ...(input.constraints ? { constraints: input.constraints } : {}),
         },
         model,
+        planningProfile,
       });
 
       if (workflowId) {
         this.plannerContexts.set(plan.id, context);
         while (this.plannerContexts.size > 20) this.plannerContexts.delete(this.plannerContexts.keys().next().value!);
-        this.planRuntime.register(plan, workflowId);
-        this.enterWorkflowStatus(workflowId, "awaiting_plan_approval", { planId: plan.id });
-        this.events.emit("plan.awaiting_approval", {
-          workflowId,
-          planId: plan.id,
-          taskCount: plan.tasks.length,
-          timestamp: new Date().toISOString(),
-          status: "draft",
-        });
+        if (replacingDraft) {
+          this.replaceDraftPlan(workflowId, plan);
+        } else {
+          this.planRuntime.register(plan, workflowId);
+          this.enterWorkflowStatus(workflowId, "awaiting_plan_approval", { planId: plan.id });
+          this.events.emit("plan.awaiting_approval", {
+            workflowId,
+            planId: plan.id,
+            taskCount: plan.tasks.length,
+            timestamp: new Date().toISOString(),
+            status: "draft",
+          });
+        }
       }
-      return { plan, context, model, graph: new TaskGraph(plan) };
+      return {
+        plan,
+        context,
+        model,
+        graph: new TaskGraph(plan),
+        planningProfile: profileMetadata,
+        planningProfileId: profileMetadata.id,
+      };
     } catch (error: unknown) {
-      this.failWorkflowIfTracked(workflowId, error, "planner_error");
+      // Failed regeneration leaves the prior draft available for approval.
+      if (!replacingDraft) this.failWorkflowIfTracked(workflowId, error, "planner_error");
       throw error;
     }
   }

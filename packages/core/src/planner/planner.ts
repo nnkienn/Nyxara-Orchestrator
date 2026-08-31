@@ -13,6 +13,7 @@ import {
   type ExecutionPlan,
   type PlannerRunInput,
 } from "./planner.types.js";
+import { DEFAULT_PLANNING_PROFILE } from "./planning-profile.js";
 
 export class Planner {
   constructor(
@@ -25,6 +26,7 @@ export class Planner {
   async run(runInput: PlannerRunInput): Promise<ExecutionPlan> {
     const input = normalizePlannerInput(runInput.input);
     const model = runInput.model;
+    const planningProfile = runInput.planningProfile ?? DEFAULT_PLANNING_PROFILE;
     this.events.emit("planner.started", {
       providerId: model.providerId,
       modelId: model.modelId,
@@ -35,7 +37,7 @@ export class Planner {
       const provider = this.providers.get(model.providerId);
       const models = await provider.listModels();
       const selectedModel = this.requireModel(models, model.modelId);
-      const prompt = this.promptBuilder.build(input);
+      const prompt = this.promptBuilder.build(input, planningProfile);
       const response = await this.generate(
         provider,
         prompt,
