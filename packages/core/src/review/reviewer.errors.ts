@@ -1,5 +1,6 @@
 export type ReviewerErrorCode =
   | "reviewer_error"
+  | "reviewer_aborted"
   | "reviewer_not_configured"
   | "invalid_model"
   | "review_parse_error"

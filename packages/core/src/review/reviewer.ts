@@ -1,6 +1,7 @@
 import type { GenerateResponse, ModelInfo } from "@nyxara/provider-sdk";
 import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
+import { errorCodeOr } from "../internal/error-code.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import {
   ReviewResultDraftSchema,
@@ -54,6 +55,9 @@ export class Reviewer {
       );
 
       for (let turn = 1; turn <= limits.maxReviewerTurns; turn += 1) {
+        if (runInput.signal?.aborted) {
+          throw new ReviewerError("reviewer_aborted", "Review was aborted");
+        }
         const input = { ...runInput.input, evidence };
         const response = await this.generate(
           provider,
@@ -184,7 +188,12 @@ export class Reviewer {
       });
       this.events.emit("provider.generation.completed", {
         providerId: provider.id,
-        response,
+        modelId: response.model,
+        ...(response.id ? { responseId: response.id } : {}),
+        ...(response.finishReason ? { finishReason: response.finishReason } : {}),
+        textLength: response.text.length,
+        toolCallCount: response.toolCalls?.length ?? 0,
+        ...(response.usage ? { usage: response.usage } : {}),
       });
       return response;
     } catch (error: unknown) {
@@ -231,16 +240,7 @@ function parseReviewResponse(text: string): unknown {
 }
 
 function reviewerErrorCode(error: unknown): string {
-  if (error instanceof ReviewerError) return error.code;
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    return error.code;
-  }
-  return "reviewer_error";
+  return errorCodeOr(error, "reviewer_error");
 }
 
 export type { ReviewResultDraft };

@@ -49,6 +49,8 @@ export interface PlannerInput {
 export interface CreatePlanInput {
   readonly workspaceRoot: string;
   readonly prompt: string;
+  /** Links the plan to Core workflow state so planning transitions are recorded. */
+  readonly workflowId?: string;
   readonly constraints?: readonly string[];
   readonly contextBudget?: Partial<ContextBudget>;
   readonly signal?: AbortSignal;

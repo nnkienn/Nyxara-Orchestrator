@@ -87,7 +87,10 @@ export class ToolRegistry {
         ...(permission.command ? { command: permission.command.command } : {}),
       });
 
-      const decision = await this.permissionEngine.evaluate(permission);
+      let decision = await this.permissionEngine.evaluate(permission);
+      if (decision === "ask" && context.resolvePermission) {
+        decision = await context.resolvePermission(permission);
+      }
       if (decision !== "allow") {
         this.observer?.({
           type: "permission.denied",
@@ -95,7 +98,6 @@ export class ToolRegistry {
           capability: permission.capability,
         });
         const isWrite = [
-          "write_workspace_file",
           "create_workspace_file",
           "modify_workspace_file",
         ].includes(permission.capability);

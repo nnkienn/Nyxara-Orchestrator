@@ -14,6 +14,8 @@ import {
 } from "@nyxara/tools";
 import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
+import { EXECUTION_DIFF_MAX_BYTES } from "../internal/byte-limits.js";
+import { errorCodeOr } from "../internal/error-code.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { ExecutorError } from "./executor-error.js";
 import { ExecutorPromptBuilder } from "./executor-prompt-builder.js";
@@ -67,6 +69,8 @@ export class Executor {
           context: runInput.input.context,
           attempt: runInput.input.attempt,
           ...(runInput.input.signal ? { signal: runInput.input.signal } : {}),
+          ...(runInput.input.resolvePermission ? { resolvePermission: runInput.input.resolvePermission } : {}),
+          ...(runInput.input.checkpoint ? { checkpoint: runInput.input.checkpoint } : {}),
         },
         model: runInput.model,
         ...(runInput.limits ? { limits: runInput.limits } : {}),
@@ -105,7 +109,7 @@ export class Executor {
         );
       }
 
-      const context = toolContext(input.workspaceRoot, input.signal);
+      const context = toolContext(input.workspaceRoot, input.signal, input.resolvePermission);
       const [initialStatus, initialDiff] = await Promise.all([
         this.tools.execute<Record<string, never>, GitStatusResult>(
           "git_status",
@@ -114,7 +118,7 @@ export class Executor {
         ),
         this.tools.execute<{ maxBytes: number }, GitDiffResult>(
           "git_diff",
-          { maxBytes: 256 * 1024 },
+          { maxBytes: EXECUTION_DIFF_MAX_BYTES },
           context,
         ),
       ]);
@@ -135,6 +139,10 @@ export class Executor {
       let toolCallCount = 0;
 
       for (let modelTurn = 1; modelTurn <= limits.maxModelTurnsPerTask; modelTurn += 1) {
+        await input.checkpoint?.();
+        if (input.signal?.aborted) {
+          throw new ExecutorError("executor_aborted", "Executor run was aborted");
+        }
         const response = await provider.generate({
           model: selectedModel.id,
           prompt,
@@ -363,7 +371,7 @@ export class Executor {
       ),
       this.tools.execute<{ maxBytes: number }, GitDiffResult>(
         "git_diff",
-        { maxBytes: 256 * 1024 },
+        { maxBytes: EXECUTION_DIFF_MAX_BYTES },
         input.context,
       ),
     ]);
@@ -427,8 +435,8 @@ function resolveLimits(input: Partial<ExecutorLimits> | undefined): ExecutorLimi
   return limits;
 }
 
-function toolContext(workspaceRoot: string, signal?: AbortSignal): ToolContext {
-  return { workspaceRoot, ...(signal ? { signal } : {}) };
+function toolContext(workspaceRoot: string, signal?: AbortSignal, resolvePermission?: (request: import("@nyxara/tools").PermissionRequest) => Promise<"allow" | "deny">): ToolContext {
+  return { workspaceRoot, ...(signal ? { signal } : {}), ...(resolvePermission ? { resolvePermission } : {}) };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -489,13 +497,5 @@ function isSecurityError(code: string): boolean {
 }
 
 function executorErrorCode(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    return error.code;
-  }
-  return "executor_error";
+  return errorCodeOr(error, "executor_error");
 }

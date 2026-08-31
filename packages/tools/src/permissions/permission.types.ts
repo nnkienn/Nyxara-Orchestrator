@@ -9,7 +9,6 @@ export type ToolCapability =
   | "git_status"
   | "git_diff"
   | "run_command"
-  | "write_workspace_file"
   | "create_workspace_file"
   | "modify_workspace_file"
   | "delete_workspace_file"
@@ -38,7 +37,6 @@ export interface DefaultPermissionPolicy {
   readonly safeCommand?: PermissionDecision;
   readonly validationCommand?: PermissionDecision;
   readonly unknownCommand?: PermissionDecision;
-  readonly writeWorkspaceFile?: PermissionDecision;
   readonly createWorkspaceFile?: PermissionDecision;
   readonly modifyWorkspaceFile?: PermissionDecision;
   readonly largeFileWrite?: PermissionDecision;

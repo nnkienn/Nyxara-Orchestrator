@@ -142,6 +142,7 @@ export interface ReviewerRunInput {
   readonly input: ReviewerInput;
   readonly model: AgentModelConfig;
   readonly limits?: Partial<ReviewerLimits>;
+  readonly signal?: AbortSignal;
   readonly expandContext?: (
     request: ReviewContextRequest,
     evidence: ReviewEvidenceBundle,

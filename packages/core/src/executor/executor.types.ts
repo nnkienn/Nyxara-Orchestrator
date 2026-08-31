@@ -1,5 +1,5 @@
 import type { ModelToolResult } from "@nyxara/provider-sdk";
-import type { GitDiffResult, GitStatusResult } from "@nyxara/tools";
+import type { GitDiffResult, GitStatusResult, PermissionRequest } from "@nyxara/tools";
 import { z } from "zod";
 import type { AgentModelConfig } from "../agents/agent.types.js";
 import type { ContextBundle } from "../context/context.types.js";
@@ -25,6 +25,8 @@ export interface ExecutorInput {
   readonly context: ContextBundle;
   readonly attempt: number;
   readonly signal?: AbortSignal;
+  readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;
+  readonly checkpoint?: () => Promise<void>;
 }
 
 export interface ExecutorLimits {
@@ -47,6 +49,8 @@ export interface RepairExecutorInput {
   readonly evidence: RepairEvidence;
   readonly attempt: number;
   readonly signal?: AbortSignal;
+  readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;
+  readonly checkpoint?: () => Promise<void>;
 }
 
 export interface RepairExecutorRunInput {
@@ -77,22 +81,48 @@ export interface ExecutionResult {
   readonly git: ExecutionGitEvidence;
 }
 
+/**
+ * Compacted evidence retained after a task reaches a terminal result. Git
+ * snapshots, raw diff text, and model conversations are intentionally absent.
+ */
+export interface TaskExecutionSummary {
+  readonly taskId: string;
+  readonly status: "completed" | "failed";
+  readonly summary: string;
+  readonly changedFiles: readonly string[];
+  readonly diffFiles: readonly string[];
+  readonly diffTruncated: boolean;
+  readonly toolCalls: number;
+  readonly modelTurns: number;
+  readonly unresolvedIssues?: readonly string[];
+}
+
 export interface TaskExecutionState {
   readonly taskId: string;
   readonly status: TaskExecutionStatus;
   readonly attempts: number;
   readonly startedAt?: string;
   readonly completedAt?: string;
+  /** Full result is retained only while the task is the most recent one. */
   readonly result?: ExecutionResult;
+  readonly resultSummary?: TaskExecutionSummary;
 }
 
 export interface ExecuteTaskInput {
+  readonly workflowId?: string;
   readonly plan: ExecutionPlan;
   readonly taskId: string;
   readonly workspaceRoot: string;
+  /**
+   * Bounded Planner context to reuse. When present the Executor filters it for
+   * this task instead of rescanning the repository.
+   */
+  readonly plannerContext?: ContextBundle;
   readonly contextBudget?: Partial<ContextBudget>;
   readonly limits?: Partial<ExecutorLimits>;
   readonly signal?: AbortSignal;
+  readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;
+  readonly checkpoint?: () => Promise<void>;
 }
 
 export interface ExecuteTaskResult {
@@ -100,6 +130,8 @@ export interface ExecuteTaskResult {
   readonly state: TaskExecutionState;
   readonly context: ContextBundle;
   readonly model: AgentModelConfig;
+  /** How the Executor context was obtained, for token-efficiency assertions. */
+  readonly contextSource: "planner_reuse" | "targeted_expansion" | "build";
 }
 
 export interface ExecutorToolOutcome {

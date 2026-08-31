@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { GenerateResponse, ModelInfo } from "@nyxara/provider-sdk";
 import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
+import { errorCodeOr } from "../internal/error-code.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { PlanValidator } from "./plan-validator.js";
 import { PlannerError } from "./planner-error.js";
@@ -118,7 +119,12 @@ export class Planner {
       });
       this.events.emit("provider.generation.completed", {
         providerId: provider.id,
-        response,
+        modelId: response.model,
+        ...(response.id ? { responseId: response.id } : {}),
+        ...(response.finishReason ? { finishReason: response.finishReason } : {}),
+        textLength: response.text.length,
+        toolCallCount: response.toolCalls?.length ?? 0,
+        ...(response.usage ? { usage: response.usage } : {}),
       });
       return response;
     } catch (error: unknown) {
@@ -147,15 +153,5 @@ export class Planner {
 }
 
 function plannerErrorCode(error: unknown): string {
-  if (error instanceof PlannerError) return error.code;
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    return error.code;
-  }
-  return "planner_error";
+  return errorCodeOr(error, "planner_error");
 }
-

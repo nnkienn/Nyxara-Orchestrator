@@ -10,6 +10,9 @@ import {
 } from "@nyxara/tools";
 import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
+import { VALIDATION_DIFF_MAX_BYTES } from "../internal/byte-limits.js";
+import { diffSectionMap } from "../internal/diff-sections.js";
+import { errorCodeOr } from "../internal/error-code.js";
 import { ValidationCommandDiscovery } from "./validation-command-discovery.js";
 import { normalizeValidationConfig } from "./validation-config.js";
 import { ValidationError } from "./validation.errors.js";
@@ -226,7 +229,7 @@ export class ValidationEngine {
       ),
       this.tools.execute<{ maxBytes: number }, GitDiffResult>(
         "git_diff",
-        { maxBytes: 256 * 1024 },
+        { maxBytes: VALIDATION_DIFF_MAX_BYTES },
         context,
       ),
     ]);
@@ -357,15 +360,7 @@ function stepEvent(result: ValidationStepResult): {
 }
 
 function validationErrorCode(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    return error.code;
-  }
-  return "validation_error";
+  return errorCodeOr(error, "validation_error");
 }
 
 export function detectTrackedChanges(
@@ -374,8 +369,8 @@ export function detectTrackedChanges(
 ): string[] {
   const beforeStates = trackedStatusMap(before.status);
   const afterStates = trackedStatusMap(after.status);
-  const beforeDiffs = diffSections(before.diff.diff);
-  const afterDiffs = diffSections(after.diff.diff);
+  const beforeDiffs = diffSectionMap(before.diff.diff);
+  const afterDiffs = diffSectionMap(after.diff.diff);
   const paths = new Set([
     ...beforeStates.keys(),
     ...afterStates.keys(),
@@ -400,16 +395,4 @@ function trackedStatusMap(status: GitStatusResult): ReadonlyMap<string, string> 
         `${file.status}:${file.indexStatus}:${file.worktreeStatus}`,
       ]),
   );
-}
-
-function diffSections(diff: string): ReadonlyMap<string, string> {
-  const sections = new Map<string, string>();
-  const matches = [...diff.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)];
-  for (let index = 0; index < matches.length; index += 1) {
-    const match = matches[index]!;
-    const start = match.index!;
-    const end = matches[index + 1]?.index ?? diff.length;
-    sections.set(match[2]!, diff.slice(start, end));
-  }
-  return sections;
 }

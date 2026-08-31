@@ -2,6 +2,11 @@ import type { AgentModelConfig } from "../agents/agent.types.js";
 import type { ContextBundle, ContextFile } from "../context/context.types.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
+import {
+  REPAIR_DIFF_MAX_BYTES,
+  REPAIR_EVIDENCE_MAX_BYTES,
+} from "../internal/byte-limits.js";
+import { errorCodeOr } from "../internal/error-code.js";
 import type { Executor } from "../executor/executor.js";
 import type { ExecutionResult } from "../executor/executor.types.js";
 import type { ReviewResult } from "../review/reviewer.types.js";
@@ -34,8 +39,8 @@ export const DEFAULT_REPAIR_LIMITS: RepairLimits = {
   maxValidationAttempts: 4,
   maxReviewAttempts: 4,
   maxContextExpansions: 1,
-  maxEvidenceBytes: 64 * 1024,
-  maxDiffBytes: 48 * 1024,
+  maxEvidenceBytes: REPAIR_EVIDENCE_MAX_BYTES,
+  maxDiffBytes: REPAIR_DIFF_MAX_BYTES,
   maxHistoryEntries: 6,
   stuckThreshold: 2,
 };
@@ -101,6 +106,7 @@ export class RepairOrchestrator {
 
     while (true) {
       if (input.signal?.aborted) return finish("aborted");
+      await input.checkpoint?.();
 
       if (state.validation.status === "passed" && state.review === undefined) {
         if (state.reviewAttempts >= limits.maxReviewAttempts) {
@@ -205,6 +211,8 @@ export class RepairOrchestrator {
             evidence,
             attempt: state.executorAttempts,
             ...(input.signal ? { signal: input.signal } : {}),
+            ...(input.resolvePermission ? { resolvePermission: input.resolvePermission } : {}),
+            ...(input.checkpoint ? { checkpoint: input.checkpoint } : {}),
           },
           model,
           ...(input.executorLimits ? { limits: input.executorLimits } : {}),
@@ -287,12 +295,14 @@ export class RepairOrchestrator {
         attempt: state.validationAttempts,
       });
       try {
+        await input.checkpoint?.();
         state.validation = await operations.validate({
           workspaceRoot: input.workspaceRoot,
           taskId: input.originalTask.id,
           ...(input.validationConfig ? { config: input.validationConfig } : {}),
           ...(input.signal ? { signal: input.signal } : {}),
         });
+        await input.checkpoint?.();
       } catch (error: unknown) {
         if (isAbort(error, input.signal)) return finish("aborted");
         this.events.emit("repair.failed", {
@@ -589,13 +599,5 @@ function isAbort(error: unknown, signal?: AbortSignal): boolean {
 }
 
 function errorCode(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    return error.code;
-  }
-  return "repair_error";
+  return errorCodeOr(error, "repair_error");
 }

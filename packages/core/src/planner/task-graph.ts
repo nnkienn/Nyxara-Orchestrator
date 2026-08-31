@@ -50,9 +50,19 @@ export class TaskGraph {
     );
   }
 
-  getDependents(taskId: string): PlannedTask[] {
+  getDependents(taskId: string, transitive = false): PlannedTask[] {
     this.requireTask(taskId);
-    return (this.dependents.get(taskId) ?? []).map((id) => this.tasks.get(id)!);
+    if (!transitive) {
+      return (this.dependents.get(taskId) ?? []).map((id) => this.tasks.get(id)!);
+    }
+    const visited = new Set<string>();
+    const visit = (id: string): void => {
+      for (const dependent of this.dependents.get(id) ?? []) {
+        if (!visited.has(dependent)) { visited.add(dependent); visit(dependent); }
+      }
+    };
+    visit(taskId);
+    return [...this.tasks.values()].filter((task) => visited.has(task.id));
   }
 
   getDependencies(taskId: string, transitive = false): PlannedTask[] {

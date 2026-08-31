@@ -50,6 +50,16 @@ describe("Reviewer", () => {
     expect(JSON.stringify(reviewed.result)).not.toContain("provider-native-id");
   });
 
+  it("does not call the model after abort", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const reviewer = reviewerWith([validDraft()]);
+
+    await expect(
+      reviewer.run({ ...runInput(), signal: controller.signal }),
+    ).rejects.toMatchObject({ code: "reviewer_aborted" });
+  });
+
   it("emits lifecycle and structured-result validation events", async () => {
     const events = new EventBus<NyxaraEventMap>();
     const lifecycle: string[] = [];

@@ -14,6 +14,7 @@ import type {
   ValidationConfig,
   ValidationResult,
 } from "../validation/validation.types.js";
+import type { PermissionRequest } from "@nyxara/tools";
 
 export type RepairReason =
   | "validation_failure"
@@ -162,6 +163,8 @@ export interface RepairWorkflowInput {
   readonly reviewEvidenceBudget?: Partial<ReviewEvidenceBudget>;
   readonly limits?: Partial<RepairLimits>;
   readonly signal?: AbortSignal;
+  readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;
+  readonly checkpoint?: () => Promise<void>;
 }
 
 export interface RepairValidateRequest {

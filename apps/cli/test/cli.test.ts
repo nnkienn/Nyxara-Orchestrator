@@ -11,11 +11,34 @@ import {
   runExecuteCli,
   runInspectCli,
   runPlanCli,
+  runRuntimeControlCli,
   runRepairCli,
   runReviewCli,
   runValidationCli,
   type CliIO,
 } from "../src/cli.js";
+
+describe("Nyxara runtime-control CLI", () => {
+  it("delegates pause, resume, and abort to Core without owning workflow state", async () => {
+    const output: string[] = [];
+    const io: CliIO = { write: (message) => output.push(message), question: async () => "" };
+    const pauseWorkflow = vi.fn(() => ({ id: "workflow-1", pauseRequested: true }));
+    const resumeWorkflow = vi.fn(async () => ({ status: "completed", completedTasks: 2, totalTasks: 2 }));
+    const abortWorkflow = vi.fn(() => ({ id: "workflow-1", status: "aborted" }));
+    const core = { pauseWorkflow, resumeWorkflow, abortWorkflow } as unknown as NyxaraOrchestrator;
+
+    await runRuntimeControlCli(io, core, "pause", "workflow-1");
+    await runRuntimeControlCli(io, core, "resume", "workflow-1");
+    await runRuntimeControlCli(io, core, "abort", "workflow-1");
+
+    expect(pauseWorkflow).toHaveBeenCalledWith("workflow-1");
+    expect(resumeWorkflow).toHaveBeenCalledWith("workflow-1");
+    expect(abortWorkflow).toHaveBeenCalledWith("workflow-1");
+    expect(output.join("")).toContain("PAUSE REQUESTED");
+    expect(output.join("")).toContain("COMPLETED (2/2)");
+    expect(output.join("")).toContain("ABORTED");
+  });
+});
 
 describe("Nyxara CLI", () => {
   it("selects and consumes providers without provider-specific workflow logic", async () => {
@@ -417,6 +440,22 @@ describe("Nyxara review CLI", () => {
       durationMs: 1000,
       taskId: "T1",
     } as const;
+    const review = {
+      status: "passed",
+      summary: "Looks correct",
+      findings: [],
+      criteria: task.acceptanceCriteria.map((criterion) => ({
+        criterion,
+        status: "satisfied" as const,
+        reason: "Evidence supports it",
+      })),
+      reviewedAt: "2026-08-28T00:00:02.000Z",
+    } as const;
+    const reviewEvidence = {
+      changedFiles: ["src/notification.ts"],
+      diff: { content: "bounded diff" },
+      context: [{ content: "bounded context" }],
+    } as const;
     const configureAgent = vi.fn();
     const createPlan = vi.fn(async () => ({
       plan,
@@ -424,7 +463,9 @@ describe("Nyxara review CLI", () => {
       graph: new TaskGraph(plan),
       model: {} as never,
     }));
-    const executeTask = vi.fn(async () => {
+    const runTaskPipeline = vi.fn(async () => {
+      // Core owns the execute -> validate -> review ordering and only surfaces
+      // the resulting metadata events to the CLI.
       events.emit("executor.completed", {
         taskId: "T1",
         providerId: "fake",
@@ -433,22 +474,11 @@ describe("Nyxara review CLI", () => {
         toolCalls: 1,
         modelTurns: 2,
       });
-      return {
-        result: execution,
-        context: executorContext,
-        state: {} as never,
-        model: {} as never,
-      };
-    });
-    const validate = vi.fn(async () => {
       events.emit("validation.step_passed", {
         kind: "test",
         status: "passed",
         durationMs: 1000,
       });
-      return validation;
-    });
-    const reviewTask = vi.fn(async () => {
       events.emit("reviewer.started", {
         taskId: "T1",
         providerId: "fake",
@@ -457,25 +487,14 @@ describe("Nyxara review CLI", () => {
         contextBytes: 60,
       });
       return {
-        result: {
-          status: "passed",
-          summary: "Looks correct",
-          findings: [],
-          criteria: task.acceptanceCriteria.map((criterion) => ({
-            criterion,
-            status: "satisfied" as const,
-            reason: "Evidence supports it",
-          })),
-          reviewedAt: "2026-08-28T00:00:02.000Z",
-        },
-        evidence: {
-          changedFiles: ["src/notification.ts"],
-          diff: { content: "bounded diff" },
-          context: [{ content: "bounded context" }],
-        },
-        turns: 1,
-        contextExpansions: 0,
-        model: {},
+        status: "passed",
+        taskId: "T1",
+        execution,
+        validation,
+        review,
+        reviewEvidence,
+        executorContext,
+        reviewSkipped: false,
       } as never;
     });
     const nyxara = {
@@ -488,9 +507,7 @@ describe("Nyxara review CLI", () => {
       ],
       configureAgent,
       createPlan,
-      executeTask,
-      validate,
-      reviewTask,
+      runTaskPipeline,
     } as unknown as NyxaraOrchestrator;
     const answers = ["1", "1", "1", "1", "1", "1"];
     const output: string[] = [];
@@ -506,14 +523,14 @@ describe("Nyxara review CLI", () => {
     await runReviewCli(io, nyxara, "/workspace", "Add pagination");
 
     expect(configureAgent).toHaveBeenCalledTimes(3);
-    expect(reviewTask).toHaveBeenCalledWith({
+    // The CLI hands the whole task to Core and never sequences the stages.
+    expect(runTaskPipeline).toHaveBeenCalledWith({
       requirement: "Add pagination",
-      objective: plan.objective,
-      task,
-      execution,
-      validation,
-      executorContext,
+      plan,
+      taskId: "T1",
+      workspaceRoot: "/workspace",
       plannerContext,
+      allowRepair: false,
     });
     expect(output.join("")).toContain("✓ Tests");
     expect(output.join("")).toContain("Review Evidence");
@@ -598,15 +615,21 @@ describe("Nyxara repair CLI", () => {
         model: {} as never,
       };
     });
-    const executeTask = vi.fn(async () => ({
-      result: execution,
-      context: executorContext,
-      state: {} as never,
-      model: {} as never,
-    }));
-    const validate = vi.fn(async () => validation);
-    const reviewTask = vi.fn(async () => ({ result: review } as never));
-    const repairTask = vi.fn(async () => {
+    const repair = {
+      taskId: "T1",
+      status: "passed",
+      cycles: 1,
+      executorAttempts: 1,
+      validationAttempts: 1,
+      reviewAttempts: 1,
+      finalExecution: execution,
+      finalValidation: validation,
+      changedFiles: ["src/notification.ts"],
+      history: [],
+      completedAt: "2026-08-30T00:00:03.000Z",
+    } as const;
+    const runTaskPipeline = vi.fn(async () => {
+      // Core runs execute -> validate -> review -> repair and emits progress.
       events.emit("repair.cycle_started", { taskId: "T1", cycle: 1 });
       events.emit("repair.task_created", {
         taskId: "T1",
@@ -624,18 +647,15 @@ describe("Nyxara repair CLI", () => {
       events.emit("repair.review_started", { taskId: "T1", cycle: 1 });
       events.emit("repair.review_passed", { taskId: "T1", cycle: 1 });
       return {
-        taskId: "T1",
         status: "passed",
-        cycles: 1,
-        executorAttempts: 1,
-        validationAttempts: 1,
-        reviewAttempts: 1,
-        finalExecution: execution,
-        finalValidation: validation,
-        changedFiles: ["src/notification.ts"],
-        history: [],
-        completedAt: "2026-08-30T00:00:03.000Z",
-      } as const;
+        taskId: "T1",
+        execution,
+        validation,
+        review,
+        executorContext,
+        reviewSkipped: false,
+        repair,
+      } as never;
     });
     const nyxara = {
       events,
@@ -647,10 +667,7 @@ describe("Nyxara repair CLI", () => {
       ],
       configureAgent,
       createPlan,
-      executeTask,
-      validate,
-      reviewTask,
-      repairTask,
+      runTaskPipeline,
     } as unknown as NyxaraOrchestrator;
     const answers = ["1", "1", "1", "1", "1", "1"];
     const output: string[] = [];
@@ -666,17 +683,14 @@ describe("Nyxara repair CLI", () => {
     await runRepairCli(io, nyxara, "/workspace", "Add pagination");
 
     expect(configureAgent).toHaveBeenCalledTimes(3);
-    expect(repairTask).toHaveBeenCalledWith({
+    // Repair sequencing is fully owned by Core behind one pipeline call.
+    expect(runTaskPipeline).toHaveBeenCalledWith({
       requirement: "Add pagination",
-      objective: plan.objective,
       plan,
       taskId: "T1",
       workspaceRoot: "/workspace",
-      execution,
-      validation,
-      review,
-      executorContext,
       plannerContext,
+      allowRepair: true,
     });
     const rendered = output.join("");
     expect(rendered).toContain("Repair Cycle 1");

@@ -41,7 +41,6 @@ export class DefaultPermissionEngine implements PermissionEngine {
   private readonly safeCommandDecision: PermissionDecision;
   private readonly validationCommandDecision: PermissionDecision;
   private readonly unknownCommandDecision: PermissionDecision;
-  private readonly writeWorkspaceFileDecision: PermissionDecision;
   private readonly createWorkspaceFileDecision: PermissionDecision;
   private readonly modifyWorkspaceFileDecision: PermissionDecision;
   private readonly largeFileWriteDecision: PermissionDecision;
@@ -52,7 +51,6 @@ export class DefaultPermissionEngine implements PermissionEngine {
     this.safeCommandDecision = policy.safeCommand ?? "ask";
     this.validationCommandDecision = policy.validationCommand ?? "allow";
     this.unknownCommandDecision = policy.unknownCommand ?? "ask";
-    this.writeWorkspaceFileDecision = policy.writeWorkspaceFile ?? "ask";
     this.createWorkspaceFileDecision = policy.createWorkspaceFile ?? "allow";
     this.modifyWorkspaceFileDecision = policy.modifyWorkspaceFile ?? "allow";
     this.largeFileWriteDecision = policy.largeFileWrite ?? "ask";
@@ -74,8 +72,6 @@ export class DefaultPermissionEngine implements PermissionEngine {
         return "allow";
       case "run_command":
         return this.commandDecision(request.command);
-      case "write_workspace_file":
-        return this.writeWorkspaceFileDecision;
       case "create_workspace_file":
       case "modify_workspace_file":
         return this.writeDecision(request);

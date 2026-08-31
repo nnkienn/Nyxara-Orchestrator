@@ -83,6 +83,10 @@ describe("NyxaraOrchestrator provider delegation", () => {
     const provider = createProvider();
     const generateSpy = vi.spyOn(provider, "generate");
     const nyxara = new NyxaraOrchestrator({ providers: [provider] });
+    const generationEvents: unknown[] = [];
+    nyxara.events.on("provider.generation.completed", (payload) => {
+      generationEvents.push(payload);
+    });
 
     await expect(nyxara.listModels("fake")).resolves.toEqual([
       { id: "model-1", name: "Model 1", provider: "fake" },
@@ -98,6 +102,13 @@ describe("NyxaraOrchestrator provider delegation", () => {
       model: "model-1",
       prompt: "hello",
     });
+    expect(generationEvents).toEqual([
+      {
+        providerId: "fake",
+        modelId: "model-1",
+        textLength: "Generated: hello".length,
+        toolCallCount: 0,
+      },
+    ]);
   });
 });
-

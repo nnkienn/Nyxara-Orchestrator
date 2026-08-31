@@ -28,7 +28,7 @@ export class ExecutorPromptBuilder {
       "",
       `Workflow objective:\n${input.objective}`,
       "",
-      `Assigned task ${input.task.id}:\n${input.task.title}\n${input.task.description}`,
+      `Assigned task ${input.task.id} (Task ID: ${input.task.id}):\n${input.task.title}\n${input.task.description}`,
       "",
       `Acceptance criteria:\n${input.task.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}`,
       "",

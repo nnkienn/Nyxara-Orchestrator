@@ -1,5 +1,9 @@
 export { EventBus } from "./events/event-bus.js";
-export type { EventListener } from "./events/event-bus.js";
+export type {
+  EventListener,
+  ListenerErrorObserver,
+  ListenerErrorReport,
+} from "./events/event-bus.js";
 export type {
   ContextCompletedEvent,
   ContextFailedEvent,
@@ -18,6 +22,7 @@ export type {
   PlanValidationFailedEvent,
   PlanValidationPassedEvent,
   PlanValidationStartedEvent,
+  PlanApprovalEvent,
   PatchEvent,
   PatchFailedEvent,
   ProviderGenerationCompletedEvent,
@@ -47,6 +52,11 @@ export type {
   WorkflowCompletedEvent,
   WorkflowFailedEvent,
   WorkflowStartedEvent,
+  WorkflowTaskBlockedEvent,
+  WorkflowTaskSelectedEvent,
+  WorkflowRuntimeEvent,
+  WorkflowPermissionRequestedEvent,
+  WorkflowPermissionDecisionEvent,
 } from "./events/event.types.js";
 export {
   relevantDiff,
@@ -102,7 +112,13 @@ export { ExecutorError } from "./executor/executor-error.js";
 export type { ExecutorErrorCode } from "./executor/executor-error.js";
 export { ExecutorPromptBuilder } from "./executor/executor-prompt-builder.js";
 export { EXECUTOR_TOOL_DEFINITIONS } from "./executor/executor-tools.js";
-export { TaskExecutionStore } from "./executor/task-execution-store.js";
+export {
+  canTransitionTask,
+  DEFAULT_TASK_EXECUTION_STORE_LIMITS,
+  TASK_TRANSITIONS,
+  TaskExecutionStore,
+} from "./executor/task-execution-store.js";
+export type { TaskExecutionStoreLimits } from "./executor/task-execution-store.js";
 export { ExecutionDecisionSchema } from "./executor/executor.types.js";
 export type {
   ExecuteTaskInput,
@@ -119,6 +135,12 @@ export type {
   TaskExecutionStatus,
 } from "./executor/executor.types.js";
 export { ContextEngine, extractSearchTerms } from "./context/context-engine.js";
+export {
+  DEFAULT_TASK_CONTEXT_BUDGET,
+  selectTaskContext,
+  taskContextQuery,
+} from "./context/task-context-selector.js";
+export type { TaskContextSelection } from "./context/task-context-selector.js";
 export type {
   BuildContextInput,
   ContextBudget,
@@ -154,6 +176,18 @@ export type {
   PlanResult,
   PlanRisk,
 } from "./planner/planner.types.js";
+export {
+  PlanRuntimeStore,
+  PlanRuntimeError,
+  planFingerprint,
+  assertApprovedPlanIntegrity,
+} from "./planner/plan-runtime-store.js";
+export type {
+  PlanApprovalRecord,
+  PlanRuntimeState,
+  PlanStatus,
+  PlanRuntimeErrorCode,
+} from "./planner/plan-runtime-store.js";
 export { detectTaskCycle, TaskGraph } from "./planner/task-graph.js";
 export {
   detectPackageManager,
@@ -176,7 +210,14 @@ export {
 } from "./validation/validation-engine.js";
 export { ValidationError } from "./validation/validation.errors.js";
 export type { ValidationErrorCode } from "./validation/validation.errors.js";
-export { ValidationStore } from "./validation/validation-store.js";
+export {
+  DEFAULT_VALIDATION_STORE_LIMITS,
+  ValidationStore,
+} from "./validation/validation-store.js";
+export type {
+  ValidationSelector,
+  ValidationStoreLimits,
+} from "./validation/validation-store.js";
 export { VALIDATION_KINDS } from "./validation/validation.types.js";
 export type {
   PackageManager,
@@ -244,6 +285,13 @@ export type {
   RepairTaskInput,
   RepairTaskResult,
   RunInput,
+  RunTaskPipelineInput,
+  StartWorkflowInput,
+  TaskPipelineResult,
+  TaskPipelineStatus,
+  AutonomousWorkflowResult,
+  WorkflowRunOutcome,
+  ResolveWorkflowPermissionInput,
 } from "./orchestrator/orchestrator.types.js";
 export {
   ProviderRegistry,
@@ -251,7 +299,30 @@ export {
 } from "./providers/provider-registry.js";
 export type { ProviderRegistryErrorCode } from "./providers/provider-registry.js";
 export type {
+  TaskRuntimeStatus,
+  PendingWorkflowPermission,
+  WorkflowError,
   WorkflowFailure,
+  WorkflowSnapshot,
   WorkflowState,
   WorkflowStatus,
+  WorkflowTaskSnapshot,
 } from "@nyxara/shared";
+export {
+  isTerminalWorkflowStatus,
+  TERMINAL_WORKFLOW_STATUSES,
+  WORKFLOW_STATUSES,
+} from "@nyxara/shared";
+export { WorkflowEngine } from "./workflow/workflow-engine.js";
+export { WorkflowStateError } from "./workflow/workflow.errors.js";
+export type { WorkflowErrorCode } from "./workflow/workflow.errors.js";
+export {
+  DEFAULT_WORKFLOW_LIMITS,
+  WORKFLOW_TRANSITIONS,
+} from "./workflow/workflow.types.js";
+export type {
+  WorkflowLimits,
+  WorkflowTaskRecord,
+  WorkflowTaskRepairStatus,
+  WorkflowTransitionInput,
+} from "./workflow/workflow.types.js";

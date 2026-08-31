@@ -1,6 +1,7 @@
 import type { ContextBundle, ContextFile } from "../context/context.types.js";
 import type { ExecutionResult } from "../executor/executor.types.js";
-import { truncateUtf8 } from "../review/review-evidence-builder.js";
+import { relevantDiffSections } from "../internal/diff-sections.js";
+import { truncateUtf8 } from "../internal/text.js";
 import type { ReviewResult } from "../review/reviewer.types.js";
 import type { ValidationResult } from "../validation/validation.types.js";
 import {
@@ -24,7 +25,6 @@ export interface BuildRepairEvidenceInput {
   readonly validation: ValidationResult;
   readonly review?: ReviewResult;
   readonly contexts: readonly ContextBundle[];
-  readonly additionalContext?: readonly ContextFile[];
   readonly limits: Pick<RepairLimits, "maxEvidenceBytes" | "maxDiffBytes">;
 }
 
@@ -82,7 +82,6 @@ export class RepairEvidenceBuilder {
     ]);
     const relevantContext = this.buildContext(
       [
-        ...(input.additionalContext ?? []),
         ...input.contexts.flatMap((context) => context.files),
       ],
       relevantPaths,
@@ -143,16 +142,5 @@ export function relevantDiff(
   diff: string,
   changedFiles: readonly string[],
 ): string {
-  if (changedFiles.length === 0) return "";
-  const changed = new Set(changedFiles);
-  const headers = [...diff.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)];
-  if (headers.length === 0) return diff;
-  return headers
-    .filter((header) => changed.has(header[2]!))
-    .map((header) => {
-      const start = header.index!;
-      const next = headers.find((candidate) => candidate.index! > start);
-      return diff.slice(start, next?.index ?? diff.length);
-    })
-    .join("");
+  return relevantDiffSections(diff, changedFiles);
 }

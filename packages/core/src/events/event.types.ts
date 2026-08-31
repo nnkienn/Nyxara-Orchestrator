@@ -1,24 +1,68 @@
 import type {
-  GenerateResponse,
+  GenerateUsage,
   ModelInfo,
   ProviderInfo,
 } from "@nyxara/provider-sdk";
-import type { WorkflowState } from "@nyxara/shared";
+import type { WorkflowStatus } from "@nyxara/shared";
 
 export interface WorkflowStartedEvent {
-  readonly workflow: WorkflowState;
+  readonly workflowId: string;
+  readonly startedAt: string;
+}
+
+export interface WorkflowStatusChangedEvent {
+  readonly workflowId: string;
+  readonly from: WorkflowStatus;
+  readonly to: WorkflowStatus;
+  readonly planId?: string;
+  readonly currentTaskId?: string;
+}
+
+export interface WorkflowTaskEvent {
+  readonly workflowId: string;
+  readonly taskId: string;
+  readonly attempt: number;
+}
+
+export interface WorkflowTaskFailedEvent extends WorkflowTaskEvent {
+  readonly code: string;
+}
+
+export interface WorkflowTaskSelectedEvent {
+  readonly workflowId: string;
+  readonly planId: string;
+  readonly taskId: string;
+  readonly completedCount: number;
+  readonly total: number;
+}
+
+export interface WorkflowTaskBlockedEvent {
+  readonly workflowId: string;
+  readonly planId: string;
+  readonly taskId: string;
 }
 
 export interface WorkflowCompletedEvent {
-  readonly workflow: WorkflowState;
+  readonly workflowId: string;
+  readonly taskCount: number;
 }
 
 export interface WorkflowFailedEvent {
-  readonly workflow: WorkflowState | null;
-  readonly error: {
-    readonly message: string;
-  };
+  readonly workflowId: string;
+  readonly code: string;
+  readonly message: string;
 }
+
+export interface WorkflowAbortedEvent {
+  readonly workflowId: string;
+}
+
+export interface WorkflowRuntimeEvent { readonly workflowId: string; }
+export interface WorkflowPermissionRequestedEvent {
+  readonly workflowId: string; readonly taskId: string; readonly permissionRequestId: string;
+  readonly capability: string; readonly resource?: string;
+}
+export interface WorkflowPermissionDecisionEvent extends WorkflowPermissionRequestedEvent { readonly decision: "allow" | "deny"; }
 
 export interface ProviderRegisteredEvent {
   readonly provider: ProviderInfo;
@@ -31,7 +75,12 @@ export interface ProviderModelsCompletedEvent {
 
 export interface ProviderGenerationCompletedEvent {
   readonly providerId: string;
-  readonly response: GenerateResponse;
+  readonly modelId: string;
+  readonly responseId?: string;
+  readonly finishReason?: string;
+  readonly textLength: number;
+  readonly toolCallCount: number;
+  readonly usage?: GenerateUsage;
 }
 
 export interface ProviderOperationFailedEvent {
@@ -123,6 +172,14 @@ export interface PlanValidationFailedEvent extends PlanValidationStartedEvent {
 export interface PlanValidationPassedEvent {
   readonly planId: string;
   readonly taskCount: number;
+}
+
+export interface PlanApprovalEvent {
+  readonly workflowId: string;
+  readonly planId: string;
+  readonly taskCount: number;
+  readonly timestamp: string;
+  readonly status: "draft" | "approved" | "rejected";
 }
 
 export interface ExecutorStartedEvent {
@@ -270,8 +327,21 @@ export interface RepairEvent {
 
 export interface NyxaraEventMap {
   readonly "workflow.started": WorkflowStartedEvent;
+  readonly "workflow.status_changed": WorkflowStatusChangedEvent;
+  readonly "workflow.task_started": WorkflowTaskEvent;
+  readonly "workflow.task_completed": WorkflowTaskEvent;
+  readonly "workflow.task_failed": WorkflowTaskFailedEvent;
+  readonly "workflow.task_selected": WorkflowTaskSelectedEvent;
+  readonly "workflow.task_blocked": WorkflowTaskBlockedEvent;
   readonly "workflow.completed": WorkflowCompletedEvent;
   readonly "workflow.failed": WorkflowFailedEvent;
+  readonly "workflow.aborted": WorkflowAbortedEvent;
+  readonly "workflow.pause_requested": WorkflowRuntimeEvent;
+  readonly "workflow.paused": WorkflowRuntimeEvent;
+  readonly "workflow.resumed": WorkflowRuntimeEvent;
+  readonly "workflow.permission_requested": WorkflowPermissionRequestedEvent;
+  readonly "workflow.permission_allowed": WorkflowPermissionDecisionEvent;
+  readonly "workflow.permission_denied": WorkflowPermissionDecisionEvent;
   readonly "provider.registered": ProviderRegisteredEvent;
   readonly "provider.models.completed": ProviderModelsCompletedEvent;
   readonly "provider.generation.completed": ProviderGenerationCompletedEvent;
@@ -292,6 +362,10 @@ export interface NyxaraEventMap {
   readonly "plan.validation_started": PlanValidationStartedEvent;
   readonly "plan.validation_failed": PlanValidationFailedEvent;
   readonly "plan.validation_passed": PlanValidationPassedEvent;
+  readonly "plan.awaiting_approval": PlanApprovalEvent;
+  readonly "plan.approved": PlanApprovalEvent;
+  readonly "plan.rejected": PlanApprovalEvent;
+  readonly "plan.draft_replaced": PlanApprovalEvent;
   readonly "executor.started": ExecutorStartedEvent;
   readonly "executor.completed": ExecutorCompletedEvent;
   readonly "executor.failed": ExecutorFailedEvent;

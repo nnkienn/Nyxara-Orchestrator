@@ -238,6 +238,26 @@ describe("Executor", () => {
     );
   });
 
+  it("does not start another model call after abort", async () => {
+    const controller = new AbortController();
+    const generate = vi.fn(async () => {
+      controller.abort();
+      return response({
+        toolCalls: [{ id: "status-1", name: "git_status", arguments: {} }],
+      });
+    });
+
+    await expect(
+      orchestrator(generate).executeTask({
+        plan: executionPlan(),
+        taskId: "T1",
+        workspaceRoot: workspace,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ code: "executor_aborted" });
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
   it("enforces tool-call and model-turn limits before executing tools", async () => {
     const twoCalls = vi.fn(async () =>
       response({

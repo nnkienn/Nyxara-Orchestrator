@@ -1,6 +1,7 @@
 import { NyxaraToolError, type ToolRegistry } from "@nyxara/tools";
 import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
+import { CONTEXT_DIFF_MAX_BYTES } from "../internal/byte-limits.js";
 import { Repository } from "../repository/repository.js";
 import type {
   BuildContextInput,
@@ -61,7 +62,7 @@ export class ContextEngine {
       );
       const gitDiffBudget = Math.max(
         1,
-        Math.min(64 * 1024, Math.floor(budget.maxBytes / 4)),
+        Math.min(CONTEXT_DIFF_MAX_BYTES, Math.floor(budget.maxBytes / 4)),
       );
       const [gitStatus, gitDiff] = await Promise.all([
         repository.gitStatus(),

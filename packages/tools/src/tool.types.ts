@@ -1,8 +1,10 @@
-import type { PermissionRequest } from "./permissions/permission.types.js";
+import type { PermissionDecision, PermissionRequest } from "./permissions/permission.types.js";
 
 export interface ToolContext {
   readonly workspaceRoot: string;
   readonly signal?: AbortSignal;
+  /** Core-only cooperative continuation hook for a policy `ask` decision. */
+  readonly resolvePermission?: (request: PermissionRequest) => Promise<Exclude<PermissionDecision, "ask">>;
 }
 
 export interface Tool<TInput, TOutput> {

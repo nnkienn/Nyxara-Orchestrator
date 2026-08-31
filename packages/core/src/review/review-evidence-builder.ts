@@ -1,4 +1,7 @@
 import type { ContextFile } from "../context/context.types.js";
+import { REVIEW_DIFF_MAX_BYTES } from "../internal/byte-limits.js";
+import { splitDiffSections } from "../internal/diff-sections.js";
+import { truncateUtf8 } from "../internal/text.js";
 import { ReviewerError } from "./reviewer.errors.js";
 import type {
   ReviewContextEvidence,
@@ -9,7 +12,7 @@ import type {
 } from "./reviewer.types.js";
 
 export const DEFAULT_REVIEW_EVIDENCE_BUDGET: ReviewEvidenceBudget = {
-  maxDiffBytes: 96 * 1024,
+  maxDiffBytes: REVIEW_DIFF_MAX_BYTES,
   maxContextFiles: 6,
   maxContextBytes: 64 * 1024,
   maxBytesPerContextFile: 16 * 1024,
@@ -125,7 +128,7 @@ function buildDiffEvidence(
   maxBytes: number,
 ): ReviewEvidenceBundle["diff"] {
   const changed = new Set(changedFiles);
-  const sections = splitDiff(rawDiff);
+  const sections = splitDiffSections(rawDiff);
   const relevant = sections
     .filter((section) => changed.has(section.path))
     .map((section) => section.content)
@@ -147,14 +150,6 @@ function buildDiffEvidence(
     ).length,
     truncated: sourceTruncated || bounded.truncated || missingDiff,
   };
-}
-
-function splitDiff(diff: string): Array<{ path: string; content: string }> {
-  const matches = [...diff.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)];
-  return matches.map((match, index) => ({
-    path: match[2]!,
-    content: diff.slice(match.index!, matches[index + 1]?.index ?? diff.length),
-  }));
 }
 
 function buildValidationEvidence(
@@ -231,23 +226,7 @@ function normalizeEvidencePath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\//, "");
 }
 
-export function truncateUtf8(
-  value: string,
-  maxBytes: number,
-): { value: string; truncated: boolean } {
-  if (Buffer.byteLength(value, "utf8") <= maxBytes) {
-    return { value, truncated: false };
-  }
-  let bytes = 0;
-  let output = "";
-  for (const character of value) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
-    if (bytes + characterBytes > maxBytes) break;
-    output += character;
-    bytes += characterBytes;
-  }
-  return { value: output, truncated: true };
-}
+export { truncateUtf8 };
 
 export function reviewContextBytes(evidence: ReviewEvidenceBundle): number {
   return evidence.context.reduce(

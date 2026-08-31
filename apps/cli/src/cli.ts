@@ -1,7 +1,7 @@
 import {
   type NyxaraOrchestrator,
   type RepairResult,
-  type ReviewResult,
+  type WorkflowRunOutcome,
 } from "@nyxara/core";
 import type { ModelInfo, ProviderInfo } from "@nyxara/provider-sdk";
 
@@ -21,8 +21,8 @@ export async function runCli(
 ): Promise<void> {
   const unsubscribe = nyxara.events.on(
     "provider.generation.completed",
-    ({ response }) => {
-      io.write(`\nResponse:\n${response.text}\n`);
+    ({ modelId, textLength }) => {
+      io.write(`\nResponse received (${modelId}, ${textLength} characters)\n`);
     },
   );
 
@@ -34,11 +34,12 @@ export async function runCli(
     const model = await selectModel(io, models);
     const prompt = await io.question("Prompt:\n> ");
 
-    await nyxara.generate({
+    const response = await nyxara.generate({
       providerId: provider.id,
       model: model.id,
       prompt,
     });
+    io.write(`\nResponse:\n${response.text}\n`);
   } finally {
     unsubscribe();
   }
@@ -103,12 +104,15 @@ export async function runPlanCli(
       io.write("● Planner started\n");
     }),
     nyxara.events.on("planner.completed", () => {
-      io.write("✓ Plan created\n");
+      io.write("✓ Plan generated\n✓ Plan created\n");
     }),
   ];
 
   try {
-    const result = await nyxara.createPlan({ workspaceRoot, prompt });
+    const workflow = typeof (nyxara as any).startWorkflow === "function"
+      ? nyxara.startWorkflow({ workspace: workspaceRoot, prompt })
+      : undefined;
+    const result = await nyxara.createPlan({ workspaceRoot, prompt, ...(workflow ? { workflowId: workflow.id } : {}) });
     io.write(`\nObjective\n${result.plan.objective}\n\nTasks\n\n`);
     for (const task of result.plan.tasks) {
       io.write(`${task.id}\n${task.title}\n`);
@@ -117,8 +121,108 @@ export async function runPlanCli(
       }
       io.write("\n");
     }
+    if (workflow && typeof (nyxara as any).approvePlan === "function") {
+      const decision = (await io.question("[A] Approve & Run\n[R] Reject\n[X] Exit\n> ")).trim().toUpperCase();
+      if (decision === "A") {
+        nyxara.approvePlan(workflow.id, result.plan.id);
+        io.write("✓ Plan approved\n");
+        if (typeof (nyxara as any).runApprovedPlan === "function") {
+          const execution = await (nyxara as any).runApprovedPlan({ workflowId: workflow.id, planId: result.plan.id });
+          io.write(`Workflow ${execution.status.toUpperCase()} (${execution.completedTasks}/${execution.totalTasks})\n`);
+        }
+      } else if (decision === "R") {
+        nyxara.rejectPlan(workflow.id, result.plan.id);
+        io.write("✓ Plan rejected\n");
+      }
+    }
   } finally {
     unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }
+}
+
+/** Interactive approved-plan flow. Core owns every scheduling decision. */
+export async function runApprovedPlanCli(
+  io: CliIO,
+  nyxara: NyxaraOrchestrator,
+  workspaceRoot: string,
+  prompt: string,
+): Promise<void> {
+  io.write("NYXARA APPROVE & RUN\n\n");
+  for (const role of ["planner", "executor", "reviewer"] as const) {
+    io.write(`${role[0]!.toUpperCase()}${role.slice(1)} configuration\n`);
+    const provider = await selectProvider(io, nyxara.listProviders());
+    const model = await selectModel(io, await nyxara.listModels(provider.id));
+    nyxara.configureAgent({ role, providerId: provider.id, modelId: model.id });
+  }
+  const unsubscribers = [
+    nyxara.events.on("workflow.task_selected", ({ taskId, completedCount, total }) => io.write(`● ${taskId} (${completedCount}/${total})\n`)),
+    nyxara.events.on("workflow.task_completed", ({ taskId }) => io.write(`✓ ${taskId} completed\n`)),
+    nyxara.events.on("workflow.task_failed", ({ taskId, code }) => io.write(`✗ ${taskId}: ${code}\n`)),
+    nyxara.events.on("workflow.paused", () => io.write("⏸ Workflow paused\n")),
+    nyxara.events.on("workflow.resumed", () => io.write("✓ Workflow resumed\n")),
+  ];
+  try {
+    const workflow = nyxara.startWorkflow({ workspace: workspaceRoot, prompt });
+    const planned = await nyxara.createPlan({ workflowId: workflow.id, workspaceRoot, prompt });
+    io.write(`\nObjective\n${planned.plan.objective}\n\nTasks\n`);
+    for (const task of planned.plan.tasks) io.write(`- ${task.id}: ${task.title}\n`);
+    const decision = (await io.question("[A] Approve & Run\n[R] Reject\n[X] Exit\n> " )).trim().toUpperCase();
+    if (decision === "R") { nyxara.rejectPlan(workflow.id, planned.plan.id); io.write("✓ Plan rejected\n"); return; }
+    if (decision !== "A") return;
+    nyxara.approvePlan(workflow.id, planned.plan.id);
+    let result: WorkflowRunOutcome = await nyxara.runApprovedPlan({ workflowId: workflow.id, planId: planned.plan.id });
+    while (result.status === "waiting_for_permission") {
+      io.write(`\nPermission required\n\nCapability:\n${result.permission.capability}\n`);
+      if (result.permission.resource) io.write(`\nResource:\n${result.permission.resource}\n`);
+      const permissionDecision = (await io.question("\n[A] Allow once\n[D] Deny\n[X] Abort\n> ")).trim().toUpperCase();
+      if (permissionDecision === "X") {
+        nyxara.abortWorkflow(workflow.id);
+        io.write("\nWorkflow ABORTED\n");
+        return;
+      }
+      result = await nyxara.resolveWorkflowPermission({
+        workflowId: workflow.id,
+        permissionRequestId: result.permission.id,
+        decision: permissionDecision === "A" ? "allow" : "deny",
+      });
+      if (permissionDecision === "A") io.write("✓ Permission granted\n");
+    }
+    if (result.status === "paused") {
+      io.write("Workflow PAUSED\n");
+      return;
+    }
+    io.write(`\nWorkflow ${result.status.toUpperCase()} (${result.completedTasks}/${result.totalTasks})\n`);
+    if (result.changedFiles.length) { io.write("Changed files\n"); result.changedFiles.forEach((file) => io.write(`- ${file}\n`)); }
+  } finally {
+    unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }
+}
+
+/** Runtime controls are intentionally process-local; no daemon/session is implied. */
+export async function runRuntimeControlCli(
+  io: CliIO,
+  nyxara: NyxaraOrchestrator,
+  action: "pause" | "resume" | "abort",
+  workflowId: string,
+): Promise<void> {
+  if (!workflowId.trim()) throw new Error("workflowId is required");
+  if (action === "pause") {
+    const state = nyxara.pauseWorkflow(workflowId);
+    io.write(`Workflow ${state.id} ${state.pauseRequested ? "PAUSE REQUESTED" : state.status.toUpperCase()}\n`);
+    return;
+  }
+  if (action === "abort") {
+    const state = nyxara.abortWorkflow(workflowId);
+    io.write(`Workflow ${state.id} ABORTED\n`);
+    return;
+  }
+  const outcome = await nyxara.resumeWorkflow(workflowId);
+  if (outcome.status === "waiting_for_permission") {
+    io.write(`Workflow WAITING_FOR_PERMISSION\nPermission request: ${outcome.permission.id}\n`);
+  } else if (outcome.status === "paused") {
+    io.write(`Workflow PAUSED\n`);
+  } else {
+    io.write(`Workflow ${outcome.status.toUpperCase()} (${outcome.completedTasks}/${outcome.totalTasks})\n`);
   }
 }
 
@@ -304,46 +408,38 @@ export async function runReviewCli(
     const planned = await nyxara.createPlan({ workspaceRoot, prompt });
     const task = planned.graph.getReadyTasks()[0];
     if (!task) throw new Error("The plan has no ready task to review");
-    const executed = await nyxara.executeTask({
+    const pipeline = await nyxara.runTaskPipeline({
+      requirement: prompt,
       plan: planned.plan,
       taskId: task.id,
       workspaceRoot,
+      plannerContext: planned.context,
+      allowRepair: false,
     });
-    const validation = await nyxara.validate({
-      workspaceRoot,
-      planId: planned.plan.id,
-      taskId: task.id,
-    });
-    if (validation.status === "failed") {
+    if (pipeline.reviewSkipped) {
       io.write("\nValidation\nFAIL\n\nReview skipped: deterministic validation failed.\n");
       return;
     }
-    const reviewed = await nyxara.reviewTask({
-      requirement: prompt,
-      objective: planned.plan.objective,
-      task,
-      execution: executed.result,
-      validation,
-      executorContext: executed.context,
-      plannerContext: planned.context,
-    });
+    if (!pipeline.review || !pipeline.reviewEvidence) {
+      throw new Error("Core task pipeline did not return review evidence");
+    }
 
     io.write("\nReview Evidence\n\n");
     io.write(`Task\n${task.title}\n\n`);
     io.write(`Acceptance Criteria\n${task.acceptanceCriteria.length}\n\n`);
-    io.write(`Changed Files\n${reviewed.evidence.changedFiles.length}\n\n`);
-    io.write(`Diff\n${formatBytes(Buffer.byteLength(reviewed.evidence.diff.content, "utf8"))}\n\n`);
+    io.write(`Changed Files\n${pipeline.reviewEvidence.changedFiles.length}\n\n`);
+    io.write(`Diff\n${formatBytes(Buffer.byteLength(pipeline.reviewEvidence.diff.content, "utf8"))}\n\n`);
     io.write(
-      `Relevant Context\n${reviewed.evidence.context.length} snippets / ${formatBytes(reviewed.evidence.context.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0))}\n\n`,
+      `Relevant Context\n${pipeline.reviewEvidence.context.length} snippets / ${formatBytes(pipeline.reviewEvidence.context.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0))}\n\n`,
     );
-    io.write(`Validation\n${validation.status === "passed" ? "PASS" : "FAIL"}\n\n`);
+    io.write(`Validation\n${pipeline.validation.status === "passed" ? "PASS" : "FAIL"}\n\n`);
     io.write("Acceptance Criteria\n\n");
-    for (const criterion of reviewed.result.criteria) {
+    for (const criterion of pipeline.review.criteria) {
       const marker = criterion.status === "satisfied" ? "✓" : "✗";
       io.write(`${marker} ${criterion.criterion}\n`);
     }
     io.write(
-      `\nReview\n${reviewed.result.status === "passed" ? "PASS" : "FAIL"}\n`,
+      `\nReview\n${pipeline.review.status === "passed" ? "PASS" : "FAIL"}\n`,
     );
   } finally {
     unsubscribers.forEach((unsubscribe) => unsubscribe());
@@ -495,56 +591,32 @@ export async function runRepairCli(
     const task = planned.graph.getReadyTasks()[0];
     if (!task) throw new Error("The plan has no ready task to execute");
 
-    const executed = await nyxara.executeTask({
+    const pipeline = await nyxara.runTaskPipeline({
+      requirement: prompt,
       plan: planned.plan,
       taskId: task.id,
       workspaceRoot,
-    });
-    const validation = await nyxara.validate({
-      workspaceRoot,
-      planId: planned.plan.id,
-      taskId: task.id,
+      plannerContext: planned.context,
+      allowRepair: true,
     });
 
-    // Validation-first: the Reviewer only runs on code that already passes
-    // deterministic checks.
-    let review: ReviewResult | undefined;
-    if (validation.status === "passed") {
-      const reviewed = await nyxara.reviewTask({
-        requirement: prompt,
-        objective: planned.plan.objective,
-        task,
-        execution: executed.result,
-        validation,
-        executorContext: executed.context,
-        plannerContext: planned.context,
-      });
-      review = reviewed.result;
+    if (pipeline.review) {
       io.write(
-        review.status === "passed" ? "✓ Review passed\n" : "✗ Review failed\n",
+        pipeline.review.status === "passed"
+          ? "✓ Review passed\n"
+          : "✗ Review failed\n",
       );
-      for (const finding of review.findings) {
+      for (const finding of pipeline.review.findings) {
         io.write("\nFinding\n" + finding.message + "\n");
       }
     }
 
-    if (validation.status === "passed" && review?.status === "passed") {
-      io.write("\nWorkflow\nPASS\n");
+    if (!pipeline.repair) {
+      io.write(`\nWorkflow\n${pipeline.status === "passed" ? "PASS" : "FAIL"}\n`);
       return;
     }
 
-    const repaired = await nyxara.repairTask({
-      requirement: prompt,
-      objective: planned.plan.objective,
-      plan: planned.plan,
-      taskId: task.id,
-      workspaceRoot,
-      execution: executed.result,
-      validation,
-      ...(review ? { review } : {}),
-      executorContext: executed.context,
-      plannerContext: planned.context,
-    });
+    const repaired = pipeline.repair;
 
     io.write("\nRepair Cycles\n" + repaired.cycles + "\n");
     io.write("Executor attempts\n" + repaired.executorAttempts + "\n");

@@ -9,6 +9,8 @@ import {
   runExecuteCli,
   runInspectCli,
   runPlanCli,
+  runApprovedPlanCli,
+  runRuntimeControlCli,
   runRepairCli,
   runReviewCli,
   runValidationCli,
@@ -41,7 +43,18 @@ try {
     },
   };
 
-  if (cliArguments[0] === "inspect") {
+  if (cliArguments[0] === "run") {
+    const argumentPrompt = cliArguments.slice(1).join(" " ).trim();
+    const prompt = argumentPrompt || (await io.question("Run prompt:\n> "));
+    await runApprovedPlanCli(io, nyxara, workspaceRoot, prompt);
+  } else if (["pause", "resume", "abort"].includes(cliArguments[0] ?? "")) {
+    const action = cliArguments[0] as "pause" | "resume" | "abort";
+    const workflowId = cliArguments[1] ?? "";
+    // This CLI process owns no persistent workflow registry. The command is
+    // useful when invoked inside an embedding process; across restarts it
+    // fails clearly instead of pretending to control a missing workflow.
+    await runRuntimeControlCli(io, nyxara, action, workflowId);
+  } else if (cliArguments[0] === "inspect") {
     const argumentPrompt = cliArguments.slice(1).join(" ").trim();
     const prompt = argumentPrompt || (await io.question("Context prompt:\n> "));
     await runInspectCli(io, nyxara, workspaceRoot, prompt);
