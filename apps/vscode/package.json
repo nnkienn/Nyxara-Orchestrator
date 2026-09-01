@@ -1,7 +1,47 @@
 {
   "name": "@nyxara/vscode",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "publisher": "nyxara",
   "private": true,
-  "description": "Reserved for the Nyxara VS Code client after Phase 0"
+  "description": "Thin VS Code client for Nyxara Orchestrator",
+  "type": "module",
+  "main": "./dist/extension.js",
+  "engines": { "vscode": "^1.85.0" },
+  "activationEvents": ["onView:nyxara.sidebar", "onCommand:nyxara.open"],
+  "contributes": {
+    "commands": [
+      { "command": "nyxara.open", "title": "Nyxara: Open" },
+      { "command": "nyxara.generatePlan", "title": "Nyxara: Generate Plan" },
+      { "command": "nyxara.approveAndRun", "title": "Nyxara: Approve & Run" },
+      { "command": "nyxara.regenerate", "title": "Nyxara: Regenerate Plan" },
+      { "command": "nyxara.pause", "title": "Nyxara: Pause" },
+      { "command": "nyxara.resume", "title": "Nyxara: Resume" },
+      { "command": "nyxara.abort", "title": "Nyxara: Abort" },
+      { "command": "nyxara.allowOnce", "title": "Nyxara: Allow Once" },
+      { "command": "nyxara.denyPermission", "title": "Nyxara: Deny Permission" }
+      ,{ "command": "nyxara.setApiKey", "title": "Nyxara: Set Provider API Key" }
+    ],
+    "viewsContainers": { "activitybar": [{ "id": "nyxara", "title": "Nyxara", "icon": "media/nyxara.svg" }] },
+    "views": { "nyxara": [{ "id": "nyxara.sidebar", "name": "Nyxara" }] },
+    "configuration": {
+      "title": "Nyxara",
+      "properties": {
+        "nyxara.planner.provider": { "type": "string", "default": "openai-compatible" },
+        "nyxara.planner.model": { "type": "string", "default": "" },
+        "nyxara.executor.provider": { "type": "string", "default": "openai-compatible" },
+        "nyxara.executor.model": { "type": "string", "default": "" },
+        "nyxara.reviewer.provider": { "type": "string", "default": "openai-compatible" },
+        "nyxara.reviewer.model": { "type": "string", "default": "" },
+        "nyxara.planningProfile": { "type": "string", "default": "default" },
+        "nyxara.openaiCompatible.baseUrl": { "type": "string", "default": "https://api.openai.com/v1" }
+      }
+    }
+  },
+  "scripts": { "build": "tsc -p tsconfig.json", "test": "vitest run" },
+  "dependencies": {
+    "@nyxara/core": "workspace:*",
+    "@nyxara/provider-sdk": "workspace:*",
+    "@nyxara/providers": "workspace:*"
+  },
+  "devDependencies": {}
 }
-

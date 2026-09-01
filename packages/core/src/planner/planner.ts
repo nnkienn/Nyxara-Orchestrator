@@ -37,7 +37,7 @@ export class Planner {
       const provider = this.providers.get(model.providerId);
       const models = await provider.listModels();
       const selectedModel = this.requireModel(models, model.modelId);
-      const prompt = this.promptBuilder.build(input, planningProfile);
+      const prompt = this.promptBuilder.build(input, planningProfile, runInput.engineeringRules);
       const response = await this.generate(
         provider,
         prompt,

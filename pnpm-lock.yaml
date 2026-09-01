@@ -30,7 +30,17 @@ importers:
         specifier: workspace:*
         version: link:../../packages/providers
 
-  apps/vscode: {}
+  apps/vscode:
+    dependencies:
+      '@nyxara/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@nyxara/provider-sdk':
+        specifier: workspace:*
+        version: link:../../packages/provider-sdk
+      '@nyxara/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
 
   packages/core:
     dependencies:

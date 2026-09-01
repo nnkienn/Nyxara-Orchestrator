@@ -15,6 +15,7 @@ import type {
   ValidationResult,
 } from "../validation/validation.types.js";
 import type { PermissionRequest } from "@nyxara/tools";
+import type { ResolvedRuleSet } from "../rules/engineering-rule.js";
 
 export type RepairReason =
   | "validation_failure"
@@ -28,6 +29,7 @@ export interface RepairFinding {
   readonly file?: string;
   readonly line?: number;
   readonly severity?: string;
+  readonly ruleId?: string;
 }
 
 export interface RepairValidationEvidence {
@@ -165,6 +167,7 @@ export interface RepairWorkflowInput {
   readonly signal?: AbortSignal;
   readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;
   readonly checkpoint?: () => Promise<void>;
+  readonly engineeringRules?: ResolvedRuleSet;
 }
 
 export interface RepairValidateRequest {
@@ -185,6 +188,7 @@ export interface RepairReviewRequest {
   readonly evidenceBudget?: Partial<ReviewEvidenceBudget>;
   readonly limits?: Partial<ReviewerLimits>;
   readonly signal?: AbortSignal;
+  readonly engineeringRules?: ResolvedRuleSet;
 }
 
 export interface RepairContextRequest {

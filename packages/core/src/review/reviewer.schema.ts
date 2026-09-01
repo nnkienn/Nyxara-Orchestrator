@@ -31,6 +31,13 @@ export const ReviewFindingDraftSchema = z.object({
   file: z.string().trim().min(1).optional(),
   line: z.number().int().positive().optional(),
   taskId: z.string().trim().min(1).optional(),
+  ruleId: z.string().trim().min(1).optional(),
+});
+
+export const RuleEvaluationSchema = z.object({
+  ruleId: z.string().trim().min(1),
+  status: z.enum(["satisfied", "violated", "not_applicable", "uncertain"]),
+  evidence: z.string().trim().max(500).optional(),
 });
 
 export const ReviewCriterionResultSchema = z.object({
@@ -44,6 +51,7 @@ export const ReviewResultDraftSchema = z.object({
   summary: z.string().trim().min(1),
   findings: z.array(ReviewFindingDraftSchema),
   criteria: z.array(ReviewCriterionResultSchema),
+  ruleEvaluations: z.array(RuleEvaluationSchema).optional(),
   risks: z.array(z.string().trim().min(1)).optional(),
   contextRequest: ReviewContextRequestSchema.optional(),
 });

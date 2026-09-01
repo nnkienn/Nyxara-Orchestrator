@@ -1,4 +1,5 @@
 import type { ReviewerInput } from "./reviewer.types.js";
+import { compileEngineeringRules } from "../rules/engineering-rule.js";
 
 export class ReviewerPromptBuilder {
   build(input: ReviewerInput): string {
@@ -30,6 +31,7 @@ export class ReviewerPromptBuilder {
       "Allowed status values: passed, failed, needs_more_context.",
       "Allowed criterion status values: satisfied, unsatisfied, uncertain.",
       "A passed result requires all criteria satisfied and no error/critical findings.",
+      ...(input.engineeringRules ? [compileEngineeringRules(input.engineeringRules), "Evaluate each applicable rule once with status satisfied, violated, not_applicable, or uncertain."] : []),
       "Required JSON shape:",
       JSON.stringify(
         {
@@ -44,6 +46,7 @@ export class ReviewerPromptBuilder {
               file: "optional/path.ts",
               line: 1,
               taskId: input.task.id,
+              ruleId: "optional engineering rule id",
             },
           ],
           criteria: input.task.acceptanceCriteria.map((criterion) => ({
@@ -51,6 +54,7 @@ export class ReviewerPromptBuilder {
             status: "satisfied | unsatisfied | uncertain",
             reason: "string",
           })),
+          ruleEvaluations: input.engineeringRules?.rules.map((rule) => ({ ruleId: rule.id, status: "satisfied", evidence: "bounded evidence" })),
           risks: ["optional string"],
           contextRequest: {
             paths: ["specific/optional/path.ts"],

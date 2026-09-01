@@ -15,6 +15,7 @@ import {
   runRepairCli,
   runReviewCli,
   runValidationCli,
+  runRulesCli,
 } from "./cli.js";
 import { EnvironmentCredentialStore } from "./environment-credential-store.js";
 
@@ -69,6 +70,8 @@ try {
     await runExecuteCli(io, nyxara, workspaceRoot, prompt, profileId);
   } else if (cliArguments[0] === "profiles") {
     runProfilesCli(io, nyxara);
+  } else if (cliArguments[0] === "rules") {
+    runRulesCli(io, nyxara, cliArguments[1]);
   } else if (cliArguments[0] === "validate") {
     await runValidationCli(io, nyxara, workspaceRoot);
   } else if (cliArguments[0] === "review") {

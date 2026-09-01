@@ -143,6 +143,7 @@ export function reviewFindings(result?: ReviewResult): RepairFinding[] {
       ...(finding.file ? { file: normalizePath(finding.file) } : {}),
       ...(finding.line ? { line: finding.line } : {}),
       severity: finding.severity,
+      ...(finding.ruleId ? { ruleId: finding.ruleId } : {}),
     }));
 }
 

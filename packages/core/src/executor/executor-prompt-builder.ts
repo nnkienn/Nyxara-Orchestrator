@@ -60,7 +60,7 @@ export class ExecutorPromptBuilder {
     const findings = repairTask.findings
       .map(
         (finding) =>
-          `- [${finding.source}${finding.severity ? `/${finding.severity}` : ""}] ${finding.message}${location(finding.file, finding.line)}`,
+          `- [${finding.source}${finding.severity ? `/${finding.severity}` : ""}${finding.ruleId ? `/rule:${finding.ruleId}` : ""}] ${finding.message}${location(finding.file, finding.line)}`,
       )
       .join("\n");
     const validation = evidence.validationFailures

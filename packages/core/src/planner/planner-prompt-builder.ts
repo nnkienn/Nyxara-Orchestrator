@@ -1,9 +1,10 @@
 import type { PlannerInput } from "./planner.types.js";
 import { compilePlanningProfile } from "./planning-profile-compiler.js";
 import { DEFAULT_PLANNING_PROFILE, type PlanningProfile } from "./planning-profile.js";
+import { compileEngineeringRules, type ResolvedRuleSet } from "../rules/engineering-rule.js";
 
 export class PlannerPromptBuilder {
-  build(input: PlannerInput, profile: PlanningProfile = DEFAULT_PLANNING_PROFILE): string {
+  build(input: PlannerInput, profile: PlanningProfile = DEFAULT_PLANNING_PROFILE, engineeringRules?: ResolvedRuleSet): string {
     const files = input.context.files
       .map(
         (file) =>
@@ -30,6 +31,7 @@ export class PlannerPromptBuilder {
       "",
       compilePlanningProfile(profile),
       "",
+      ...(engineeringRules ? [compileEngineeringRules(engineeringRules), ""] : []),
       "Required JSON shape:",
       JSON.stringify(
         {

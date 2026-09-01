@@ -83,6 +83,16 @@ export function runProfilesCli(io: CliIO, nyxara: NyxaraOrchestrator): void {
   }
 }
 
+export function runRulesCli(io: CliIO, nyxara: NyxaraOrchestrator, id?: string): void {
+  if (id) {
+    const rule = nyxara.getEngineeringRule(id);
+    io.write(`ID\t${rule.id}\nName\t${rule.name}\nSeverity\t${rule.severity}\nScope\t${rule.scope}\nEnabled\t${rule.enabled}\nDescription\t${rule.description}\nInstruction\t${rule.instruction}\n`);
+    return;
+  }
+  io.write("Engineering rules\n\nID\tSeverity\tScope\n");
+  for (const rule of nyxara.listEngineeringRules()) io.write(`${rule.id}\t${rule.severity}\t${rule.scope}\n`);
+}
+
 export async function runPlanCli(
   io: CliIO,
   nyxara: NyxaraOrchestrator,

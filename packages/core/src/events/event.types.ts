@@ -154,6 +154,7 @@ export interface PlannerProfileResolvedEvent {
   readonly planStyle: "concise" | "balanced" | "detailed";
   readonly riskMode: "fast" | "balanced" | "conservative";
 }
+export interface RulesResolvedEvent { readonly ruleCount: number; readonly ruleSetFingerprint: string; readonly taskId?: string; readonly violatedCount?: number; readonly errorViolationCount?: number; }
 
 export interface PlannerCompletedEvent {
   readonly planId: string;
@@ -366,6 +367,7 @@ export interface NyxaraEventMap {
   readonly "context.failed": ContextFailedEvent;
   readonly "planner.started": PlannerStartedEvent;
   readonly "planner.profile_resolved": PlannerProfileResolvedEvent;
+  readonly "rules.resolved": RulesResolvedEvent;
   readonly "planner.completed": PlannerCompletedEvent;
   readonly "planner.failed": PlannerFailedEvent;
   readonly "plan.validation_started": PlanValidationStartedEvent;

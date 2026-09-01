@@ -6,6 +6,7 @@ import type {
   ReviewContextRequest,
   ReviewResult,
 } from "./reviewer.types.js";
+import type { ResolvedRuleSet } from "../rules/engineering-rule.js";
 
 const BROAD_REQUESTS = [
   "all files",
@@ -24,8 +25,10 @@ export class ReviewValidator {
     draft: ReviewResultDraft,
     acceptanceCriteria: readonly string[],
     validation: ValidationResult,
+    engineeringRules?: ResolvedRuleSet,
   ): ReviewResult {
     assertAllCriteriaEvaluated(draft, acceptanceCriteria);
+    const ruleEvaluations = validateRuleEvaluations(draft.ruleEvaluations, engineeringRules);
     const contextRequest = draft.contextRequest
       ? normalizeContextRequest(draft.contextRequest)
       : undefined;
@@ -52,7 +55,20 @@ export class ReviewValidator {
       ...(finding.file ? { file: finding.file } : {}),
       ...(finding.line !== undefined ? { line: finding.line } : {}),
       ...(finding.taskId ? { taskId: finding.taskId } : {}),
+      ...(finding.ruleId ? { ruleId: finding.ruleId } : {}),
     }));
+    if (engineeringRules) for (const evaluation of ruleEvaluations) {
+      if (evaluation.status !== "violated" && evaluation.status !== "uncertain") continue;
+      if (findings.some((finding) => finding.ruleId === evaluation.ruleId)) continue;
+      const rule = engineeringRules.rules.find((candidate) => candidate.id === evaluation.ruleId)!;
+      findings.push({
+        id: `RF${findings.length + 1}`,
+        severity: rule.severity,
+        category: "architecture",
+        message: `${evaluation.status === "violated" ? "Violated" : "Uncertain compliance with"} engineering rule ${rule.id}: ${rule.instruction}${evaluation.evidence ? ` Evidence: ${evaluation.evidence}` : ""}`,
+        ruleId: rule.id,
+      });
+    }
     let status = draft.status;
 
     const deterministicFailure =
@@ -80,12 +96,17 @@ export class ReviewValidator {
     ) {
       status = "failed";
     }
+    if (engineeringRules && ruleEvaluations.some((evaluation) => {
+      const rule = engineeringRules.rules.find((candidate) => candidate.id === evaluation.ruleId);
+      return rule?.severity === "error" && (evaluation.status === "violated" || evaluation.status === "uncertain");
+    })) status = "failed";
 
     return {
       status,
       summary: draft.summary,
       findings,
       criteria: draft.criteria,
+      ...(ruleEvaluations.length > 0 ? { ruleEvaluations } : {}),
       ...(draft.risks ? { risks: draft.risks } : {}),
       ...(status === "needs_more_context" && contextRequest
         ? { contextRequest }
@@ -93,6 +114,24 @@ export class ReviewValidator {
       reviewedAt: new Date().toISOString(),
     };
   }
+}
+
+function validateRuleEvaluations(input: ReviewResultDraft["ruleEvaluations"], rules?: ResolvedRuleSet) {
+  const evaluations = input ?? [];
+  const seen = new Set<string>();
+  for (const evaluation of evaluations) {
+    if (seen.has(evaluation.ruleId)) throw new ReviewerError("invalid_review", "Each engineering rule may be evaluated only once");
+    seen.add(evaluation.ruleId);
+    if (rules && !rules.rules.some((rule) => rule.id === evaluation.ruleId)) throw new ReviewerError("invalid_review", `Unknown engineering rule: ${evaluation.ruleId}`);
+  }
+  const normalized = evaluations.map((evaluation) => ({ ...evaluation, ...(evaluation.evidence !== undefined ? { evidence: evaluation.evidence } : {}) }));
+  // Backward-compatible providers may omit the new field entirely. Once present,
+  // however, the structured response must cover every applicable rule exactly once.
+  if (rules) for (const rule of rules.rules) if (!seen.has(rule.id)) {
+    if (input) throw new ReviewerError("invalid_review", `Reviewer must evaluate engineering rule: ${rule.id}`);
+    normalized.push({ ruleId: rule.id, status: "not_applicable" as const });
+  }
+  return normalized;
 }
 
 export function validateReviewContextRequest(

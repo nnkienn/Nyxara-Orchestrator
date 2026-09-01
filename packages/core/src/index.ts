@@ -20,6 +20,7 @@ export type {
   PlannerFailedEvent,
   PlannerStartedEvent,
   PlannerProfileResolvedEvent,
+  RulesResolvedEvent,
   PlanValidationFailedEvent,
   PlanValidationPassedEvent,
   PlanValidationStartedEvent,
@@ -258,6 +259,7 @@ export {
   truncateUtf8,
 } from "./review/review-evidence-builder.js";
 export { ReviewerError } from "./review/reviewer.errors.js";
+export * from "./rules/index.js";
 export type { ReviewerErrorCode } from "./review/reviewer.errors.js";
 export { Reviewer } from "./review/reviewer.js";
 export { ReviewerPromptBuilder } from "./review/reviewer-prompt-builder.js";
@@ -266,6 +268,7 @@ export {
   ReviewCriterionResultSchema,
   ReviewFindingDraftSchema,
   ReviewResultDraftSchema,
+  RuleEvaluationSchema,
 } from "./review/reviewer.schema.js";
 export type { ReviewResultDraft } from "./review/reviewer.schema.js";
 export { ReviewStore } from "./review/review-store.js";
@@ -291,6 +294,8 @@ export type {
   ReviewFindingCategory,
   ReviewFindingSeverity,
   ReviewResult,
+  RuleEvaluation,
+  RuleEvaluationStatus,
   ReviewStatus,
   ReviewTaskInput,
   ReviewTaskResult,

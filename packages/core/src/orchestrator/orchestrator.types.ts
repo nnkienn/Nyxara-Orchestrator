@@ -12,6 +12,7 @@ import type {
 } from "../executor/executor.types.js";
 import type { ExecutionPlan } from "../planner/planner.types.js";
 import type { PlanningProfile } from "../planner/planning-profile.js";
+import type { EngineeringRule } from "../rules/engineering-rule.js";
 import type { RepairLimits, RepairResult } from "../repair/repair.types.js";
 import type {
   ReviewerLimits,
@@ -50,6 +51,7 @@ export interface RunTaskPipelineInput {
   readonly allowRepair?: boolean;
   readonly signal?: AbortSignal;
   readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;
+  readonly engineeringRules?: import("../rules/engineering-rule.js").ResolvedRuleSet;
 }
 
 export type TaskPipelineStatus = "passed" | "failed";
@@ -108,6 +110,8 @@ export interface NyxaraOrchestratorConfig {
   readonly workflowLimits?: Partial<WorkflowLimits>;
   /** Validated process-local custom profiles, in addition to built-in presets. */
   readonly planningProfiles?: readonly PlanningProfile[];
+  /** Additional process-local global engineering rules. */
+  readonly engineeringRules?: readonly EngineeringRule[];
 }
 
 export interface ModelGenerateInput {
@@ -135,6 +139,7 @@ export interface RepairTaskInput {
   readonly signal?: AbortSignal;
   readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;
   readonly checkpoint?: () => Promise<void>;
+  readonly engineeringRules?: import("../rules/engineering-rule.js").ResolvedRuleSet;
 }
 
 export type RepairTaskResult = RepairResult;

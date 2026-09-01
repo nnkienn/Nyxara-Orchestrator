@@ -111,6 +111,8 @@ import type {
 import { deferred, type WorkflowRuntime } from "../workflow/workflow-runtime.js";
 import { randomUUID, createHash } from "node:crypto";
 import path from "node:path";
+import { EngineeringRuleRegistry } from "../rules/rule-registry.js";
+import { parseEngineeringRule, resolveEngineeringRules, type EngineeringRule, type ResolvedRuleSet } from "../rules/engineering-rule.js";
 
 const TOKEN_ESTIMATOR = new ApproximateTokenEstimator();
 
@@ -124,6 +126,8 @@ export class NyxaraOrchestrator {
   private readonly contextEngine: ContextEngine;
   private readonly planner: Planner;
   private readonly planningProfiles: PlanningProfileRegistry;
+  private readonly engineeringRules: EngineeringRuleRegistry;
+  private readonly planRuleSets = new Map<string, { planning: ResolvedRuleSet; tasks: ReadonlyMap<string, ResolvedRuleSet> }>();
   private readonly planRuntime = new PlanRuntimeStore();
   private readonly executor: Executor;
   private readonly taskExecutions = new TaskExecutionStore();
@@ -154,6 +158,7 @@ export class NyxaraOrchestrator {
     this.contextEngine = new ContextEngine(this.toolRegistry, this.events);
     this.agentModels = new AgentModelRegistry(config.agents ?? []);
     this.planningProfiles = new PlanningProfileRegistry(config.planningProfiles ?? []);
+    this.engineeringRules = new EngineeringRuleRegistry(config.engineeringRules ?? []);
     this.planner = new Planner(this.providerRegistry, this.events);
     this.executor = new Executor(
       this.providerRegistry,
@@ -436,6 +441,10 @@ export class NyxaraOrchestrator {
     return this.planningProfiles.list();
   }
 
+  registerEngineeringRule(rule: EngineeringRule): EngineeringRule { return this.engineeringRules.register(rule); }
+  getEngineeringRule(id: string): EngineeringRule { return this.engineeringRules.get(id); }
+  listEngineeringRules(): EngineeringRule[] { return this.engineeringRules.list(); }
+
   async createPlan(input: CreatePlanInput): Promise<PlanResult> {
     const workflowId = input.workflowId;
     // Resolve and snapshot once before repository or provider work. Registry
@@ -443,6 +452,8 @@ export class NyxaraOrchestrator {
     const planningProfile = this.planningProfiles.resolve(input.planningProfileId);
     const model = this.agentModels.get("planner");
     const profileMetadata = planningProfileMetadata(planningProfile);
+    const workspaceRules = (input.workspaceRules ?? []).map(parseEngineeringRule);
+    const planningRules = resolveEngineeringRules(this.engineeringRules.list(), workspaceRules);
     const replacingDraft = workflowId !== undefined
       && this.workflowEngine.get(workflowId).status === "awaiting_plan_approval";
     this.events.emit("planner.profile_resolved", {
@@ -452,6 +463,7 @@ export class NyxaraOrchestrator {
       planStyle: profileMetadata.planStyle,
       riskMode: profileMetadata.riskMode,
     });
+    this.events.emit("rules.resolved", { ruleCount: planningRules.rules.length, ruleSetFingerprint: planningRules.fingerprint });
     if (!replacingDraft) this.enterWorkflowStatus(workflowId, "planning");
 
     try {
@@ -470,7 +482,19 @@ export class NyxaraOrchestrator {
         },
         model,
         planningProfile,
+        engineeringRules: planningRules,
       });
+
+      const taskRuleSets = new Map<string, ResolvedRuleSet>();
+      for (const task of plan.tasks) {
+        const overrides = (input.taskRules?.[task.id] ?? []).map(parseEngineeringRule);
+        taskRuleSets.set(task.id, resolveEngineeringRules(this.engineeringRules.list(), workspaceRules, overrides));
+      }
+      this.planRuleSets.set(plan.id, Object.freeze({ planning: planningRules, tasks: taskRuleSets }));
+      if (this.planRuleSets.size > 256) {
+        this.planRuleSets.delete(plan.id);
+        throw new Error("Engineering rule snapshot store is limited to 256 plans");
+      }
 
       if (workflowId) {
         this.plannerContexts.set(plan.id, context);
@@ -496,6 +520,8 @@ export class NyxaraOrchestrator {
         graph: new TaskGraph(plan),
         planningProfile: profileMetadata,
         planningProfileId: profileMetadata.id,
+        ruleSetFingerprint: planningRules.fingerprint,
+        effectiveRuleIds: Object.freeze(planningRules.rules.map((rule) => rule.id)),
       };
     } catch (error: unknown) {
       // Failed regeneration leaves the prior draft available for approval.
@@ -891,6 +917,7 @@ export class NyxaraOrchestrator {
       execution: input.execution,
       validation: input.validation,
       evidence,
+      ...(input.engineeringRules ? { engineeringRules: input.engineeringRules } : {}),
     };
     const reviewed = await this.reviewer.run({
       input: reviewerInput,
@@ -909,6 +936,7 @@ export class NyxaraOrchestrator {
             maxBytesPerFile: budget.maxBytesPerContextFile,
           },
           ...(input.signal ? { signal: input.signal } : {}),
+          ...(input.engineeringRules ? { engineeringRules: input.engineeringRules } : {}),
         });
         const expandedEvidence = this.reviewEvidenceBuilder.expand(
           currentEvidence,
@@ -985,6 +1013,7 @@ export class NyxaraOrchestrator {
             : {}),
           ...(request.limits ? { limits: request.limits } : {}),
           ...(request.signal ? { signal: request.signal } : {}),
+          ...((this.planRuleSets.get(plan.id)?.tasks.get(task.id) ?? input.engineeringRules) ? { engineeringRules: this.planRuleSets.get(plan.id)?.tasks.get(task.id) ?? input.engineeringRules } : {}),
         });
         return reviewed.result;
       },
@@ -1109,6 +1138,7 @@ export class NyxaraOrchestrator {
             : {}),
           ...(input.reviewerLimits ? { limits: input.reviewerLimits } : {}),
           ...(input.signal ? { signal: input.signal } : {}),
+          ...((this.planRuleSets.get(plan.id)?.tasks.get(task.id) ?? input.engineeringRules) ? { engineeringRules: this.planRuleSets.get(plan.id)?.tasks.get(task.id) ?? input.engineeringRules } : {}),
         });
         this.recordWorkflowTask(workflowId, {
           taskId: task.id,
@@ -1170,6 +1200,7 @@ export class NyxaraOrchestrator {
           : {}),
         ...(input.repairLimits ? { limits: input.repairLimits } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
+        ...((this.planRuleSets.get(plan.id)?.tasks.get(task.id) ?? input.engineeringRules) ? { engineeringRules: this.planRuleSets.get(plan.id)?.tasks.get(task.id) ?? input.engineeringRules } : {}),
         ...(input.resolvePermission ? { resolvePermission: input.resolvePermission } : {}),
         ...(workflowId ? { checkpoint: () => this.pauseAtBoundary(workflowId) } : {}),
       });

@@ -2,6 +2,7 @@ import type { AgentModelConfig } from "../agents/agent.types.js";
 import type { ContextBundle } from "../context/context.types.js";
 import type { ExecutionResult } from "../executor/executor.types.js";
 import type { PlannedTask } from "../planner/planner.types.js";
+import type { ResolvedRuleSet } from "../rules/engineering-rule.js";
 import type {
   ValidationKind,
   ValidationResult,
@@ -90,7 +91,11 @@ export interface ReviewFinding {
   readonly file?: string;
   readonly line?: number;
   readonly taskId?: string;
+  readonly ruleId?: string;
 }
+
+export type RuleEvaluationStatus = "satisfied" | "violated" | "not_applicable" | "uncertain";
+export interface RuleEvaluation { readonly ruleId: string; readonly status: RuleEvaluationStatus; readonly evidence?: string | undefined; }
 
 export interface ReviewCriterionResult {
   readonly criterion: string;
@@ -103,6 +108,7 @@ export interface ReviewResult {
   readonly summary: string;
   readonly findings: readonly ReviewFinding[];
   readonly criteria: readonly ReviewCriterionResult[];
+  readonly ruleEvaluations?: readonly RuleEvaluation[];
   readonly risks?: readonly string[];
   readonly contextRequest?: ReviewContextRequest;
   readonly reviewedAt: string;
@@ -115,6 +121,7 @@ export interface ReviewerInput {
   readonly execution: ExecutionResult;
   readonly validation: ValidationResult;
   readonly evidence: ReviewEvidenceBundle;
+  readonly engineeringRules?: ResolvedRuleSet;
 }
 
 export interface ReviewEvidenceInput {
@@ -167,6 +174,7 @@ export interface ReviewTaskInput {
   readonly evidenceBudget?: Partial<ReviewEvidenceBudget>;
   readonly limits?: Partial<ReviewerLimits>;
   readonly signal?: AbortSignal;
+  readonly engineeringRules?: ResolvedRuleSet;
 }
 
 export interface ReviewTaskResult extends ReviewerRunResult {

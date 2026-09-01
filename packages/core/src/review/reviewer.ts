@@ -145,6 +145,7 @@ export class Reviewer {
         schemaResult.data,
         input.task.acceptanceCriteria,
         input.validation,
+        input.engineeringRules,
       );
       this.events.emit("review.validation_passed", {
         taskId: input.task.id,

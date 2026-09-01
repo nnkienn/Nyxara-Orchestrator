@@ -3,6 +3,8 @@ import type { AgentModelConfig } from "../agents/agent.types.js";
 import type { ContextBudget, ContextBundle } from "../context/context.types.js";
 import type { TaskGraph } from "./task-graph.js";
 import type { PlanningProfile, PlanningProfileMetadata } from "./planning-profile.js";
+import type { ResolvedRuleSet } from "../rules/engineering-rule.js";
+import type { EngineeringRule } from "../rules/engineering-rule.js";
 
 export const PlanRiskSchema = z.object({
   description: z.string().trim().min(1),
@@ -57,12 +59,17 @@ export interface CreatePlanInput {
   readonly signal?: AbortSignal;
   /** Omit to use the built-in default. An explicit unknown ID fails before provider use. */
   readonly planningProfileId?: string;
+  /** Process-local overrides for this planning run; workspace overrides global rules. */
+  readonly workspaceRules?: readonly EngineeringRule[];
+  /** Task-specific overrides keyed by the stable planned task ID. */
+  readonly taskRules?: Readonly<Record<string, readonly EngineeringRule[]>>;
 }
 
 export interface PlannerRunInput {
   readonly input: PlannerInput;
   readonly model: AgentModelConfig;
   readonly planningProfile?: PlanningProfile;
+  readonly engineeringRules?: ResolvedRuleSet;
 }
 
 export interface PlanResult {
@@ -73,6 +80,8 @@ export interface PlanResult {
   /** Compact generation metadata; it is not part of the execution plan fingerprint. */
   readonly planningProfile: PlanningProfileMetadata;
   readonly planningProfileId: string;
+  readonly ruleSetFingerprint?: string;
+  readonly effectiveRuleIds?: readonly string[];
 }
 
 export function normalizePlannerInput(input: PlannerInput): PlannerInput {

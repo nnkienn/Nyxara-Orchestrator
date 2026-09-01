@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@nyxara/core": ["../../packages/core/dist/index.d.ts"],
+      "@nyxara/providers": ["../../packages/providers/dist/index.d.ts"],
+      "@nyxara/provider-sdk": ["../../packages/provider-sdk/dist/index.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts"]
+}
