@@ -10,6 +10,7 @@ export function percentile(values: number[], p: number): number {
 }
 
 export function stats(values: number[]): NumericStats {
+  values = values.filter(Number.isFinite);
   if (!values.length) return { min: 0, max: 0, mean: 0, median: 0, p95: 0, stddev: 0, count: 0 };
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
   const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;

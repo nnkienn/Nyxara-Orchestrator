@@ -2,7 +2,8 @@ export type ProviderMode = "fake" | "real";
 export type ScenarioStatus = "completed" | "failed" | "skipped" | "aborted";
 export type WorkloadProfile = "light" | "normal" | "heavy" | "repair-heavy";
 export type MetricSource = "real_core" | "synthetic_provider" | "real_provider" | "process_self" | "process_tree" | "extension_host" | "unavailable";
-export const BENCHMARK_RUNNER_VERSION = "10B.1";
+/** Single source of truth for report/CLI benchmark versioning. */
+export const BENCHMARK_RUNNER_VERSION = "10B.2";
 
 export interface BenchmarkConfig {
   warmupRuns: number;
@@ -28,6 +29,27 @@ export interface BenchmarkConfig {
   yes?: boolean;
   quiet?: boolean;
   keepFixture?: boolean;
+  matrixConfig?: string;
+  /** Internal harness hook; never serialized into reports. */
+  progress?: (message: string) => void;
+  /** Optional injected adapters used by tests/embedders for real-provider dogfood. */
+  realProvider?: BenchmarkRealProvider;
+}
+
+export interface BenchmarkProviderResponse {
+  provider: string;
+  model: string;
+  latencyMs: number;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  structuredOutputValid?: boolean;
+  toolCallSupported?: boolean;
+  toolCallSucceeded?: boolean;
+  invalidToolCalls?: number;
+  toolCallCount?: number;
+}
+
+export interface BenchmarkRealProvider {
+  generate(role: "planner" | "executor" | "reviewer" | "repair", input: { prompt: string; model: string; tools?: boolean; structured?: boolean }): Promise<BenchmarkProviderResponse>;
 }
 
 export interface NumericStats { min: number; max: number; mean: number; median: number; p95: number; stddev: number; count: number; }
@@ -46,5 +68,5 @@ export interface WorkflowMetrics {
 }
 export interface TimelineEvent { phase: string; startMs: number; endMs: number; }
 export interface Sample { timestampMs: number; scenario: string; run: number; rssMb: number | null; heapUsedMb: number | null; heapTotalMb: number | null; externalMb: number | null; arrayBuffersMb: number | null; cpuUserMs: number | null; cpuSystemMs: number | null; cpuPercent: number | null; source: "process_self" | "extension_host" | "vscode_total" | "unavailable"; }
-export interface ScenarioResult { name: string; status: ScenarioStatus; runs: Array<Record<string, unknown>>; duration?: NumericStats; harnessDuration?: NumericStats; memory?: MemorySummary; metrics?: WorkflowMetrics; timeline?: TimelineEvent[]; workloadProfile?: WorkloadProfile; latencySource?: string; memorySource?: MetricSource; warnings?: string[]; errorCode?: string; error?: string; }
-export interface BenchmarkReport { schemaVersion: 1; benchmarkRunId: string; timestamp: string; label?: string; environment: Record<string, unknown>; repository: Record<string, unknown>; configuration: BenchmarkConfig; scenarios: ScenarioResult[]; summary: Record<string, unknown>; warnings: string[]; }
+export interface ScenarioResult { name: string; status: ScenarioStatus; runs: Array<Record<string, unknown>>; duration?: NumericStats; harnessDuration?: NumericStats; memory?: MemorySummary; metrics?: WorkflowMetrics; timeline?: TimelineEvent[]; workloadProfile?: WorkloadProfile | undefined; latencySource?: string; memorySource?: MetricSource; warnings?: string[]; errorCode?: string; error?: string; }
+export interface BenchmarkReport { schemaVersion: 1; benchmarkRunId: string; timestamp: string; status: "completed" | "aborted"; label?: string; environment: Record<string, unknown>; repository: Record<string, unknown>; configuration: BenchmarkConfig; scenarios: ScenarioResult[]; summary: Record<string, unknown>; warnings: string[]; }
