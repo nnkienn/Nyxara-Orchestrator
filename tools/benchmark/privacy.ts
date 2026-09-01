@@ -2,5 +2,6 @@ const blockedKey = /(secret|api.?key|token.?value|prompt|response|source.?code|t
 export function sanitizeForReport(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sanitizeForReport);
   if (value && typeof value === "object") { const out: Record<string, unknown> = {}; for (const [key, item] of Object.entries(value)) { if (!blockedKey.test(key)) out[key] = sanitizeForReport(item); } return out; }
+  if (typeof value === "number" && !Number.isFinite(value)) return null;
   return value;
 }

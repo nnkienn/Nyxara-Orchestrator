@@ -10,3 +10,4 @@ export * from "./config.js";
 export * from "./process-tree.js";
 export * from "./extension-host.js";
 export * from "./fake-provider.js";
+export * from "./fixture.js";

@@ -2,6 +2,7 @@ export type ProviderMode = "fake" | "real";
 export type ScenarioStatus = "completed" | "failed" | "skipped" | "aborted";
 export type WorkloadProfile = "light" | "normal" | "heavy" | "repair-heavy";
 export type MetricSource = "real_core" | "synthetic_provider" | "real_provider" | "process_self" | "process_tree" | "extension_host" | "unavailable";
+export const BENCHMARK_RUNNER_VERSION = "10B.1";
 
 export interface BenchmarkConfig {
   warmupRuns: number;
@@ -18,6 +19,15 @@ export interface BenchmarkConfig {
   seed: number;
   workloadProfile: WorkloadProfile;
   realistic: boolean;
+  plannerProvider?: string;
+  plannerModel?: string;
+  executorProvider?: string;
+  executorModel?: string;
+  reviewerProvider?: string;
+  reviewerModel?: string;
+  yes?: boolean;
+  quiet?: boolean;
+  keepFixture?: boolean;
 }
 
 export interface NumericStats { min: number; max: number; mean: number; median: number; p95: number; stddev: number; count: number; }
