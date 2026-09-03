@@ -150,6 +150,7 @@ export interface RepairResult {
 }
 
 export interface RepairWorkflowInput {
+  readonly workflowId?: string;
   readonly requirement: string;
   readonly objective: string;
   readonly originalTask: PlannedTask;

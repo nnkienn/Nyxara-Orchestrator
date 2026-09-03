@@ -74,6 +74,7 @@ export class Executor {
         },
         model: runInput.model,
         ...(runInput.limits ? { limits: runInput.limits } : {}),
+        ...(runInput.workflowId ? { workflowId: runInput.workflowId } : {}),
       },
       runInput.input,
     );
@@ -137,12 +138,18 @@ export class Executor {
       const changedPaths = new Set<string>();
       const unresolvedToolErrors = new Map<string, string>();
       let toolCallCount = 0;
+      let successfulToolCalls = 0;
+      let failedToolCalls = 0;
+      let invalidToolCalls = 0;
+      let toolDurationMs = 0;
+      const toolCallsByName: Record<string, number> = {};
 
       for (let modelTurn = 1; modelTurn <= limits.maxModelTurnsPerTask; modelTurn += 1) {
         await input.checkpoint?.();
         if (input.signal?.aborted) {
           throw new ExecutorError("executor_aborted", "Executor run was aborted");
         }
+        const providerStarted = performance.now();
         const response = await provider.generate({
           model: selectedModel.id,
           prompt,
@@ -152,6 +159,23 @@ export class Executor {
           provider.capabilities().structuredOutput
             ? { responseFormat: "json" as const }
             : {}),
+        });
+        // Provider wait is measured at the provider boundary and contains no
+        // local tool or validation work.
+        if (runInput.workflowId) this.events.emit("provider.generation.completed", {
+          providerId: provider.id,
+          modelId: response.model,
+          requestedModelId: selectedModel.id,
+          role: repairInput ? "repair" : "executor",
+          taskId: input.task.id,
+          ...(runInput.workflowId ? { workflowId: runInput.workflowId } : {}),
+          providerDurationMs: Math.max(0, performance.now() - providerStarted),
+          textLength: response.text.length,
+          toolCallCount: response.toolCalls?.length ?? 0,
+          contextFiles: input.context.files.length,
+          contextBytes: input.context.totalBytes,
+          contextTruncated: input.context.truncated,
+          ...(response.usage ? { usage: response.usage } : {}),
         });
         const requestedCalls = response.toolCalls ?? [];
 
@@ -178,7 +202,12 @@ export class Executor {
             initialDiff,
             changedPaths,
             toolCallCount,
+            toolDurationMs,
             modelTurns: modelTurn,
+            successfulToolCalls,
+            failedToolCalls,
+            invalidToolCalls,
+            toolCallsByName,
           });
           if (result.status === "completed") {
             this.events.emit("executor.completed", {
@@ -187,7 +216,9 @@ export class Executor {
               modelId: model.modelId,
               changedFileCount: result.changedFiles.length,
               toolCalls: result.toolCalls,
+              ...(result.toolDurationMs !== undefined ? { toolDurationMs: result.toolDurationMs } : {}),
               modelTurns: result.modelTurns,
+              ...(runInput.workflowId ? { workflowId: runInput.workflowId, successfulToolCalls: result.successfulToolCalls, failedToolCalls: result.failedToolCalls, invalidToolCalls: result.invalidToolCalls, toolCallsByName: result.toolCallsByName } : {}),
             });
           } else {
             this.events.emit("executor.failed", {
@@ -229,14 +260,20 @@ export class Executor {
         });
         for (const call of requestedCalls) {
           toolCallCount += 1;
+          toolCallsByName[call.name] = (toolCallsByName[call.name] ?? 0) + 1;
+          if (!EXECUTOR_TOOL_NAMES.has(call.name) || !isRecord(call.arguments)) invalidToolCalls += 1;
+          const toolStarted = performance.now();
           const outcome = await this.executeToolCall(
             call,
             context,
             limits.maxToolResultBytes,
           );
+          toolDurationMs += Math.max(0, performance.now() - toolStarted);
           if (outcome.result.error) {
+            failedToolCalls += 1;
             unresolvedToolErrors.set(call.name, outcome.result.error.code);
           } else {
+            successfulToolCalls += 1;
             unresolvedToolErrors.delete(call.name);
           }
           outcome.changedPaths.forEach((path) => changedPaths.add(path));
@@ -361,7 +398,12 @@ export class Executor {
     readonly initialDiff: GitDiffResult;
     readonly changedPaths: ReadonlySet<string>;
     readonly toolCallCount: number;
+    readonly toolDurationMs: number;
     readonly modelTurns: number;
+    readonly successfulToolCalls: number;
+    readonly failedToolCalls: number;
+    readonly invalidToolCalls: number;
+    readonly toolCallsByName: Readonly<Record<string, number>>;
   }): Promise<ExecutionResult> {
     const [finalStatus, diff] = await Promise.all([
       this.tools.execute<Record<string, never>, GitStatusResult>(
@@ -405,6 +447,11 @@ export class Executor {
       summary: input.decision.summary,
       changedFiles,
       toolCalls: input.toolCallCount,
+      toolDurationMs: input.toolDurationMs,
+      successfulToolCalls: input.successfulToolCalls,
+      failedToolCalls: input.failedToolCalls,
+      invalidToolCalls: input.invalidToolCalls,
+      toolCallsByName: { ...input.toolCallsByName },
       modelTurns: input.modelTurns,
       ...(input.decision.unresolvedIssues
         ? { unresolvedIssues: input.decision.unresolvedIssues }

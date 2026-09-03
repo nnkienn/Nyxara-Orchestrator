@@ -212,10 +212,17 @@ export async function runApprovedPlanCli(
       return;
     }
     io.write(`\nWorkflow ${result.status.toUpperCase()} (${result.completedTasks}/${result.totalTasks})\n`);
+    if (result.usage) io.write(formatUsageSummary(result.usage));
     if (result.changedFiles.length) { io.write("Changed files\n"); result.changedFiles.forEach((file) => io.write(`- ${file}\n`)); }
   } finally {
     unsubscribers.forEach((unsubscribe) => unsubscribe());
   }
+}
+
+export function formatUsageSummary(usage: import("@nyxara/core").WorkflowUsage): string {
+  const f = (n: number | null | undefined) => n == null ? "-" : Math.round(n).toLocaleString();
+  const source = usage.usageSource === "provider_reported" ? "Provider reported" : usage.usageSource === "estimated" ? "Estimated" : "Unavailable";
+  return `\nTokens\n  Planner     ${f(usage.planner.totalTokens)}\n  Executor    ${f(usage.executor.totalTokens)}\n  Reviewer    ${f(usage.reviewer.totalTokens)}\n  Repair      ${usage.repair.calls === 0 ? "-" : f(usage.repair.totalTokens)}\n  Total       ${f(usage.totalTokens)}\n\nCalls\n  Model       ${usage.totalProviderCalls}\n  Tools       ${usage.totalToolCalls}\n  Repair cycles ${usage.repairCycles}\n\nValidation\n  ${usage.validation?.status === "passed" ? "Passed" : usage.validation?.status === "failed" ? "Failed" : "-"}\n\nTime\n  Total       ${f(usage.totalDurationMs)} ms\n  AI waiting  ${f(usage.totalProviderDurationMs)} ms\n  Validation  ${f(usage.validation?.durationMs)} ms\n  Local       ${f(usage.localOrchestrationDurationMs)} ms\n\nUsage source\n  ${source}\n`;
 }
 
 /** Runtime controls are intentionally process-local; no daemon/session is implied. */

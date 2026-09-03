@@ -19,6 +19,7 @@ export class NyxaraSession {
   result?: AutonomousWorkflowResult;
   readonly validation = new Map<string, string>();
   reviewStatus?: string;
+  configured = false;
   onChange?: () => void;
 
   constructor(private readonly context: { secrets: any }, private readonly output: { appendLine(value: string): void }, baseUrl = "https://api.openai.com/v1", injectedCore?: NyxaraOrchestrator) {
@@ -38,11 +39,16 @@ export class NyxaraSession {
 
   configureAgents(settings: (key: string) => string): void {
     const roles: AgentRole[] = ["planner", "executor", "reviewer"];
+    let configuredRoles = 0;
     for (const role of roles) {
       const providerId = settings(`nyxara.${role}.provider`);
       const modelId = settings(`nyxara.${role}.model`);
-      if (providerId && modelId) this.core.configureAgent({ role, providerId, modelId });
+      if (providerId && modelId) {
+        this.core.configureAgent({ role, providerId, modelId });
+        configuredRoles += 1;
+      }
     }
+    this.configured = configuredRoles === roles.length;
   }
 
   async generate(prompt: string, workspaceRoot: string, profileId: string): Promise<PlanResult> {
@@ -70,6 +76,13 @@ export class NyxaraSession {
     this.refresh();
     this.onChange?.();
     return outcome;
+  }
+
+  rejectPlan(): void {
+    if (!this.workflowId || !this.plan) throw new Error("Generate a plan first");
+    this.core.rejectPlan(this.workflowId, this.plan.plan.id);
+    this.refresh();
+    this.onChange?.();
   }
 
   async continue(outcome: WorkflowRunOutcome): Promise<AutonomousWorkflowResult | WorkflowRunOutcome> {

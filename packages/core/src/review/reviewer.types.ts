@@ -154,6 +154,7 @@ export interface ReviewerRunInput {
     request: ReviewContextRequest,
     evidence: ReviewEvidenceBundle,
   ) => Promise<ReviewContextExpansion>;
+  readonly workflowId?: string;
 }
 
 export interface ReviewerRunResult {
@@ -164,6 +165,7 @@ export interface ReviewerRunResult {
 }
 
 export interface ReviewTaskInput {
+  readonly workflowId?: string;
   readonly requirement: string;
   readonly objective: string;
   readonly task: PlannedTask;

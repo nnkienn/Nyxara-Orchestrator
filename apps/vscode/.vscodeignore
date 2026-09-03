@@ -1,0 +1,14 @@
+src/**
+test/**
+**/*.map
+**/*.ts
+tsconfig.json
+node_modules/**
+benchmark-results/**
+coverage/**
+.git/**
+.env
+.env.*
+dist/**
+!dist/extension.cjs
+!media/**

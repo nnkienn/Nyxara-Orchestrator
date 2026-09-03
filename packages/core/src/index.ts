@@ -51,6 +51,7 @@ export type {
   ReviewValidationPassedEvent,
   ReviewValidationStartedEvent,
   RepairEvent,
+  UsageEvent,
   WorkflowCompletedEvent,
   WorkflowFailedEvent,
   WorkflowStartedEvent,
@@ -317,6 +318,8 @@ export type {
   WorkflowRunOutcome,
   ResolveWorkflowPermissionInput,
 } from "./orchestrator/orchestrator.types.js";
+export type { WorkflowUsage, RoleUsage, TaskUsage, UsageSource } from "@nyxara/shared";
+export { aggregateWorkflowUsage } from "@nyxara/shared";
 export {
   ProviderRegistry,
   ProviderRegistryError,

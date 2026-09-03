@@ -311,13 +311,17 @@ export class OpenAICompatibleProvider implements ModelProvider {
       return undefined;
     }
 
-    const inputTokens = this.optionalNumber(value.prompt_tokens);
-    const outputTokens = this.optionalNumber(value.completion_tokens);
-    const totalTokens = this.optionalNumber(value.total_tokens);
+    const inputTokens = this.optionalNumber(value.prompt_tokens ?? value.input_tokens ?? value.inputTokens);
+    const outputTokens = this.optionalNumber(value.completion_tokens ?? value.output_tokens ?? value.outputTokens);
+    const totalTokens = this.optionalNumber(value.total_tokens ?? value.totalTokens) ?? (inputTokens !== undefined && outputTokens !== undefined ? inputTokens + outputTokens : undefined);
+    const cost = this.optionalNumber(value.cost ?? value.total_cost);
+    const currency = typeof value.currency === "string" && value.currency.trim() ? value.currency.trim() : undefined;
     const usage: GenerateUsage = {
       ...(inputTokens !== undefined ? { inputTokens } : {}),
       ...(outputTokens !== undefined ? { outputTokens } : {}),
       ...(totalTokens !== undefined ? { totalTokens } : {}),
+      ...(cost !== undefined ? { cost } : {}),
+      ...(currency !== undefined ? { currency } : {}),
     };
 
     return Object.keys(usage).length > 0 ? usage : undefined;

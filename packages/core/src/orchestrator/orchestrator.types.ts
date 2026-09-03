@@ -25,6 +25,7 @@ import type {
   ValidationResult,
 } from "../validation/validation.types.js";
 import type { WorkflowLimits } from "../workflow/workflow.types.js";
+import type { WorkflowUsage } from "@nyxara/shared";
 
 export interface StartWorkflowInput {
   readonly workspace: string;
@@ -71,6 +72,7 @@ export interface AutonomousWorkflowResult {
   readonly completedAt: string;
   readonly durationMs: number;
   readonly failure?: { readonly taskId?: string; readonly code: string; readonly message: string };
+  readonly usage?: WorkflowUsage;
 }
 
 export type WorkflowRunOutcome =
@@ -96,6 +98,7 @@ export interface TaskPipelineResult {
   readonly reviewEvidence?: ReviewEvidenceBundle;
   /** True when validation failed, which forbids calling the Reviewer. */
   readonly reviewSkipped: boolean;
+  readonly usage?: WorkflowUsage;
 }
 
 export interface NyxaraOrchestratorConfig {
@@ -121,6 +124,7 @@ export interface ModelGenerateInput {
 }
 
 export interface RepairTaskInput {
+  readonly workflowId?: string;
   readonly requirement: string;
   readonly objective: string;
   readonly plan: ExecutionPlan;

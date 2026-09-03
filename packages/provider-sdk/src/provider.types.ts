@@ -59,6 +59,9 @@ export interface GenerateUsage {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly totalTokens?: number;
+  /** Provider-reported authoritative cost, when supplied by the provider. */
+  readonly cost?: number;
+  readonly currency?: string;
 }
 
 export interface GenerateResponse {

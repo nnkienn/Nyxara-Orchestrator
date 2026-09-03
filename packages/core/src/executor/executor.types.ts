@@ -39,6 +39,7 @@ export interface ExecutorRunInput {
   readonly input: ExecutorInput;
   readonly model: AgentModelConfig;
   readonly limits?: Partial<ExecutorLimits>;
+  readonly workflowId?: string;
 }
 
 export interface RepairExecutorInput {
@@ -57,6 +58,7 @@ export interface RepairExecutorRunInput {
   readonly input: RepairExecutorInput;
   readonly model: AgentModelConfig;
   readonly limits?: Partial<ExecutorLimits>;
+  readonly workflowId?: string;
 }
 
 export interface ExecutionGitEvidence {
@@ -72,6 +74,12 @@ export interface ExecutionResult {
   readonly summary: string;
   readonly changedFiles: readonly string[];
   readonly toolCalls: number;
+  readonly toolDurationMs?: number;
+  /** Model-requested tool calls, with execution outcome semantics. */
+  readonly successfulToolCalls?: number;
+  readonly failedToolCalls?: number;
+  readonly invalidToolCalls?: number;
+  readonly toolCallsByName?: Readonly<Record<string, number>>;
   readonly modelTurns: number;
   readonly unresolvedIssues?: readonly string[];
   readonly diff: {

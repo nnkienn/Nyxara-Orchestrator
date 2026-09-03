@@ -13,3 +13,5 @@ export type {
   WorkflowStatus,
   WorkflowTaskSnapshot,
 } from "./workflow.js";
+export { aggregateWorkflowUsage, normalizeUsage } from "./usage.js";
+export type { UsageSource, UsageRole, UsageValues, UsageRecord, RoleUsage, TaskUsage, WorkflowUsage, ValidationUsage, CostSource } from "./usage.js";

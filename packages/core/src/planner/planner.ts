@@ -42,6 +42,10 @@ export class Planner {
         provider,
         prompt,
         selectedModel,
+        runInput.workflowId,
+        input.context.files.length,
+        input.context.totalBytes,
+        input.context.truncated,
       );
       const parsed = this.parseResponse(response.text);
 
@@ -109,8 +113,13 @@ export class Planner {
     provider: ReturnType<ProviderRegistry["get"]>,
     prompt: string,
     model: ModelInfo,
+    workflowId?: string,
+    contextFiles?: number,
+    contextBytes?: number | null,
+    contextTruncated?: boolean,
   ): Promise<GenerateResponse> {
     try {
+      const started = performance.now();
       const response = await provider.generate({
         model: model.id,
         prompt,
@@ -122,10 +131,17 @@ export class Planner {
       this.events.emit("provider.generation.completed", {
         providerId: provider.id,
         modelId: response.model,
+        requestedModelId: model.id,
+        role: "planner",
+        ...(workflowId ? { workflowId } : {}),
+        providerDurationMs: performance.now() - started,
         ...(response.id ? { responseId: response.id } : {}),
         ...(response.finishReason ? { finishReason: response.finishReason } : {}),
         textLength: response.text.length,
         toolCallCount: response.toolCalls?.length ?? 0,
+        ...(contextFiles !== undefined ? { contextFiles } : {}),
+        ...(contextBytes !== undefined ? { contextBytes } : {}),
+        ...(contextTruncated !== undefined ? { contextTruncated } : {}),
         ...(response.usage ? { usage: response.usage } : {}),
       });
       return response;

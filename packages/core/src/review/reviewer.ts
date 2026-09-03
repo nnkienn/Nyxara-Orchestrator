@@ -63,6 +63,11 @@ export class Reviewer {
           provider,
           selectedModel,
           this.promptBuilder.build(input),
+          runInput.workflowId,
+          input.task.id,
+          evidence.context.length,
+          reviewContextBytes(evidence),
+          evidence.truncated,
         );
         const result = this.parseAndValidate(response, input);
 
@@ -177,8 +182,14 @@ export class Reviewer {
     provider: ReturnType<ProviderRegistry["get"]>,
     model: ModelInfo,
     prompt: string,
+    workflowId?: string,
+    taskId?: string,
+    contextFiles?: number,
+    contextBytes?: number | null,
+    contextTruncated?: boolean,
   ): Promise<GenerateResponse> {
     try {
+      const started = performance.now();
       const response = await provider.generate({
         model: model.id,
         prompt,
@@ -190,10 +201,18 @@ export class Reviewer {
       this.events.emit("provider.generation.completed", {
         providerId: provider.id,
         modelId: response.model,
+        requestedModelId: model.id,
+        role: "reviewer",
+        ...(workflowId ? { workflowId } : {}),
+        ...(taskId ? { taskId } : {}),
+        providerDurationMs: performance.now() - started,
         ...(response.id ? { responseId: response.id } : {}),
         ...(response.finishReason ? { finishReason: response.finishReason } : {}),
         textLength: response.text.length,
         toolCallCount: response.toolCalls?.length ?? 0,
+        ...(contextFiles !== undefined ? { contextFiles } : {}),
+        ...(contextBytes !== undefined ? { contextBytes } : {}),
+        ...(contextTruncated !== undefined ? { contextTruncated } : {}),
         ...(response.usage ? { usage: response.usage } : {}),
       });
       return response;

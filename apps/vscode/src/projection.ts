@@ -21,8 +21,20 @@ export function workflowStage(snapshot: WorkflowSnapshot | undefined): string {
   }
 }
 
+export function usageSummary(snapshot: WorkflowSnapshot | undefined): { tokens: number | null; modelCalls: number; usageSource: string; durationMs?: number | null } | undefined {
+  const usage = snapshot?.usage;
+  if (!usage) return undefined;
+  return { tokens: usage.totalTokens, modelCalls: usage.totalProviderCalls, usageSource: usage.usageSource === "provider_reported" ? "Provider reported" : usage.usageSource === "estimated" ? "Estimated" : "Unavailable", ...(usage.totalDurationMs !== undefined ? { durationMs: usage.totalDurationMs } : {}) };
+}
+
 /** Bounded, metadata-only text suitable for a sidebar or notification. */
 export function safeErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message.slice(0, 240);
+  if (error instanceof Error) {
+    const bounded = error.message.slice(0, 240);
+    return bounded
+      .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi, "$1[redacted]")
+      .replace(/(api[-_ ]?key\s*[:=]\s*)[^\s,;]+/gi, "$1[redacted]")
+      .replace(/\bsk-[a-z0-9_-]{8,}\b/gi, "[redacted]");
+  }
   return "Nyxara operation failed";
 }

@@ -255,6 +255,12 @@ describe("OpenAICompatibleProvider", () => {
     });
   });
 
+  it("normalizes Responses-style token names and provider cost", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ model: "m", choices: [{ message: { content: "ok" } }], usage: { input_tokens: 7, output_tokens: 3, cost: 0.01, currency: "USD" } })) as unknown as typeof fetch;
+    const provider = new OpenAICompatibleProvider({ fetch: fetchMock });
+    await expect(provider.generate({ model: "m", prompt: "x" })).resolves.toMatchObject({ usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10, cost: 0.01, currency: "USD" } });
+  });
+
   it("returns invalid_response for malformed provider output", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ data: [{}] })) as unknown as
       typeof fetch;

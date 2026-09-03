@@ -15,6 +15,7 @@ import {
   runRepairCli,
   runReviewCli,
   runValidationCli,
+  formatUsageSummary,
   type CliIO,
 } from "../src/cli.js";
 
@@ -41,6 +42,17 @@ describe("Nyxara runtime-control CLI", () => {
 });
 
 describe("Nyxara CLI", () => {
+  it("renders the authoritative Core usage summary without recalculating totals", () => {
+    const output = formatUsageSummary({
+      planner: { totalTokens: 10 }, executor: { totalTokens: 20 }, reviewer: { totalTokens: 5 }, repair: { calls: 0, totalTokens: null },
+      totalTokens: 35, totalProviderCalls: 3, totalToolCalls: 1, repairCycles: 0, totalDurationMs: 120, totalProviderDurationMs: 100,
+      localOrchestrationDurationMs: null, validation: { status: "passed", durationMs: 10 }, usageSource: "provider_reported",
+    } as any);
+    expect(output).toContain("Total       35");
+    expect(output).toContain("AI waiting  100 ms");
+    expect(output).toContain("Usage source\n  Provider reported");
+  });
+
   it("selects and consumes providers without provider-specific workflow logic", async () => {
     const generate = vi.fn(async () => ({
       provider: "fake",

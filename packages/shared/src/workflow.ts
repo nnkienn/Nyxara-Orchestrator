@@ -94,6 +94,7 @@ export interface WorkflowSnapshot {
   };
   readonly pauseRequested?: boolean;
   readonly pendingPermission?: PendingWorkflowPermission;
+  readonly usage?: import("./usage.js").WorkflowUsage;
 }
 
 export interface PendingWorkflowPermission {

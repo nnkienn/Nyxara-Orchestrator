@@ -215,6 +215,7 @@ export class RepairOrchestrator {
             ...(input.checkpoint ? { checkpoint: input.checkpoint } : {}),
           },
           model,
+          ...(input.workflowId ? { workflowId: input.workflowId } : {}),
           ...(input.executorLimits ? { limits: input.executorLimits } : {}),
         });
       } catch (error: unknown) {

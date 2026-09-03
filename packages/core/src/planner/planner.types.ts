@@ -70,6 +70,7 @@ export interface PlannerRunInput {
   readonly model: AgentModelConfig;
   readonly planningProfile?: PlanningProfile;
   readonly engineeringRules?: ResolvedRuleSet;
+  readonly workflowId?: string;
 }
 
 export interface PlanResult {

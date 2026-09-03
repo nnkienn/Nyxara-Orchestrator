@@ -76,10 +76,20 @@ export interface ProviderModelsCompletedEvent {
 export interface ProviderGenerationCompletedEvent {
   readonly providerId: string;
   readonly modelId: string;
+  readonly requestedModelId?: string;
+  readonly role?: "planner" | "executor" | "reviewer" | "repair";
+  readonly taskId?: string;
+  readonly workflowId?: string;
+  readonly providerDurationMs?: number;
+  readonly providerReportedCost?: number;
+  readonly currency?: string;
   readonly responseId?: string;
   readonly finishReason?: string;
   readonly textLength: number;
   readonly toolCallCount: number;
+  readonly contextBytes?: number | null;
+  readonly contextFiles?: number | null;
+  readonly contextTruncated?: boolean | null;
   readonly usage?: GenerateUsage;
 }
 
@@ -205,7 +215,13 @@ export interface ExecutorCompletedEvent {
   readonly modelId: string;
   readonly changedFileCount: number;
   readonly toolCalls: number;
+  readonly toolDurationMs?: number;
   readonly modelTurns: number;
+  readonly workflowId?: string;
+  readonly successfulToolCalls?: number;
+  readonly failedToolCalls?: number;
+  readonly invalidToolCalls?: number;
+  readonly toolCallsByName?: Readonly<Record<string, number>>;
 }
 
 export interface ExecutorFailedEvent {
@@ -333,6 +349,7 @@ export interface RepairEvent {
   readonly findingCount?: number;
   readonly reason?: string;
 }
+export interface UsageEvent { readonly workflowId: string; }
 
 export interface NyxaraEventMap {
   readonly "workflow.started": WorkflowStartedEvent;
@@ -419,4 +436,6 @@ export interface NyxaraEventMap {
   readonly "repair.limit_reached": RepairEvent;
   readonly "repair.completed": RepairEvent;
   readonly "repair.failed": RepairEvent;
+  readonly "usage.updated": UsageEvent;
+  readonly "usage.finalized": UsageEvent;
 }

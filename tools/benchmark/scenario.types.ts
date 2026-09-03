@@ -40,16 +40,22 @@ export interface BenchmarkProviderResponse {
   provider: string;
   model: string;
   latencyMs: number;
-  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cost?: number; currency?: string };
   structuredOutputValid?: boolean;
   toolCallSupported?: boolean;
   toolCallSucceeded?: boolean;
   invalidToolCalls?: number;
   toolCallCount?: number;
+  requestedModelId?: string;
+  reviewStatus?: "passed" | "failed" | "unavailable";
 }
 
 export interface BenchmarkRealProvider {
-  generate(role: "planner" | "executor" | "reviewer" | "repair", input: { prompt: string; model: string; tools?: boolean; structured?: boolean }): Promise<BenchmarkProviderResponse>;
+  generate(role: "planner" | "executor" | "reviewer" | "repair", input: { prompt: string; model: string; tools?: boolean; structured?: boolean; workspaceRoot?: string }): Promise<BenchmarkProviderResponse>;
+}
+
+export interface BenchmarkCoreUsageAdapter {
+  finalize(input: { workflowId: string; calls: readonly { role: "planner" | "executor" | "reviewer" | "repair"; response: BenchmarkProviderResponse }[]; contextFiles: number | null; contextBytes: number | null; validation?: { status: "passed" | "failed" | "unavailable"; durationMs: number | null; steps: readonly { name: string; status: string; durationMs: number | null }[] } }): import("@nyxara/core").WorkflowUsage;
 }
 
 export interface NumericStats { min: number; max: number; mean: number; median: number; p95: number; stddev: number; count: number; }
@@ -58,7 +64,7 @@ export interface MemorySummary { baselineRssMb: number | null; peakRssMb: number
 export interface TokenUsage { input: number | null; output: number | null; total: number | null; calls: number; }
 export interface WorkflowMetrics {
   providerCalls: number; providerCallsByRole: Record<string, number>; toolCalls: number; toolCallsByName: Record<string, number>; toolFailures: number;
-  contextBuilds: number; targetedExpansions: number; contextFiles: number; contextBytes: number; contextTruncated: boolean;
+  contextBuilds: number; targetedExpansions: number; contextFiles: number; contextBytes: number | null; contextTruncated: boolean;
   reviewCalls: number; repairCycles: number; permissionRequests: number; permissionsAllowed: number; permissionsDenied: number;
   tokens: Record<string, TokenUsage>; workflowDurationMs?: number; timeToFirstUsefulResultMs?: number;
   tokenSource?: "synthetic" | "provider_reported" | "estimated" | "unavailable";
