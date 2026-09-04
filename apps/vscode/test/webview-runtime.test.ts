@@ -63,14 +63,14 @@ function harness() {
 }
 
 function baseState(overrides: Record<string, unknown> = {}) {
-  return { version: "0.1.0-alpha.7", configured: true, workspace: { available: true, multiple: false }, providerLabel: "Gateway · route/model", advancedRouting: false, providers: [{ id: "gateway", displayName: "Gateway", modelId: "route/model", isDefault: true }], history: { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "current", currentWorkspaceId: "workspace" }, validation: [], repairCycles: null, ...overrides };
+  return { version: "0.1.0-alpha.9", configured: true, workspace: { available: true, multiple: false }, providerLabel: "Gateway · route/model", advancedRouting: false, providers: [{ id: "gateway", displayName: "Gateway", modelId: "route/model", isDefault: true }], history: { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "current", currentWorkspaceId: "workspace" }, validation: [], repairCycles: null, ...overrides };
 }
 
 const historicalTask = { id: "history-1", schemaVersion: 1, createdAt: "2026-09-03T10:00:00.000Z", updatedAt: "2026-09-03T10:01:00.000Z", workspaceIdentity: { id: "workspace", label: "Project" }, title: "Add <filters>", requirement: "Add <filters> safely", workflowId: "w-old", status: "completed", providerSummary: { provider: "Gate<way>", model: "model<x>" }, planSummary: { objective: "Add <pagination>", approvalStatus: "approved", tasks: [{ id: "one", title: "Update <query>", acceptanceCriteria: ["Tests <pass>"], dependencies: [], risk: "low" }], risks: [] }, executionSummary: { completed: 1, total: 1, tasks: [{ title: "Update query", status: "completed" }] }, validationSummary: { status: "passed", steps: [{ name: "typecheck", status: "passed", durationMs: 50 }] }, reviewSummary: { status: "passed", findingCount: 0, ruleViolationCount: null }, repairSummary: { cycles: 1, outcome: "completed", durationMs: 10, tokens: 5 }, usageSummary: { totalTokens: 7073, providerCalls: 4, toolCalls: 9, workflowDurationMs: 20600, repairCycles: 1 } };
 
 const plan = { id: "plan-1", objective: "Add pagination", summary: "Keep compatibility", tasks: [{ id: "task-1", title: "Update query", description: "Add paging", acceptanceCriteria: ["Tests pass"], dependencies: [], risk: "low" }], risks: [{ description: "Offset drift", severity: "low", mitigation: "Stable order" }] };
 const awaiting = { id: "w", status: "awaiting_plan_approval", stage: "Awaiting approval", active: true, tasks: [] };
-const settingsProjection = buildSettingsProjection({ version: "0.1.0-alpha.8", providers: [{ id: "work", catalogId: "openai", type: "openai", displayName: "OpenAI Work", modelId: "gpt-work", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" }], defaultProviderId: "work", credentialStored: new Map([["work", true]]), testedProviderIds: new Set(["work"]), modelMode: "simple", roles: [{ role: "planner", providerConfigId: "work", modelId: "gpt-work" }, { role: "executor", providerConfigId: "work", modelId: "gpt-work" }, { role: "reviewer", providerConfigId: "work", modelId: "gpt-work" }], selectedPlanningProfile: "default", planningProfiles: [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }], engineeringRules: [{ id: "avoid-secret-exposure", name: "Avoid secret exposure", description: "Protect secrets", scope: "global", severity: "error", enabled: true }], historyRetention: 50, historyCount: 4, workspaceFolders: [{ id: "root-0", label: "Project" }], selectedWorkspaceRootId: "root-0" } as any);
+const settingsProjection = buildSettingsProjection({ version: "0.1.0-alpha.9", providers: [{ id: "work", catalogId: "openai", type: "openai", displayName: "OpenAI Work", modelId: "gpt-5.1", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" }], defaultProviderId: "work", credentialStored: new Map([["work", true]]), testedProviderIds: new Set(["work"]), modelMode: "simple", roles: [{ role: "planner", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "reviewer", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }], selectedPlanningProfile: "default", planningProfiles: [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }], engineeringRules: [{ id: "avoid-secret-exposure", name: "Avoid secret exposure", description: "Protect secrets", scope: "global", severity: "error", enabled: true }], historyRetention: 50, historyCount: 4, workspaceFolders: [{ id: "root-0", label: "Project" }], selectedWorkspaceRootId: "root-0" } as any);
 
 describe("Nyxara browser runtime", () => {
   it("does not submit while typing, accepts multiline input, and explicit Send submits once", () => {
@@ -271,6 +271,65 @@ describe("Nyxara browser runtime", () => {
     const h = harness(); h.emit(baseState({ settings: { section: "home", projection: settingsProjection } }), "settingsProjection"); const count = h.messages.length;
     const search = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "input" && item.attributes.get("aria-label") === "Search settings locally")!; search.value = "review"; search.dispatch("input"); expect(h.text()).toContain("Models & Roles"); expect(h.text()).toContain("Review"); expect(h.text()).not.toContain("Task History"); expect(h.messages).toHaveLength(count);
     h.emit(baseState({ settings: { section: "review", projection: settingsProjection } }), "settingsProjection"); h.findButton("Home")?.dispatch("click"); expect(h.messages.at(-1)).toEqual({ type: "openSettingsSection", section: "home" }); h.findButton("←")?.dispatch("click"); expect(h.messages.at(-1)).toEqual({ type: "openSettingsSection", section: "home" });
+  });
+
+  it("renders capability-driven Simple and Advanced execution controls", () => {
+    const h = harness(); h.emit(baseState({ settings: { section: "modelsRoles", projection: settingsProjection } }), "settingsProjection");
+    expect(h.text()).toContain("SimpleDefault ProviderOpenAI Work · ConnectedDefault ModelReasoningProvider Default");
+    for (const role of ["Planner", "Executor", "Reviewer"]) expect(h.text()).toContain(role);
+    expect(h.text().match(/Reasoning/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(h.text()).toContain("Repair uses Executor");
+    h.findButton("Use Simple Mode")?.dispatch("click");
+    expect(h.messages.at(-1)).toEqual({ type: "setDefaultModel", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } });
+    h.findButton("Save Advanced Roles")?.dispatch("click");
+    expect(h.messages.at(-1)?.assignments).toEqual([
+      { role: "planner", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } },
+      { role: "executor", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } },
+      { role: "reviewer", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } },
+    ]);
+  });
+
+  it("renders provider-native Anthropic budget and Gemini level schemas without OpenAI field assumptions", () => {
+    const providers = [
+      { id: "claude", catalogId: "anthropic", type: "anthropic", displayName: "Claude", modelId: "claude-sonnet-4-5", baseUrl: "https://api.anthropic.com", authStrategy: "api_key" },
+      { id: "openai", catalogId: "openai", type: "openai", displayName: "OpenAI", modelId: "gpt-5.1", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" },
+      { id: "gemini", catalogId: "gemini", type: "gemini", displayName: "Gemini", modelId: "gemini-3-pro-preview", baseUrl: "https://generativelanguage.googleapis.com/v1beta", authStrategy: "api_key" },
+    ];
+    const projection = buildSettingsProjection({
+      version: "0.1.0-alpha.9", providers, defaultProviderId: "openai",
+      credentialStored: new Map(providers.map((provider) => [provider.id, true])), testedProviderIds: new Set(providers.map((provider) => provider.id)), modelMode: "advanced",
+      roles: [
+        { role: "planner", providerConfigId: "claude", modelId: "claude-sonnet-4-5", executionOptions: { kind: "anthropic_thinking", enabled: true, budgetTokens: 2048 } },
+        { role: "executor", providerConfigId: "openai", modelId: "gpt-5.1", executionOptions: { kind: "openai_reasoning", effort: "medium" } },
+        { role: "reviewer", providerConfigId: "gemini", modelId: "gemini-3-pro-preview", executionOptions: { kind: "gemini_thinking_level", level: "high" } },
+      ],
+      selectedPlanningProfile: "default", planningProfiles: [], engineeringRules: [], historyRetention: 50, historyCount: 0, workspaceFolders: [],
+    } as any);
+    const h = harness(); h.emit(baseState({ settings: { section: "modelsRoles", projection } }), "settingsProjection");
+    expect(h.text()).toContain("EnabledThinking Budget");
+    expect(h.text()).toContain("ReasoningProvider DefaultNoneLowMediumHigh");
+    expect(h.text()).toContain("ThinkingProvider DefaultLowHigh");
+    expect(h.elements.get("timeline")!.descendants().some((item) => item.tagName === "input" && item.attributes.get("aria-label") === "Thinking Budget" && item.value === "2048")).toBe(true);
+  });
+
+  it("shows unknown capability as Provider Default only and provides explicit stale recovery", () => {
+    const localProvider = { ...settingsProjection.providers[0], id: "local", adapterId: "ollama", displayName: "Local", defaultModel: "gpt-5.1", executionCapabilityRules: [] };
+    const unknown = { ...settingsProjection, providers: [localProvider], defaultProviderConfigId: "local", modelMode: "advanced", roles: [
+      { role: "planner", providerConfigId: "local", providerName: "Local", modelId: "gpt-5.1", available: true, status: "Configured", executionOptions: { kind: "openai_reasoning", effort: "medium" }, executionProfileStatus: "stale" },
+      { role: "executor", providerConfigId: "local", providerName: "Local", modelId: "gpt-5.1", available: true, status: "Configured", executionOptions: { kind: "provider_default" }, executionProfileStatus: "unknown" },
+      { role: "reviewer", providerConfigId: "local", providerName: "Local", modelId: "gpt-5.1", available: true, status: "Configured", executionOptions: { kind: "provider_default" }, executionProfileStatus: "unknown" },
+    ] };
+    const h = harness(); h.emit(baseState({ settings: { section: "modelsRoles", projection: unknown } }), "settingsProjection");
+    expect(h.text()).toContain("Advanced tuning unavailable for this provider/model.");
+    expect(h.text()).toContain("Execution setting no longer supported by the selected model.");
+    for (const item of h.elements.get("timeline")!.descendants().filter((item) => item.tagName === "button" && item.allText() === "Use Provider Default")) item.dispatch("click");
+    expect(h.text()).not.toContain("Execution setting no longer supported by the selected model.");
+  });
+
+  it.each(["execution", "reasoning", "thinking"])("finds %s in Settings locally", (query) => {
+    const h = harness(); h.emit(baseState({ settings: { section: "home", projection: settingsProjection } }), "settingsProjection"); const count = h.messages.length;
+    const search = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "input" && item.attributes.get("aria-label") === "Search settings locally")!; search.value = query; search.dispatch("input");
+    expect(h.text()).toContain("Models & Roles"); expect(h.messages).toHaveLength(count);
   });
 
   it("renders provider details with separate Disconnect and Remove Provider actions and never a stored key", () => {

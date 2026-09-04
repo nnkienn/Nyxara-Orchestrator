@@ -94,13 +94,13 @@ describe("ProviderRegistry", () => {
 
 describe("NyxaraOrchestrator provider delegation", () => {
   it("exposes provider-neutral adapter removal without rewriting role assignments", () => {
-    const nyxara = new NyxaraOrchestrator({ providers: [createProvider("stable"), createProvider("other")] }); nyxara.configureAgent({ role: "planner", providerId: "stable", modelId: "model" }); expect(nyxara.unregisterProvider("stable")).toBe(true); expect(nyxara.listProviders().map((provider) => provider.id)).toEqual(["other"]); expect(nyxara.getAgentModel("planner")).toEqual({ role: "planner", providerId: "stable", modelId: "model" });
+    const nyxara = new NyxaraOrchestrator({ providers: [createProvider("stable"), createProvider("other")] }); nyxara.configureAgent({ role: "planner", providerId: "stable", modelId: "model" }); expect(nyxara.unregisterProvider("stable")).toBe(true); expect(nyxara.listProviders().map((provider) => provider.id)).toEqual(["other"]); expect(nyxara.getAgentModel("planner")).toEqual({ role: "planner", providerId: "stable", modelId: "model", executionOptions: { kind: "provider_default" } });
   });
   it("replaces provider transport without changing configured role semantics", () => {
     const nyxara = new NyxaraOrchestrator({ providers: [createProvider("stable")] });
     nyxara.configureAgent({ role: "planner", providerId: "stable", modelId: "requested/model" });
     nyxara.replaceProvider({ ...createProvider("stable"), displayName: "Updated transport" });
-    expect(nyxara.getAgentModel("planner")).toEqual({ role: "planner", providerId: "stable", modelId: "requested/model" });
+    expect(nyxara.getAgentModel("planner")).toEqual({ role: "planner", providerId: "stable", modelId: "requested/model", executionOptions: { kind: "provider_default" } });
     expect(nyxara.listProviders()[0]).toMatchObject({ id: "stable", displayName: "Updated transport" });
   });
 

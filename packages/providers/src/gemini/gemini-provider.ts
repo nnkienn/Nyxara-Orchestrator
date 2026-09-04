@@ -1,13 +1,16 @@
 import {
+  assertExecutionOptionsSupported,
   ProviderError,
   type CredentialStore,
   type GenerateRequest,
   type GenerateResponse,
   type ModelInfo,
+  type ModelCapabilities,
   type ModelProvider,
   type ProviderCapabilities,
   type ProviderErrorCode,
 } from "@nyxara/provider-sdk";
+import { knownModelExecutionCapability } from "../execution-capabilities.js";
 
 export interface GeminiProviderConfig {
   readonly id?: string;
@@ -16,6 +19,7 @@ export interface GeminiProviderConfig {
   readonly credentialStore?: CredentialStore;
   readonly credentialKey?: string;
   readonly fetch?: typeof globalThis.fetch;
+  readonly providerId?: string;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -23,13 +27,17 @@ type JsonRecord = Record<string, unknown>;
 /** Official Gemini REST transport. Core sees only the provider-sdk contract. */
 export class GeminiProvider implements ModelProvider {
   readonly id: string;
+  readonly providerId: string;
   readonly displayName: string;
   private readonly baseUrl: string;
   private readonly credentialKey: string;
   private readonly fetchImplementation: typeof globalThis.fetch;
+  private readonly thoughtSignaturesByToolCallId = new Map<string, string>();
+  private toolCallSequence = 0;
 
   constructor(private readonly config: GeminiProviderConfig = {}) {
     this.id = config.id ?? "gemini";
+    this.providerId = config.providerId ?? "gemini";
     this.displayName = config.displayName ?? "Google Gemini";
     this.baseUrl = normalizeBaseUrl(config.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta", this.id);
     this.credentialKey = config.credentialKey ?? `${this.id}.apiKey`;
@@ -55,19 +63,28 @@ export class GeminiProvider implements ModelProvider {
         name: typeof model.displayName === "string" && model.displayName ? model.displayName : id,
         provider: this.id,
         ...(contextWindow !== undefined ? { contextWindow } : {}),
-        capabilities: { text: true, tools: true, structuredOutput: true },
+        capabilities: { text: true, tools: true, structuredOutput: true, ...this.modelCapabilities(id) },
       }];
     });
   }
 
+  modelCapabilities(modelId: string): ModelCapabilities | undefined {
+    const execution = knownModelExecutionCapability(this.providerId, modelId.replace(/^models\//, ""));
+    return execution ? { execution } : undefined;
+  }
+
   async generate(input: GenerateRequest): Promise<GenerateResponse> {
     const modelId = input.model.replace(/^models\//, "");
+    const executionOptions = assertExecutionOptionsSupported(input.executionOptions, this.modelCapabilities(modelId)?.execution);
     const contents: JsonRecord[] = [{ role: "user", parts: [{ text: input.prompt }] }];
     for (const message of input.conversation ?? []) {
       if (message.role === "assistant") {
         contents.push({ role: "model", parts: [
           ...(message.content ? [{ text: message.content }] : []),
-          ...(message.toolCalls?.map((call) => ({ functionCall: { name: call.name, args: call.arguments } })) ?? []),
+          ...(message.toolCalls?.map((call) => ({
+            functionCall: { name: call.name, args: call.arguments },
+            ...(this.thoughtSignaturesByToolCallId.get(call.id) ? { thoughtSignature: this.thoughtSignaturesByToolCallId.get(call.id) } : {}),
+          })) ?? []),
         ] });
       } else {
         contents.push({ role: "user", parts: [{ functionResponse: { name: message.toolResult.name, response: message.toolResult.error ? { error: message.toolResult.error } : { result: message.toolResult.result ?? null } } }] });
@@ -78,7 +95,11 @@ export class GeminiProvider implements ModelProvider {
       body: JSON.stringify({
         contents,
         ...(input.tools?.length ? { tools: [{ functionDeclarations: input.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })) }] } : {}),
-        ...(input.responseFormat === "json" ? { generationConfig: { responseMimeType: "application/json" } } : {}),
+        ...(input.responseFormat === "json" || executionOptions.kind !== "provider_default" ? { generationConfig: {
+          ...(input.responseFormat === "json" ? { responseMimeType: "application/json" } : {}),
+          ...(executionOptions.kind === "gemini_thinking_budget" ? { thinkingConfig: { thinkingBudget: executionOptions.budgetTokens } } : {}),
+          ...(executionOptions.kind === "gemini_thinking_level" ? { thinkingConfig: { thinkingLevel: executionOptions.level.toUpperCase() } } : {}),
+        } } : {}),
       }),
     }, "generate"));
     const candidate = record(Array.isArray(payload.candidates) ? payload.candidates[0] : undefined);
@@ -86,9 +107,12 @@ export class GeminiProvider implements ModelProvider {
     if (!Array.isArray(content.parts)) throw this.invalidResponse("Provider returned no content");
     const parts = content.parts.map(record);
     const text = parts.map((part) => typeof part.text === "string" ? part.text : "").filter(Boolean).join("\n");
-    const toolCalls = parts.flatMap((part, index) => {
+    const toolCalls = parts.flatMap((part) => {
       const call = record(part.functionCall);
-      return typeof call.name === "string" && call.name ? [{ id: `gemini-call-${index + 1}`, name: call.name, arguments: call.args ?? {} }] : [];
+      if (typeof call.name !== "string" || !call.name) return [];
+      const id = `gemini-call-${++this.toolCallSequence}`;
+      if (typeof part.thoughtSignature === "string" && part.thoughtSignature) this.rememberThoughtSignature(id, part.thoughtSignature);
+      return [{ id, name: call.name, arguments: call.args ?? {} }];
     });
     if (!text && toolCalls.length === 0) throw this.invalidResponse("Provider returned no text or tool calls");
     const usage = record(payload.usageMetadata);
@@ -107,6 +131,15 @@ export class GeminiProvider implements ModelProvider {
         ...(totalTokens !== undefined ? { totalTokens } : {}),
       } } : {}),
     };
+  }
+
+  private rememberThoughtSignature(toolCallId: string, signature: string): void {
+    this.thoughtSignaturesByToolCallId.set(toolCallId, signature);
+    while (this.thoughtSignaturesByToolCallId.size > 256) {
+      const oldest = this.thoughtSignaturesByToolCallId.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.thoughtSignaturesByToolCallId.delete(oldest);
+    }
   }
 
   private async request(path: string, init: RequestInit, operation: "list_models" | "generate"): Promise<unknown> {

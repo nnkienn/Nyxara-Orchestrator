@@ -1,5 +1,6 @@
 import type { WorkspaceViewState } from "./workspace-state.js";
 import type { SettingsSection } from "./settings-projection.js";
+import { PROVIDER_DEFAULT_EXECUTION, parseExecutionOptions, type ExecutionOptions } from "@nyxara/provider-sdk";
 
 export const MAX_TASK_INPUT = 20_000;
 export const MAX_FIELD_INPUT = 2_048;
@@ -21,8 +22,8 @@ export type WebviewToExtensionMessage =
   | { readonly type: "signOutProvider"; readonly providerConfigId: string }
   | { readonly type: "removeProvider"; readonly providerConfigId: string }
   | { readonly type: "setDefaultProvider"; readonly providerConfigId: string }
-  | { readonly type: "setDefaultModel"; readonly providerConfigId: string; readonly modelId: string }
-  | { readonly type: "updateRoleAssignments"; readonly assignments: readonly { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId: string; readonly modelId: string }[] }
+  | { readonly type: "setDefaultModel"; readonly providerConfigId: string; readonly modelId: string; readonly executionOptions: ExecutionOptions }
+  | { readonly type: "updateRoleAssignments"; readonly assignments: readonly { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId: string; readonly modelId: string; readonly executionOptions: ExecutionOptions }[] }
   | { readonly type: "updatePlanningProfile"; readonly profileId: string }
   | { readonly type: "updateHistoryRetention"; readonly retention: 20 | 50 | 100 }
   | { readonly type: "selectWorkspaceRoot"; readonly rootId: string }
@@ -96,18 +97,19 @@ export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage |
     case "testProvider": case "updateCredential": case "signOutProvider": case "removeProvider": case "setDefaultProvider": {
       const providerConfigId = text("providerConfigId", 200)?.trim(); return providerConfigId ? { type: value.type, providerConfigId } : undefined;
     }
-    case "setDefaultModel": { const providerConfigId = text("providerConfigId", 200)?.trim(); const modelId = text("modelId")?.trim(); return providerConfigId && modelId ? { type: value.type, providerConfigId, modelId } : undefined; }
+    case "setDefaultModel": { const providerConfigId = text("providerConfigId", 200)?.trim(); const modelId = text("modelId")?.trim(); const executionOptions = value.executionOptions === undefined ? PROVIDER_DEFAULT_EXECUTION : parseExecutionOptions(value.executionOptions); return providerConfigId && modelId && executionOptions ? { type: value.type, providerConfigId, modelId, executionOptions } : undefined; }
     case "updateProviderMetadata": { const providerConfigId = text("providerConfigId", 200)?.trim(); const displayName = text("displayName", 100)?.trim(); const endpoint = text("endpoint")?.trim(); return providerConfigId && displayName && endpoint ? { type: value.type, providerConfigId, displayName, endpoint } : undefined; }
     case "updatePlanningProfile": { const profileId = text("profileId", 100)?.trim(); return profileId ? { type: value.type, profileId } : undefined; }
     case "updateHistoryRetention": return [20, 50, 100].includes(Number(value.retention)) ? { type: value.type, retention: Number(value.retention) as 20 | 50 | 100 } : undefined;
     case "selectWorkspaceRoot": { const rootId = text("rootId", 100)?.trim(); return rootId ? { type: value.type, rootId } : undefined; }
     case "updateRoleAssignments": {
       if (!Array.isArray(value.assignments) || value.assignments.length !== 3) return undefined;
-      const assignments = value.assignments.flatMap((item): Array<{ role: "planner" | "executor" | "reviewer"; providerConfigId: string; modelId: string }> => {
+      const assignments = value.assignments.flatMap((item): Array<{ role: "planner" | "executor" | "reviewer"; providerConfigId: string; modelId: string; executionOptions: ExecutionOptions }> => {
         if (!record(item) || !["planner", "executor", "reviewer"].includes(String(item.role))) return [];
         const providerConfigId = typeof item.providerConfigId === "string" ? item.providerConfigId.trim() : "";
         const modelId = typeof item.modelId === "string" ? item.modelId.trim() : "";
-        return providerConfigId && providerConfigId.length <= MAX_FIELD_INPUT && modelId && modelId.length <= MAX_FIELD_INPUT ? [{ role: item.role as "planner" | "executor" | "reviewer", providerConfigId, modelId }] : [];
+        const executionOptions = parseExecutionOptions(item.executionOptions);
+        return providerConfigId && providerConfigId.length <= MAX_FIELD_INPUT && modelId && modelId.length <= MAX_FIELD_INPUT && executionOptions ? [{ role: item.role as "planner" | "executor" | "reviewer", providerConfigId, modelId, executionOptions }] : [];
       });
       return assignments.length === 3 && new Set(assignments.map((item) => item.role)).size === 3 ? { type: value.type, assignments } : undefined;
     }

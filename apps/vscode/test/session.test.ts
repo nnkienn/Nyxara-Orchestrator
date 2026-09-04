@@ -69,9 +69,9 @@ describe("NyxaraSession Core boundary", () => {
     };
     session.configureAgents((key) => values[key] ?? "");
     expect(core.configureAgent.mock.calls).toEqual([
-      [{ role: "planner", providerId: "openai-compatible", modelId: "ha-op/gpt-5.6-sol" }],
-      [{ role: "executor", providerId: "openai-compatible", modelId: "executor/model:exact" }],
-      [{ role: "reviewer", providerId: "review-provider", modelId: "reviewer/model@exact" }],
+      [{ role: "planner", providerId: "openai-compatible", modelId: "ha-op/gpt-5.6-sol", executionOptions: { kind: "provider_default" } }],
+      [{ role: "executor", providerId: "openai-compatible", modelId: "executor/model:exact", executionOptions: { kind: "provider_default" } }],
+      [{ role: "reviewer", providerId: "review-provider", modelId: "reviewer/model@exact", executionOptions: { kind: "provider_default" } }],
     ]);
     expect(session.configured).toBe(true);
   });

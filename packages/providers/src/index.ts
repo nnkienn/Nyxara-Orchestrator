@@ -8,3 +8,4 @@ export { CliSubscriptionProvider, NodeCliProcessRunner } from "./cli-subscriptio
 export type { CliProcessRunner, CliRunInput, CliRunResult, CliSubscriptionKind, CliSubscriptionProviderConfig } from "./cli-subscription/cli-subscription-provider.js";
 export { PROVIDER_DEFINITIONS, providerDefinition } from "./catalog.js";
 export type { ProviderAdapterType, ProviderDefinition } from "./catalog.js";
+export { knownModelExecutionCapability, modelExecutionCapabilityRules } from "./execution-capabilities.js";

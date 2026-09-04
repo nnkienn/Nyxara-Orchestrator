@@ -1,5 +1,6 @@
 import type {
   GenerateUsage,
+  ExecutionProfileSummary,
   ModelInfo,
   ProviderInfo,
 } from "@nyxara/provider-sdk";
@@ -75,6 +76,7 @@ export interface ProviderModelsCompletedEvent {
 
 export interface ProviderGenerationCompletedEvent {
   readonly providerId: string;
+  readonly providerConfigId?: string;
   readonly modelId: string;
   readonly requestedModelId?: string;
   readonly role?: "planner" | "executor" | "reviewer" | "repair";
@@ -91,6 +93,7 @@ export interface ProviderGenerationCompletedEvent {
   readonly contextFiles?: number | null;
   readonly contextTruncated?: boolean | null;
   readonly usage?: GenerateUsage;
+  readonly executionProfileSummary?: ExecutionProfileSummary;
 }
 
 export interface ProviderOperationFailedEvent {

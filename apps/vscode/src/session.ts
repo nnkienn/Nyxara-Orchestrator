@@ -9,7 +9,7 @@ import {
 import { OpenAICompatibleProvider } from "@nyxara/providers";
 import type { AgentRole } from "@nyxara/core";
 import { VSCodeCredentialStore } from "./credentials.js";
-import { createProvider, type ProviderConfig } from "./provider-config.js";
+import { createProvider, readPersistedExecution, roleExecutionSetting, type ProviderConfig } from "./provider-config.js";
 
 export class NyxaraSession {
   readonly core: NyxaraOrchestrator;
@@ -55,14 +55,17 @@ export class NyxaraSession {
   private log(message: string): void { this.output.appendLine(message); if (this.workflowId) this.refresh(); this.onChange?.(); }
   private refresh(): void { if (this.workflowId) this.snapshots.set(this.workflowId, this.core.getWorkflowSnapshot(this.workflowId)); }
 
-  configureAgents(settings: (key: string) => string, availableProviderIds?: ReadonlySet<string>): void {
+  configureAgents(settings: (key: string) => unknown, availableProviderIds?: ReadonlySet<string>): void {
     const roles: AgentRole[] = ["planner", "executor", "reviewer"];
     let configuredRoles = 0;
     for (const role of roles) {
-      const providerId = settings(`nyxara.${role}.provider`);
-      const modelId = settings(`nyxara.${role}.model`);
-      if (providerId && modelId && (!availableProviderIds || availableProviderIds.has(providerId))) {
-        this.core.configureAgent({ role, providerId, modelId });
+      const providerValue = settings(`nyxara.${role}.provider`);
+      const modelValue = settings(`nyxara.${role}.model`);
+      const providerId = typeof providerValue === "string" ? providerValue : "";
+      const modelId = typeof modelValue === "string" ? modelValue : "";
+      const execution = readPersistedExecution(settings(roleExecutionSetting(role)));
+      if (providerId && modelId && !execution.malformed && (!availableProviderIds || availableProviderIds.has(providerId))) {
+        this.core.configureAgent({ role, providerId, modelId, executionOptions: execution.executionOptions });
         configuredRoles += 1;
       }
     }

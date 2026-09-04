@@ -1,4 +1,5 @@
 import type { AgentModelConfig, AgentRole } from "./agent.types.js";
+import { PROVIDER_DEFAULT_EXECUTION, parseExecutionOptions } from "@nyxara/provider-sdk";
 
 export type AgentModelConfigErrorCode =
   | "invalid_agent_config"
@@ -59,7 +60,10 @@ function normalizeAgentModelConfig(
 ): AgentModelConfig {
   const providerId = configuration.providerId.trim();
   const modelId = configuration.modelId.trim();
-  if (providerId.length === 0 || modelId.length === 0) {
+  const executionOptions = configuration.executionOptions === undefined
+    ? PROVIDER_DEFAULT_EXECUTION
+    : parseExecutionOptions(configuration.executionOptions);
+  if (providerId.length === 0 || modelId.length === 0 || !executionOptions) {
     throw new AgentModelConfigError(
       "invalid_agent_config",
       configuration.role,
@@ -67,6 +71,5 @@ function normalizeAgentModelConfig(
     );
   }
 
-  return { role: configuration.role, providerId, modelId };
+  return { role: configuration.role, providerId, modelId, executionOptions };
 }
-

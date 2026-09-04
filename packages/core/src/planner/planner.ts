@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { GenerateResponse, ModelInfo } from "@nyxara/provider-sdk";
+import { executionProfileSummary, type ExecutionOptions, type GenerateResponse, type ModelInfo } from "@nyxara/provider-sdk";
 import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
 import { errorCodeOr } from "../internal/error-code.js";
@@ -42,6 +42,8 @@ export class Planner {
         provider,
         prompt,
         selectedModel,
+        model.executionOptions,
+        model.providerId,
         runInput.workflowId,
         input.context.files.length,
         input.context.totalBytes,
@@ -113,6 +115,8 @@ export class Planner {
     provider: ReturnType<ProviderRegistry["get"]>,
     prompt: string,
     model: ModelInfo,
+    executionOptions: ExecutionOptions | undefined,
+    providerConfigId: string,
     workflowId?: string,
     contextFiles?: number,
     contextBytes?: number | null,
@@ -123,13 +127,15 @@ export class Planner {
       const response = await provider.generate({
         model: model.id,
         prompt,
+        ...(executionOptions ? { executionOptions } : {}),
         ...(model.capabilities?.structuredOutput ||
         provider.capabilities().structuredOutput
           ? { responseFormat: "json" as const }
           : {}),
       });
       this.events.emit("provider.generation.completed", {
-        providerId: provider.id,
+        providerId: provider.providerId ?? provider.id,
+        providerConfigId,
         modelId: response.model,
         requestedModelId: model.id,
         role: "planner",
@@ -139,6 +145,7 @@ export class Planner {
         ...(response.finishReason ? { finishReason: response.finishReason } : {}),
         textLength: response.text.length,
         toolCallCount: response.toolCalls?.length ?? 0,
+        executionProfileSummary: executionProfileSummary(executionOptions),
         ...(contextFiles !== undefined ? { contextFiles } : {}),
         ...(contextBytes !== undefined ? { contextBytes } : {}),
         ...(contextTruncated !== undefined ? { contextTruncated } : {}),

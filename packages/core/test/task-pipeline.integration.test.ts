@@ -323,6 +323,13 @@ describe("Core runTaskPipeline end to end", () => {
     for (const entry of generation) {
       expect(entry.payload).not.toHaveProperty("text");
       expect(entry.payload).toHaveProperty("textLength");
+      expect(entry.payload).toMatchObject({
+        providerId: "fake",
+        providerConfigId: "fake",
+        requestedModelId: modelId,
+        modelId,
+        executionProfileSummary: { kind: "provider_default" },
+      });
     }
   });
 

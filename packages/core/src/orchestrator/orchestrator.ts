@@ -186,7 +186,7 @@ export class NyxaraOrchestrator {
     this.events.on("provider.generation.completed", (event) => {
       if (!event.workflowId || !event.role) return;
       const records = this.usageRecords.get(event.workflowId) ?? [];
-      records.push({ role: event.role, providerId: event.providerId, resolvedModelId: event.modelId, ...(event.requestedModelId ? { requestedModelId: event.requestedModelId } : {}), ...(event.taskId ? { taskId: event.taskId } : {}), ...(event.usage?.inputTokens !== undefined ? { inputTokens: event.usage.inputTokens } : {}), ...(event.usage?.outputTokens !== undefined ? { outputTokens: event.usage.outputTokens } : {}), ...(event.usage?.totalTokens !== undefined ? { totalTokens: event.usage.totalTokens } : {}), ...(event.usage?.cost !== undefined ? { providerReportedCost: event.usage.cost } : {}), ...(event.usage?.currency ? { currency: event.usage.currency } : {}), ...(event.providerDurationMs !== undefined ? { providerDurationMs: event.providerDurationMs } : {}), ...(event.contextBytes !== undefined ? { contextBytes: event.contextBytes } : {}), ...(event.contextFiles !== undefined ? { contextFiles: event.contextFiles } : {}), ...(event.contextTruncated !== undefined ? { contextTruncated: event.contextTruncated } : {}), toolCalls: event.toolCallCount });
+      records.push({ role: event.role, ...(event.providerConfigId ? { providerConfigId: event.providerConfigId } : {}), providerId: event.providerId, resolvedModelId: event.modelId, ...(event.requestedModelId ? { requestedModelId: event.requestedModelId } : {}), ...(event.executionProfileSummary ? { executionProfileSummary: event.executionProfileSummary } : {}), ...(event.taskId ? { taskId: event.taskId } : {}), ...(event.usage?.inputTokens !== undefined ? { inputTokens: event.usage.inputTokens } : {}), ...(event.usage?.outputTokens !== undefined ? { outputTokens: event.usage.outputTokens } : {}), ...(event.usage?.totalTokens !== undefined ? { totalTokens: event.usage.totalTokens } : {}), ...(event.usage?.cost !== undefined ? { providerReportedCost: event.usage.cost } : {}), ...(event.usage?.currency ? { currency: event.usage.currency } : {}), ...(event.providerDurationMs !== undefined ? { providerDurationMs: event.providerDurationMs } : {}), ...(event.contextBytes !== undefined ? { contextBytes: event.contextBytes } : {}), ...(event.contextFiles !== undefined ? { contextFiles: event.contextFiles } : {}), ...(event.contextTruncated !== undefined ? { contextTruncated: event.contextTruncated } : {}), toolCalls: event.toolCallCount });
       if (records.length > 10000) records.splice(0, records.length - 10000);
       this.usageRecords.set(event.workflowId, records);
       this.refreshWorkflowUsage(event.workflowId);
@@ -426,6 +426,11 @@ export class NyxaraOrchestrator {
       this.emitProviderFailure(providerId, "list_models", error);
       throw error;
     }
+  }
+
+  /** Returns only locally known/cached model metadata and never performs discovery. */
+  getModelCapabilities(providerConfigId: string, modelId: string): ModelInfo["capabilities"] {
+    return this.providerRegistry.modelCapabilities(providerConfigId, modelId);
   }
 
   async generate(input: ModelGenerateInput): Promise<GenerateResponse> {

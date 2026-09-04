@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createProvider, defaultProviderId, providerSecretKey, readProviderConfigs } from "../src/provider-config.js";
+import { createProvider, defaultProviderId, providerSecretKey, readPersistedExecution, readProviderConfigs, roleExecutionSetting } from "../src/provider-config.js";
 
 describe("local provider configuration", () => {
   it("reads multiple non-secret configs and keeps stable identities", () => {
@@ -42,5 +42,12 @@ describe("local provider configuration", () => {
     const provider = createProvider(configs[0]!, { get: vi.fn(), store: vi.fn(), delete: vi.fn() });
     expect(provider).toMatchObject({ id: "codex-cli", displayName: "OpenAI Codex (ChatGPT)" });
     expect(provider.capabilities()).toMatchObject({ toolCalling: true, structuredOutput: true });
+  });
+
+  it("migrates missing alpha.8 execution settings to Provider Default without accepting malformed data", () => {
+    expect(roleExecutionSetting("planner")).toBe("nyxara.planner.execution");
+    expect(readPersistedExecution(undefined)).toEqual({ executionOptions: { kind: "provider_default" }, malformed: false, migrated: true });
+    expect(readPersistedExecution({ kind: "openai_reasoning", effort: "medium" })).toEqual({ executionOptions: { kind: "openai_reasoning", effort: "medium" }, malformed: false, migrated: false });
+    expect(readPersistedExecution({ kind: "provider_default", token: "secret" })).toMatchObject({ executionOptions: { kind: "provider_default" }, malformed: true, migrated: false });
   });
 });

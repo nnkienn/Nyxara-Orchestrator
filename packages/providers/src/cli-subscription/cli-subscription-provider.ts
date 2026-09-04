@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  assertExecutionOptionsSupported,
   ProviderError,
   type GenerateRequest,
   type GenerateResponse,
@@ -59,6 +60,7 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 
 export class CliSubscriptionProvider implements ModelProvider {
   readonly id: string;
+  readonly providerId: string;
   readonly displayName: string;
   private readonly spec: CliSpec;
   private readonly runner: CliProcessRunner;
@@ -67,6 +69,7 @@ export class CliSubscriptionProvider implements ModelProvider {
   constructor(private readonly config: CliSubscriptionProviderConfig) {
     this.spec = cliSpec(config.kind);
     this.id = config.id ?? config.kind;
+    this.providerId = config.kind;
     this.displayName = config.displayName ?? this.spec.displayName;
     this.runner = config.runner ?? new NodeCliProcessRunner();
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -87,6 +90,7 @@ export class CliSubscriptionProvider implements ModelProvider {
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
+    assertExecutionOptionsSupported(request.executionOptions, undefined);
     const prompt = providerPrompt(request);
     const result = await this.run(this.spec.generationArgs(request.model), prompt);
     let parsed: { readonly text: string; readonly usage?: GenerateUsage };

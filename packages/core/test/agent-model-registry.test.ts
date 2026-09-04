@@ -10,7 +10,15 @@ describe("AgentModelRegistry", () => {
       role: "planner",
       providerId: "provider-a",
       modelId: "model-a",
+      executionOptions: { kind: "provider_default" },
     });
+  });
+
+  it("preserves independent typed execution profiles and rejects malformed values", () => {
+    const registry = new AgentModelRegistry();
+    registry.set({ role: "executor", providerId: "openai-work", modelId: "gpt-5.1", executionOptions: { kind: "openai_reasoning", effort: "medium" } });
+    expect(registry.get("executor").executionOptions).toEqual({ kind: "openai_reasoning", effort: "medium" });
+    expect(() => registry.set({ role: "reviewer", providerId: "p", modelId: "m", executionOptions: { kind: "provider_default", apiKey: "secret" } as any })).toThrowError(expect.objectContaining({ code: "invalid_agent_config" }));
   });
 
   it("returns controlled errors for unconfigured roles and duplicate initial roles", () => {
@@ -26,4 +34,3 @@ describe("AgentModelRegistry", () => {
     ).toThrowError(expect.objectContaining({ code: "duplicate_agent_role" }));
   });
 });
-

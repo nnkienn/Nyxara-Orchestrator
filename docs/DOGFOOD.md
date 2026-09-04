@@ -50,7 +50,13 @@ Use the header **Settings** button, then **AI Providers**, to connect another pr
 
 Credentials are stored only under provider-config-scoped VS Code SecretStorage keys. Settings contain non-secret local configuration such as display name, adapter type, Base URL, and requested model IDs. **Disconnect** for an API-key provider asks for confirmation and deletes only the selected credential Nyxara owns. **Sign Out** for an official CLI subscription marks only the Nyxara provider configuration signed out; Nyxara neither reads nor revokes the external CLI account session. Both actions preserve provider configuration, model/role references, task history, and repository files. Those role references render unavailable and are never silently rerouted. **Remove Provider** is a separate stronger confirmation that deletes the selected non-secret configuration and scoped credential while preserving task history and historical provider/model summaries. Stored secret values are never displayed or included in diagnostics.
 
-Use **Settings → Models & Roles → Advanced** only when needed. Advanced mode independently selects a configured compatible provider and exact model ID for Planner, Executor, and Reviewer, validates the complete selection, then commits all roles together. Repair continues to use Executor because that is the current Core capability.
+Use **Settings → Models & Roles → Simple** to choose one provider, exact model ID, and execution setting for Planner, Executor, and Reviewer. **Provider Default** is the normal and upgrade-safe execution setting: Nyxara sends no optional reasoning or thinking override and lets the provider apply its own behavior.
+
+Use **Settings → Models & Roles → Advanced** only when needed. Advanced mode independently selects a configured provider, exact model ID, and execution profile for Planner, Executor, and Reviewer, validates the complete selection, then commits all roles together. Repair continues to use Executor's model and execution profile because that is the current Core capability.
+
+Execution controls are model-specific and come from local adapter/catalog metadata or explicit discovery metadata. Known OpenAI models may expose their supported reasoning-effort values. Known Claude models expose Anthropic thinking with a bounded token budget. Known Gemini models expose either a thinking budget or Gemini-native thinking levels. Unknown models and generic OpenAI-compatible/local endpoints show **Provider Default** only; transport compatibility does not imply reasoning support. If a saved choice is no longer supported after changing a provider or model, Nyxara marks it stale and requires **Use Provider Default** or another valid selection rather than silently translating it.
+
+Opening these settings never probes capabilities or refreshes models. Use **Refresh Models** or **Test Connection** explicitly when needed. Execution profile summaries contain no prompts, native request payloads, credentials, or hidden reasoning. Nyxara does not automatically route models or tune reasoning/thinking settings.
 
 ## Settings Center
 
@@ -104,4 +110,4 @@ Record the command, workspace type, requested role model IDs, visible error, exp
 - Bug:
 - Severity: P0 / P1 / P2 / P3
 
-Reasoning/thinking profiles, detailed performance attribution, Skills, MCP, Hooks, Plugins, Marketplace, cloud sync, accounts/billing, pricing and budgets, automatic routing, graph UI, parallel execution, persistent workflow resume, and remote daemons remain deferred.
+Detailed Performance UI, Skills, MCP, Hooks, Plugins, Marketplace, cloud sync, accounts/billing, pricing and budgets, automatic routing/tuning, graph UI, parallel execution, persistent workflow resume, and remote daemons remain deferred.

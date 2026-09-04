@@ -55,4 +55,21 @@ describe("workflow usage accounting", () => {
     expect(usage.repairSummary).toMatchObject({ cycles: 1, calls: 1, tokens: 4, totalDurationMs: 8 });
     expect(usage.validation?.steps[0]).toEqual({ name: "test", status: "passed", durationMs: 2 });
   });
+
+  it("preserves provider configuration and safe execution profile attribution", () => {
+    const usage = aggregateWorkflowUsage("wf", [{
+      role: "executor", providerConfigId: "openai-work-2", providerId: "openai",
+      requestedModelId: "route/gpt-5.1", resolvedModelId: "gpt-5.1",
+      executionProfileSummary: { kind: "openai_reasoning", value: "medium" },
+      inputTokens: 2, outputTokens: 1,
+    }, {
+      role: "repair", providerConfigId: "openai-work-2", providerId: "openai",
+      requestedModelId: "route/gpt-5.1", resolvedModelId: "gpt-5.1",
+      executionProfileSummary: { kind: "openai_reasoning", value: "medium" },
+      inputTokens: 3, outputTokens: 1,
+    }]);
+    expect(usage.executor).toMatchObject({ providerConfigId: "openai-work-2", providerId: "openai", requestedModelId: "route/gpt-5.1", resolvedModelId: "gpt-5.1", executionProfileSummary: { kind: "openai_reasoning", value: "medium" } });
+    expect(usage.repair.executionProfileSummary).toEqual(usage.executor.executionProfileSummary);
+    expect(JSON.stringify(usage)).not.toMatch(/prompt|authorization|api.?key|request.*payload/i);
+  });
 });

@@ -1,16 +1,28 @@
 import { DEFAULT_REPAIR_LIMITS, DEFAULT_REVIEW_EVIDENCE_BUDGET, DEFAULT_TASK_CONTEXT_BUDGET } from "@nyxara/core";
 import { providerDefinition } from "@nyxara/providers";
-import type { ProviderCapabilities } from "@nyxara/provider-sdk";
+import { modelExecutionCapabilityRules } from "@nyxara/providers";
+import {
+  PROVIDER_DEFAULT_EXECUTION,
+  executionProfileSummary,
+  validateExecutionOptions,
+  type ExecutionOptions,
+  type ExecutionProfileStatus,
+  type ModelCapabilities,
+  type ModelExecutionCapability,
+  type ModelExecutionCapabilityRule,
+  type ProviderCapabilities,
+} from "@nyxara/provider-sdk";
 import type { ProviderConfig } from "./provider-config.js";
 
 export type SettingsSection = "home" | "aiProviders" | "modelsRoles" | "workflow" | "planning" | "engineeringRules" | "permissions" | "context" | "validation" | "review" | "repair" | "usage" | "taskHistory" | "workspace" | "privacy" | "advanced" | "about";
 export type ProviderConnectionStatus = "Connected" | "Signed out" | "Credential missing" | "Unavailable" | "Local available" | "Connection unknown";
-export interface SettingsRoleAssignment { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId?: string; readonly providerName?: string; readonly modelId?: string; readonly available: boolean; readonly status: "Configured" | "Signed out" | "Credential missing" | "Unavailable" | "Unconfigured" }
+export interface SettingsRoleAssignment { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId?: string; readonly providerName?: string; readonly modelId?: string; readonly available: boolean; readonly status: "Configured" | "Signed out" | "Credential missing" | "Unavailable" | "Unconfigured"; readonly executionOptions: ExecutionOptions; readonly executionCapability?: ModelExecutionCapability; readonly executionProfileStatus: ExecutionProfileStatus }
 export interface ProviderConfigProjection {
   readonly id: string; readonly adapterId: string; readonly displayName: string; readonly providerName: string; readonly category: string; readonly authStrategy: ProviderConfig["authStrategy"];
   readonly endpoint: string; readonly defaultModel?: string; readonly credentialStored: boolean; readonly status: ProviderConnectionStatus; readonly isDefault: boolean;
   readonly supportsModelDiscovery: boolean; readonly supportsManualModelId: boolean; readonly lifecycleAction: "Sign Out" | "Disconnect" | "Remove Provider"; readonly createdAt?: string;
   readonly lifecycleBlocked: boolean;
+  readonly executionCapabilityRules: readonly ModelExecutionCapabilityRule[];
 }
 export interface SettingsProjection {
   readonly version: string;
@@ -37,8 +49,9 @@ export interface SettingsProjection {
 
 export interface SettingsProjectionInput {
   readonly version: string; readonly providers: readonly ProviderConfig[]; readonly defaultProviderId?: string; readonly credentialStored: ReadonlyMap<string, boolean>;
-  readonly roles: readonly { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId?: string; readonly modelId?: string }[];
+  readonly roles: readonly { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId?: string; readonly modelId?: string; readonly executionOptions?: ExecutionOptions; readonly executionMalformed?: boolean }[];
   readonly providerCapabilities?: ReadonlyMap<string, ProviderCapabilities>; readonly modelMode: "simple" | "advanced"; readonly selectedPlanningProfile: string;
+  readonly modelCapabilities?: ReadonlyMap<string, ModelCapabilities>;
   readonly planningProfiles: readonly any[]; readonly engineeringRules: readonly any[]; readonly historyRetention: number; readonly historyCount: number;
   readonly workspaceFolders: readonly { readonly id: string; readonly label: string }[]; readonly selectedWorkspaceRootId?: string; readonly testedProviderIds?: ReadonlySet<string>; readonly activeProviderIds?: ReadonlySet<string>;
 }
@@ -62,20 +75,25 @@ export function buildSettingsProjection(input: SettingsProjectionInput): Setting
       supportsModelDiscovery: definition.onboarding.modelDiscovery, supportsManualModelId: definition.onboarding.manualModelId,
       lifecycleAction: config.authStrategy === "subscription" ? "Sign Out" : config.authStrategy === "api_key" ? "Disconnect" : "Remove Provider", ...(config.createdAt ? { createdAt: config.createdAt } : {}),
       lifecycleBlocked: input.activeProviderIds?.has(config.id) === true,
+      executionCapabilityRules: modelExecutionCapabilityRules(config.catalogId ?? config.type),
     };
   });
   const projectedRoles = input.roles.map((assignment): SettingsRoleAssignment => {
     const provider = providers.find((candidate) => candidate.id === assignment.providerConfigId);
     const available = !!provider && !["Signed out", "Credential missing", "Unavailable"].includes(provider.status);
     const unavailableStatus = provider?.status === "Signed out" || provider?.status === "Credential missing" || provider?.status === "Unavailable" ? provider.status : "Unavailable";
-    return { role: assignment.role, ...(assignment.providerConfigId ? { providerConfigId: assignment.providerConfigId } : {}), ...(provider ? { providerName: provider.displayName } : {}), ...(assignment.modelId ? { modelId: assignment.modelId } : {}), available, status: !assignment.providerConfigId || !assignment.modelId ? "Unconfigured" : available ? "Configured" : unavailableStatus };
+    const executionOptions = assignment.executionOptions ?? PROVIDER_DEFAULT_EXECUTION;
+    const cachedCapability = assignment.providerConfigId && assignment.modelId ? input.modelCapabilities?.get(`${assignment.providerConfigId}\0${assignment.modelId}`)?.execution : undefined;
+    const capability = cachedCapability ?? (provider && assignment.modelId ? provider.executionCapabilityRules.find((rule) => rule.match === "exact" ? assignment.modelId!.toLocaleLowerCase() === rule.modelId.toLocaleLowerCase() : assignment.modelId!.toLocaleLowerCase().startsWith(rule.modelId.toLocaleLowerCase()))?.capability : undefined);
+    const executionProfileStatus = assignment.executionMalformed ? "stale" : validateExecutionOptions(executionOptions, capability);
+    return { role: assignment.role, ...(assignment.providerConfigId ? { providerConfigId: assignment.providerConfigId } : {}), ...(provider ? { providerName: provider.displayName } : {}), ...(assignment.modelId ? { modelId: assignment.modelId } : {}), available, status: !assignment.providerConfigId || !assignment.modelId ? "Unconfigured" : available ? "Configured" : unavailableStatus, executionOptions, ...(capability ? { executionCapability: capability } : {}), executionProfileStatus };
   });
   const selected = providers.find((provider) => provider.id === input.defaultProviderId);
   const roots = input.workspaceFolders.slice(0, 32);
   const selectedRoot = roots.find((root) => root.id === input.selectedWorkspaceRootId) ?? (roots.length === 1 ? roots[0] : undefined);
   const planningProfiles = input.planningProfiles.slice(0, 64).map((profile) => ({ id: String(profile.id), name: String(profile.name), ...(profile.locale ? { locale: String(profile.locale) } : {}), outputLanguage: String(profile.outputLanguage), planStyle: String(profile.planStyle), riskMode: String(profile.riskMode) }));
   const rules = input.engineeringRules.slice(0, 256).map((rule) => ({ id: String(rule.id), name: String(rule.name), description: String(rule.description), scope: String(rule.scope), severity: String(rule.severity), enabled: rule.enabled === true }));
-  const reviewer = projectedRoles.find((role) => role.role === "reviewer") ?? { role: "reviewer" as const, available: false, status: "Unconfigured" as const };
+  const reviewer = projectedRoles.find((role) => role.role === "reviewer") ?? { role: "reviewer" as const, available: false, status: "Unconfigured" as const, executionOptions: PROVIDER_DEFAULT_EXECUTION, executionProfileStatus: "unknown" as const };
   return {
     version: input.version, providers, ...(selected ? { defaultProviderConfigId: selected.id } : {}), ...(selected?.defaultModel ? { defaultModel: selected.defaultModel } : {}), modelMode: input.modelMode, roles: projectedRoles,
     workflow: { planApproval: "Required", afterApproval: "Automatic", pauseResume: "Supported", automaticRepair: "Enabled" },
@@ -98,7 +116,7 @@ export function buildSanitizedDiagnostics(projection: SettingsProjection, workfl
   return {
     product: projection.about.product, version: projection.version, channel: projection.about.channel,
     providers: projection.providers.map((provider) => ({ providerConfigId: provider.id, displayName: provider.displayName, adapterId: provider.adapterId, status: provider.status, requestedModelId: provider.defaultModel ?? null })),
-    roles: projection.roles.map((role) => ({ role: role.role, providerConfigId: role.providerConfigId ?? null, requestedModelId: role.modelId ?? null, available: role.available })),
+    roles: projection.roles.map((role) => ({ role: role.role, providerConfigId: role.providerConfigId ?? null, requestedModelId: role.modelId ?? null, execution: executionProfileSummary(role.executionOptions), executionProfileStatus: role.executionProfileStatus, available: role.available })),
     workflow: { status: workflowState?.status ?? "idle", active: workflowState?.active ?? false },
     storage: { credentials: projection.privacy.credentials, taskHistory: projection.privacy.taskHistory, historyCount: projection.history.count, retention: projection.history.retention },
   };

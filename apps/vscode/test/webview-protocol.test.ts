@@ -35,7 +35,9 @@ describe("webview message boundary", () => {
     expect(parseWebviewMessage({ type: "disablePermissions", allowAll: true })).toBeUndefined();
     expect(parseWebviewMessage({ type: "updateProviderMetadata", providerConfigId: "p", displayName: "Work", endpoint: "https://example.test/v1" })).toEqual({ type: "updateProviderMetadata", providerConfigId: "p", displayName: "Work", endpoint: "https://example.test/v1" });
     expect(parseWebviewMessage({ type: "updateRoleAssignments", assignments: [{ role: "planner", providerConfigId: "p", modelId: "m" }] })).toBeUndefined();
-    const assignments = [{ role: "planner", providerConfigId: "p1", modelId: "m1" }, { role: "executor", providerConfigId: "p2", modelId: "m2" }, { role: "reviewer", providerConfigId: "p3", modelId: "m3" }];
+    const assignments = [{ role: "planner", providerConfigId: "p1", modelId: "m1", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: "p2", modelId: "m2", executionOptions: { kind: "openai_reasoning", effort: "medium" } }, { role: "reviewer", providerConfigId: "p3", modelId: "m3", executionOptions: { kind: "gemini_thinking_level", level: "high" } }];
     expect(parseWebviewMessage({ type: "updateRoleAssignments", assignments })).toEqual({ type: "updateRoleAssignments", assignments });
+    expect(parseWebviewMessage({ type: "updateRoleAssignments", assignments: assignments.map((item, index) => index === 1 ? { ...item, executionOptions: { kind: "provider_default", apiKey: "secret" } } : item) })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "setDefaultModel", providerConfigId: "p", modelId: "m", executionOptions: { kind: "anthropic_thinking", enabled: true, budgetTokens: Number.NaN } })).toBeUndefined();
   });
 });

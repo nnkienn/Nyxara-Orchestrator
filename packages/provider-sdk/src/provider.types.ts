@@ -1,9 +1,88 @@
+export type ExecutionCapabilityProvenance =
+  | "provider_discovery"
+  | "provider_catalog"
+  | "adapter_known"
+  | "unknown";
+
+export interface ExecutionOptionValue {
+  readonly value: string;
+  readonly label: string;
+}
+
+export type ModelExecutionCapability =
+  | {
+      readonly kind: "openai_reasoning";
+      readonly label: "Reasoning";
+      readonly control: "select";
+      readonly values: readonly ExecutionOptionValue[];
+      readonly provenance: ExecutionCapabilityProvenance;
+    }
+  | {
+      readonly kind: "anthropic_thinking";
+      readonly label: "Thinking";
+      readonly control: "toggle_number";
+      readonly enabledLabel: "Enabled";
+      readonly budgetLabel: "Thinking Budget";
+      readonly minimumBudgetTokens: number;
+      readonly maximumBudgetTokens: number;
+      readonly integerBudget: true;
+      readonly provenance: ExecutionCapabilityProvenance;
+    }
+  | {
+      readonly kind: "gemini_thinking_budget";
+      readonly label: "Thinking";
+      readonly control: "toggle_number";
+      readonly enabledLabel: "Custom Budget";
+      readonly budgetLabel: "Thinking Budget";
+      readonly minimumBudgetTokens: number;
+      readonly maximumBudgetTokens: number;
+      readonly integerBudget: true;
+      readonly allowZero?: boolean;
+      readonly provenance: ExecutionCapabilityProvenance;
+    }
+  | {
+      readonly kind: "gemini_thinking_level";
+      readonly label: "Thinking";
+      readonly control: "select";
+      readonly values: readonly ExecutionOptionValue[];
+      readonly provenance: ExecutionCapabilityProvenance;
+    };
+
+export type ExecutionOptions =
+  | { readonly kind: "provider_default" }
+  | { readonly kind: "openai_reasoning"; readonly effort: string }
+  | { readonly kind: "anthropic_thinking"; readonly enabled: true; readonly budgetTokens: number }
+  | { readonly kind: "gemini_thinking_budget"; readonly budgetTokens: number }
+  | { readonly kind: "gemini_thinking_level"; readonly level: string };
+
+export type ExecutionProfileSummary =
+  | { readonly kind: "provider_default" }
+  | { readonly kind: "openai_reasoning"; readonly value: string }
+  | { readonly kind: "anthropic_thinking"; readonly enabled: true; readonly budgetTokens: number }
+  | { readonly kind: "gemini_thinking_budget"; readonly budgetTokens: number }
+  | { readonly kind: "gemini_thinking_level"; readonly value: string };
+
+export interface RoleExecutionProfile {
+  readonly providerConfigId: string;
+  readonly requestedModelId: string;
+  readonly executionOptions: ExecutionOptions;
+}
+
+export type ExecutionProfileStatus = "valid" | "stale" | "unknown";
+
+export interface ModelExecutionCapabilityRule {
+  readonly match: "exact" | "prefix";
+  readonly modelId: string;
+  readonly capability: ModelExecutionCapability;
+}
+
 export interface ModelCapabilities {
   readonly text?: boolean;
   readonly vision?: boolean;
   readonly tools?: boolean;
   readonly reasoning?: boolean;
   readonly structuredOutput?: boolean;
+  readonly execution?: ModelExecutionCapability;
 }
 
 export interface ModelInfo {
@@ -20,6 +99,7 @@ export interface GenerateRequest {
   readonly responseFormat?: "text" | "json";
   readonly tools?: readonly ModelToolDefinition[];
   readonly conversation?: readonly ModelConversationMessage[];
+  readonly executionOptions?: ExecutionOptions;
 }
 
 export interface ModelToolDefinition {
@@ -97,6 +177,7 @@ export interface ProviderOnboardingCapabilities {
 
 export interface ProviderInfo {
   readonly id: string;
+  readonly providerId?: string;
   readonly displayName: string;
   readonly capabilities: ProviderCapabilities;
 }

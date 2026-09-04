@@ -6,7 +6,7 @@ const local = { id: "ollama", type: "ollama" as const, displayName: "Ollama Loca
 
 function projection(overrides: Record<string, unknown> = {}) {
   return buildSettingsProjection({
-    version: "0.1.0-alpha.8", providers: [openai, local], defaultProviderId: openai.id, credentialStored: new Map([[openai.id, true]]), testedProviderIds: new Set([openai.id]), modelMode: "advanced",
+    version: "0.1.0-alpha.9", providers: [openai, local], defaultProviderId: openai.id, credentialStored: new Map([[openai.id, true]]), testedProviderIds: new Set([openai.id]), modelMode: "advanced",
     roles: [{ role: "planner", providerConfigId: openai.id, modelId: "gpt-work" }, { role: "executor", providerConfigId: local.id, modelId: "local-model" }, { role: "reviewer", providerConfigId: openai.id, modelId: "gpt-review" }],
     selectedPlanningProfile: "default", planningProfiles: [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }],
     engineeringRules: [{ id: "avoid-secret-exposure", name: "Avoid secret exposure", description: "Never expose secrets", scope: "global", severity: "error", enabled: true, instruction: "raw internal instruction" }],
@@ -45,5 +45,29 @@ describe("Settings authoritative projection", () => {
 
   it("creates allowlisted diagnostics without credentials, prompts, source, outputs, or raw responses", () => {
     const diagnostics = buildSanitizedDiagnostics(projection(), { status: "executing", active: true }); const text = JSON.stringify({ ...diagnostics, ignoredInput: undefined }); expect(text).toContain("openai-work"); expect(text).toContain("gpt-work"); for (const forbidden of ["credentialStored", "api-key", "prompt", "source", "toolOutput", "rawResponse", "Authorization"]) expect(text).not.toContain(forbidden);
+  });
+
+  it("projects model-specific execution controls, provenance, unknown fallback, and stale state", () => {
+    const value = projection({ roles: [
+      { role: "planner", providerConfigId: openai.id, modelId: "gpt-5.1", executionOptions: { kind: "openai_reasoning", effort: "medium" } },
+      { role: "executor", providerConfigId: local.id, modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } },
+      { role: "reviewer", providerConfigId: openai.id, modelId: "gpt-4.1", executionOptions: { kind: "openai_reasoning", effort: "medium" } },
+    ] });
+    expect(value.roles[0]).toMatchObject({ executionProfileStatus: "valid", executionCapability: { kind: "openai_reasoning", provenance: "adapter_known" } });
+    expect(value.roles[1]).toMatchObject({ executionProfileStatus: "unknown", executionOptions: { kind: "provider_default" } });
+    expect(value.roles[1]).not.toHaveProperty("executionCapability");
+    expect(value.roles[2]).toMatchObject({ executionProfileStatus: "stale" });
+    expect(value.providers.find((provider) => provider.id === local.id)?.executionCapabilityRules).toEqual([]);
+  });
+
+  it("diagnostics expose only safe execution summaries", () => {
+    const value = projection({ roles: [
+      { role: "planner", providerConfigId: openai.id, modelId: "gpt-5.1", executionOptions: { kind: "openai_reasoning", effort: "low" } },
+      { role: "executor", providerConfigId: local.id, modelId: "local", executionOptions: { kind: "provider_default" } },
+      { role: "reviewer", providerConfigId: openai.id, modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } },
+    ] });
+    const text = JSON.stringify(buildSanitizedDiagnostics(value));
+    expect(text).toContain('"execution":{"kind":"openai_reasoning","value":"low"}');
+    expect(text).not.toMatch(/api[_ -]?key|authorization|request.*payload|response.*payload|sk-secret/i);
   });
 });

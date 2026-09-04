@@ -1,8 +1,9 @@
-import type {
-  ModelConversationMessage,
-  ModelInfo,
-  ModelToolCall,
-  ModelToolResult,
+import {
+  executionProfileSummary,
+  type ModelConversationMessage,
+  type ModelInfo,
+  type ModelToolCall,
+  type ModelToolResult,
 } from "@nyxara/provider-sdk";
 import {
   NyxaraToolError,
@@ -154,6 +155,7 @@ export class Executor {
           model: selectedModel.id,
           prompt,
           tools: EXECUTOR_TOOL_DEFINITIONS,
+          ...(model.executionOptions ? { executionOptions: model.executionOptions } : {}),
           ...(conversation.length > 0 ? { conversation } : {}),
           ...(selectedModel.capabilities?.structuredOutput ||
           provider.capabilities().structuredOutput
@@ -163,7 +165,8 @@ export class Executor {
         // Provider wait is measured at the provider boundary and contains no
         // local tool or validation work.
         if (runInput.workflowId) this.events.emit("provider.generation.completed", {
-          providerId: provider.id,
+          providerId: provider.providerId ?? provider.id,
+          providerConfigId: model.providerId,
           modelId: response.model,
           requestedModelId: selectedModel.id,
           role: repairInput ? "repair" : "executor",
@@ -172,6 +175,7 @@ export class Executor {
           providerDurationMs: Math.max(0, performance.now() - providerStarted),
           textLength: response.text.length,
           toolCallCount: response.toolCalls?.length ?? 0,
+          executionProfileSummary: executionProfileSummary(model.executionOptions),
           contextFiles: input.context.files.length,
           contextBytes: input.context.totalBytes,
           contextTruncated: input.context.truncated,

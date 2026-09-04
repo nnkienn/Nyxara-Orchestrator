@@ -20,4 +20,22 @@ export type {
   ProviderAuthMethod,
   ProviderCategory,
   ProviderOnboardingCapabilities,
+  ExecutionCapabilityProvenance,
+  ExecutionOptionValue,
+  ModelExecutionCapability,
+  ModelExecutionCapabilityRule,
+  ExecutionOptions,
+  ExecutionProfileSummary,
+  ExecutionProfileStatus,
+  RoleExecutionProfile,
 } from "./provider.types.js";
+export {
+  PROVIDER_DEFAULT_EXECUTION,
+  ExecutionProfileError,
+  parseExecutionOptions,
+  parseRoleExecutionProfile,
+  validateExecutionOptions,
+  assertExecutionOptionsSupported,
+  executionProfileSummary,
+  capabilityForModel,
+} from "./execution-profile.js";

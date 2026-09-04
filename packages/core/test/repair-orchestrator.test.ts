@@ -18,6 +18,7 @@ const model: AgentModelConfig = {
   role: "executor",
   providerId: "fake",
   modelId: "executor-model",
+  executionOptions: { kind: "openai_reasoning", effort: "medium" },
 };
 
 function input(
@@ -65,6 +66,7 @@ describe("RepairOrchestrator", () => {
     expect(result.status).toBe("passed");
     expect(result.cycles).toBe(1);
     expect(executeRepair).toHaveBeenCalledOnce();
+    expect(executeRepair).toHaveBeenCalledWith(expect.objectContaining({ model }));
     expect(operations.validate).toHaveBeenCalledOnce();
     expect(operations.review).toHaveBeenCalledOnce();
     expect(result.finalReview?.status).toBe("passed");

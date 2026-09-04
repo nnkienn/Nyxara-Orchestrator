@@ -1,4 +1,4 @@
-import type { GenerateResponse, ModelInfo } from "@nyxara/provider-sdk";
+import { executionProfileSummary, type ExecutionOptions, type GenerateResponse, type ModelInfo } from "@nyxara/provider-sdk";
 import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
 import { errorCodeOr } from "../internal/error-code.js";
@@ -62,6 +62,8 @@ export class Reviewer {
         const response = await this.generate(
           provider,
           selectedModel,
+          model.executionOptions,
+          model.providerId,
           this.promptBuilder.build(input),
           runInput.workflowId,
           input.task.id,
@@ -181,6 +183,8 @@ export class Reviewer {
   private async generate(
     provider: ReturnType<ProviderRegistry["get"]>,
     model: ModelInfo,
+    executionOptions: ExecutionOptions | undefined,
+    providerConfigId: string,
     prompt: string,
     workflowId?: string,
     taskId?: string,
@@ -193,13 +197,15 @@ export class Reviewer {
       const response = await provider.generate({
         model: model.id,
         prompt,
+        ...(executionOptions ? { executionOptions } : {}),
         ...(model.capabilities?.structuredOutput ||
         provider.capabilities().structuredOutput
           ? { responseFormat: "json" as const }
           : {}),
       });
       this.events.emit("provider.generation.completed", {
-        providerId: provider.id,
+        providerId: provider.providerId ?? provider.id,
+        providerConfigId,
         modelId: response.model,
         requestedModelId: model.id,
         role: "reviewer",
@@ -210,6 +216,7 @@ export class Reviewer {
         ...(response.finishReason ? { finishReason: response.finishReason } : {}),
         textLength: response.text.length,
         toolCallCount: response.toolCalls?.length ?? 0,
+        executionProfileSummary: executionProfileSummary(executionOptions),
         ...(contextFiles !== undefined ? { contextFiles } : {}),
         ...(contextBytes !== undefined ? { contextBytes } : {}),
         ...(contextTruncated !== undefined ? { contextTruncated } : {}),

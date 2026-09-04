@@ -1,8 +1,9 @@
 import * as vscode from "vscode";
-import { PROVIDER_DEFINITIONS, providerDefinition, type ProviderDefinition } from "@nyxara/providers";
+import { PROVIDER_DEFINITIONS, knownModelExecutionCapability, providerDefinition, type ProviderDefinition } from "@nyxara/providers";
+import { PROVIDER_DEFAULT_EXECUTION, assertExecutionOptionsSupported, type ExecutionOptions } from "@nyxara/provider-sdk";
 import { NyxaraSession } from "./session.js";
 import { safeErrorMessage } from "./projection.js";
-import { DEFAULT_PROVIDER_SETTING, LEGACY_SECRET_KEY, PROVIDER_CONFIGS_SETTING, defaultProviderId, providerSecretKey, readProviderConfigs, type ProviderConfig } from "./provider-config.js";
+import { DEFAULT_PROVIDER_SETTING, LEGACY_SECRET_KEY, PROVIDER_CONFIGS_SETTING, defaultProviderId, providerSecretKey, readPersistedExecution, readProviderConfigs, roleExecutionSetting, type ProviderConfig } from "./provider-config.js";
 import { NyxaraWorkspaceViewProvider } from "./webview-view.js";
 import { buildWorkspaceState, type TaskHistoryViewState } from "./workspace-state.js";
 import type { WebviewToExtensionMessage } from "./webview-protocol.js";
@@ -50,6 +51,8 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   const session = injectedSession ?? new NyxaraSession(context, output, providerConfigs);
   const version = (context as any).extension?.packageJSON?.version ?? "unknown";
   const selectedProvider = () => providerConfigs.find((config) => config.id === selectedProviderId);
+  const roleExecution = (role: Role) => readPersistedExecution(setting<unknown>(roleExecutionSetting(role), undefined));
+  const agentSetting = (key: string): unknown => key.endsWith(".execution") ? setting<unknown>(key, undefined) : setting(key, "");
   const configuredRetention = setting("nyxara.history.retention", 50);
   const historyStore = new TaskHistoryStore(context.globalStorageUri?.fsPath, [20, 50, 100].includes(configuredRetention) ? configuredRetention : 50, (message) => output.appendLine(message));
   activeHistoryStore = historyStore;
@@ -139,8 +142,9 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     const configuredMode = setting<string>("nyxara.modelMode", "");
     settingsProjection = buildSettingsProjection({
       version, providers: providerConfigs, ...(selectedProviderId ? { defaultProviderId: selectedProviderId } : {}), credentialStored: credentials,
-      roles: ROLES.map((role) => ({ role, ...(setting(`nyxara.${role}.provider`, "") ? { providerConfigId: setting(`nyxara.${role}.provider`, "") } : {}), ...(setting(`nyxara.${role}.model`, "") ? { modelId: setting(`nyxara.${role}.model`, "") } : {}) })),
+      roles: ROLES.map((role) => { const execution = roleExecution(role); return { role, ...(setting(`nyxara.${role}.provider`, "") ? { providerConfigId: setting(`nyxara.${role}.provider`, "") } : {}), ...(setting(`nyxara.${role}.model`, "") ? { modelId: setting(`nyxara.${role}.model`, "") } : {}), executionOptions: execution.executionOptions, ...(execution.malformed ? { executionMalformed: true } : {}) }; }),
       providerCapabilities: new Map(session.core.listProviders().map((provider: any) => [provider.id, provider.capabilities])),
+      modelCapabilities: new Map(ROLES.flatMap((role) => { const providerId = setting(`nyxara.${role}.provider`, ""); const modelId = setting(`nyxara.${role}.model`, ""); if (!providerId || !modelId || typeof (session.core as any).getModelCapabilities !== "function") return []; const capabilities = session.core.getModelCapabilities(providerId, modelId); return capabilities ? [[`${providerId}\0${modelId}`, capabilities] as const] : []; })),
       modelMode: configuredMode === "advanced" || (configuredMode !== "simple" && new Set(pairs).size > 1) ? "advanced" : "simple",
       selectedPlanningProfile: setting("nyxara.planningProfile", "default"), planningProfiles: session.core.listPlanningProfiles(), engineeringRules: typeof (session.core as any).listEngineeringRules === "function" ? (session.core as any).listEngineeringRules() : [],
       historyRetention: historyStore.retention, historyCount: historyStore.list({ allWorkspaces: true }).length, workspaceFolders: folders,
@@ -207,7 +211,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       case "signOutProvider": await signOutProvider(requireProviderConfig(message.providerConfigId)); await refreshSettingsProjection(); webview.refresh("providerStatusChanged"); return;
       case "removeProvider": await removeProvider(requireProviderConfig(message.providerConfigId)); selectedSettingsProviderId = undefined; settingsSection = "aiProviders"; await refreshSettingsProjection(); webview.refresh("providerConfigs"); return;
       case "setDefaultProvider": await setDefaultProvider(requireProviderConfig(message.providerConfigId)); await refreshSettingsProjection(); webview.refresh("providerConfigs"); return;
-      case "setDefaultModel": await applySimpleModel(requireProviderConfig(message.providerConfigId).id, message.modelId); await refreshSettingsProjection(); webview.refresh("roleAssignmentsChanged"); return;
+      case "setDefaultModel": await applySimpleModel(requireProviderConfig(message.providerConfigId).id, message.modelId, message.executionOptions); await refreshSettingsProjection(); webview.refresh("roleAssignmentsChanged"); return;
       case "updateRoleAssignments": await applyRoleAssignments(message.assignments); await refreshSettingsProjection(); webview.refresh("roleAssignmentsChanged"); return;
       case "updatePlanningProfile": {
         if (!session.core.listPlanningProfiles().some((profile: any) => profile.id === message.profileId)) throw new Error("Selected planning profile is unavailable.");
@@ -303,16 +307,18 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     const capabilities = providerCapabilities(config.id);
     if (capabilities && (!capabilities.textGeneration || (role === "executor" && !capabilities.toolCalling))) throw new Error(`${config.displayName} is incompatible with the ${role} role.`);
   };
-  const applySimpleModel = async (providerId: string, modelId: string): Promise<void> => {
+  const applySimpleModel = async (providerId: string, modelId: string, executionOptions: ExecutionOptions = PROVIDER_DEFAULT_EXECUTION): Promise<void> => {
     const config = requireProviderConfig(providerId); const normalizedModel = modelId.trim();
     if (!normalizedModel) throw new Error("A model ID is required.");
     if (config.signedOut) throw new Error(`${config.displayName} is signed out.`);
     if (config.authStrategy === "api_key" && !(await context.secrets.get(providerSecretKey(config.id))) && !(config.id === "openai-compatible" && await context.secrets.get(LEGACY_SECRET_KEY))) throw new Error(`${config.displayName} credential is missing.`);
     for (const role of ROLES) assertRoleCompatibility(config, role);
+    const modelCapabilities = typeof (session.core as any).getModelCapabilities === "function" ? session.core.getModelCapabilities(providerId, normalizedModel) : undefined;
+    assertExecutionOptionsSupported(executionOptions, modelCapabilities?.execution ?? knownModelExecutionCapability(config.catalogId ?? config.type, normalizedModel));
     const nextProviders = providerConfigs.map((candidate) => candidate.id === providerId ? { ...candidate, modelId: normalizedModel } : candidate);
-    await updateSettingsAtomic([[PROVIDER_CONFIGS_SETTING, nextProviders], [DEFAULT_PROVIDER_SETTING, providerId], ["nyxara.modelMode", "simple"], ...ROLES.flatMap((role) => [[`nyxara.${role}.provider`, providerId], [`nyxara.${role}.model`, normalizedModel]] as const), ["nyxara.provider", config.type]]);
+    await updateSettingsAtomic([[PROVIDER_CONFIGS_SETTING, nextProviders], [DEFAULT_PROVIDER_SETTING, providerId], ["nyxara.modelMode", "simple"], ...ROLES.flatMap((role) => [[`nyxara.${role}.provider`, providerId], [`nyxara.${role}.model`, normalizedModel], [roleExecutionSetting(role), executionOptions]] as const), ["nyxara.provider", config.type]]);
     providerConfigs = nextProviders; selectedProviderId = providerId;
-    session.configureAgents((key) => setting(key, ""));
+    session.configureAgents(agentSetting);
   };
   const setDefaultProvider = async (config: ProviderConfig): Promise<void> => {
     if (config.signedOut) throw new Error(`${config.displayName} is signed out.`);
@@ -341,7 +347,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       if (!(await confirmCliLogin(definition))) return;
       const reconnected = { ...config, signedOut: false };
       providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? reconnected : candidate);
-      session.upsertProvider(reconnected); testedProviderIds.delete(config.id); await persistProviders(); session.configureAgents((key) => setting(key, "")); return;
+      session.upsertProvider(reconnected); testedProviderIds.delete(config.id); await persistProviders(); session.configureAgents(agentSetting); return;
     }
     if (config.authStrategy !== "api_key") throw new Error("This provider does not use a stored credential.");
     const credential = await vscode.window.showInputBox({ prompt: `${config.displayName} new API key (stored securely)`, password: true, ignoreFocusOut: true });
@@ -351,7 +357,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     const reconnected = { ...config, signedOut: false };
     providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? reconnected : candidate);
     session.upsertProvider(reconnected); testedProviderIds.delete(config.id); await persistProviders();
-    session.configureAgents((key) => setting(key, ""));
+    session.configureAgents(agentSetting);
   };
   const signOutProvider = async (config: ProviderConfig): Promise<void> => {
     if (config.authStrategy === "local" || config.authStrategy === "none") throw new Error("Local and no-auth providers can be removed, not signed out.");
@@ -368,7 +374,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     if (config.id === "openai-compatible") await context.secrets.delete(LEGACY_SECRET_KEY);
     testedProviderIds.delete(config.id); providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? { ...candidate, signedOut: true } : candidate);
     await persistProviders();
-    if (used.length) session.configureAgents((key) => setting(key, ""), new Set(providerConfigs.filter((candidate) => !candidate.signedOut && candidate.id !== config.id).map((candidate) => candidate.id)));
+    if (used.length) session.configureAgents(agentSetting, new Set(providerConfigs.filter((candidate) => !candidate.signedOut && candidate.id !== config.id).map((candidate) => candidate.id)));
   };
   const removeProvider = async (config: ProviderConfig): Promise<void> => {
     assertProviderNotInActiveWorkflow(config);
@@ -378,22 +384,24 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     if (confirmed !== "Remove Provider") return;
     const nextProviders = providerConfigs.filter((candidate) => candidate.id !== config.id);
     const nextDefault = selectedProviderId === config.id ? nextProviders[0]?.id : selectedProviderId;
-    const roleUpdates = used.flatMap((role) => [[`nyxara.${role}.provider`, ""], [`nyxara.${role}.model`, ""]] as const);
+    const roleUpdates = used.flatMap((role) => [[`nyxara.${role}.provider`, ""], [`nyxara.${role}.model`, ""], [roleExecutionSetting(role), PROVIDER_DEFAULT_EXECUTION]] as const);
     await updateSettingsAtomic([[PROVIDER_CONFIGS_SETTING, nextProviders], [DEFAULT_PROVIDER_SETTING, nextDefault ?? ""], ...roleUpdates]);
     await context.secrets.delete(providerSecretKey(config.id));
     if (config.id === "openai-compatible") await context.secrets.delete(LEGACY_SECRET_KEY);
-    providerConfigs = nextProviders; selectedProviderId = nextDefault; testedProviderIds.delete(config.id); session.removeProvider(config.id); session.configureAgents((key) => setting(key, ""));
+    providerConfigs = nextProviders; selectedProviderId = nextDefault; testedProviderIds.delete(config.id); session.removeProvider(config.id); session.configureAgents(agentSetting);
   };
-  const applyRoleAssignments = async (assignments: readonly { readonly role: Role; readonly providerConfigId: string; readonly modelId: string }[]): Promise<void> => {
+  const applyRoleAssignments = async (assignments: readonly { readonly role: Role; readonly providerConfigId: string; readonly modelId: string; readonly executionOptions: ExecutionOptions }[]): Promise<void> => {
     if (assignments.length !== ROLES.length || new Set(assignments.map((assignment) => assignment.role)).size !== ROLES.length) throw new Error("Role configuration is incomplete.");
     for (const assignment of assignments) {
       const config = requireProviderConfig(assignment.providerConfigId);
       if (config.signedOut || !assignment.modelId.trim()) throw new Error(`${config.displayName} is signed out or the model ID is missing.`);
       if (config.authStrategy === "api_key" && !(await context.secrets.get(providerSecretKey(config.id))) && !(config.id === "openai-compatible" && await context.secrets.get(LEGACY_SECRET_KEY))) throw new Error(`${config.displayName} credential is missing.`);
       assertRoleCompatibility(config, assignment.role);
+      const modelCapabilities = typeof (session.core as any).getModelCapabilities === "function" ? session.core.getModelCapabilities(config.id, assignment.modelId.trim()) : undefined;
+      assertExecutionOptionsSupported(assignment.executionOptions, modelCapabilities?.execution ?? knownModelExecutionCapability(config.catalogId ?? config.type, assignment.modelId.trim()));
     }
-    await updateSettingsAtomic([...assignments.flatMap((assignment) => [[`nyxara.${assignment.role}.provider`, assignment.providerConfigId], [`nyxara.${assignment.role}.model`, assignment.modelId.trim()]] as const), ["nyxara.modelMode", "advanced"]]);
-    session.configureAgents((key) => setting(key, ""));
+    await updateSettingsAtomic([...assignments.flatMap((assignment) => [[`nyxara.${assignment.role}.provider`, assignment.providerConfigId], [`nyxara.${assignment.role}.model`, assignment.modelId.trim()], [roleExecutionSetting(assignment.role), assignment.executionOptions]] as const), ["nyxara.modelMode", "advanced"]]);
+    session.configureAgents(agentSetting);
   };
   const makeProviderId = (catalogId: string): string => {
     if (!providerConfigs.some((config) => config.id === catalogId)) return catalogId;
@@ -530,13 +538,13 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   };
   const configureRoleModels = async (): Promise<void> => {
     if (providerConfigs.length === 0) { await connectProvider(); return; }
-    const selections: Array<{ role: Role; providerConfigId: string; modelId: string }> = [];
+    const selections: Array<{ role: Role; providerConfigId: string; modelId: string; executionOptions: ExecutionOptions }> = [];
     for (const role of ROLES) {
       const providerPick = await vscode.window.showQuickPick(providerConfigs.map((config) => ({ label: config.displayName, description: providerDefinition(config.catalogId ?? config.type).description, config })), { placeHolder: `${role[0]?.toUpperCase()}${role.slice(1)} provider` });
       if (!providerPick) return;
       const modelId = await discoverAndPickModel(providerPick.config);
       if (!modelId) return;
-      selections.push({ role, providerConfigId: providerPick.config.id, modelId });
+      selections.push({ role, providerConfigId: providerPick.config.id, modelId, executionOptions: PROVIDER_DEFAULT_EXECUTION });
     }
     await applyRoleAssignments(selections);
     void vscode.window.showInformationMessage("Advanced role models saved.");
@@ -591,7 +599,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       } else void vscode.window.showErrorMessage(message);
     }
   }));
-  session.configureAgents((key) => setting(key, ""));
+  session.configureAgents(agentSetting);
   register("nyxara.open", () => vscode.commands.executeCommand("workbench.view.extension.nyxara"));
   register("nyxara.connectProvider", connectProvider);
   register("nyxara.configureProvider", connectProvider);

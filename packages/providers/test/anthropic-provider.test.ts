@@ -34,4 +34,45 @@ describe("AnthropicProvider", () => {
     const fetch = vi.fn(); const provider = new AnthropicProvider({ credentialStore: { get: async () => undefined, set: vi.fn(), delete: vi.fn() }, fetch: fetch as any });
     await expect(provider.listModels()).rejects.toMatchObject({ code: "authentication_error" }); expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("projects and maps model-specific thinking budgets without cross-provider fields", async () => {
+    const bodies: any[] = [];
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => { bodies.push(JSON.parse(String(init.body))); return new Response(JSON.stringify({ model: "claude-sonnet-4-5", content: [{ type: "text", text: "ok" }] }), { status: 200 }); });
+    const provider = new AnthropicProvider({ credentialStore: { get: async () => "fake", set: vi.fn(), delete: vi.fn() }, fetch: fetch as any });
+    expect(provider.modelCapabilities("claude-sonnet-4-5-20250929")?.execution).toMatchObject({ kind: "anthropic_thinking", minimumBudgetTokens: 1024, provenance: "adapter_known" });
+    expect(provider.modelCapabilities("claude-test")).toBeUndefined();
+    await provider.generate({ model: "claude-sonnet-4-5", prompt: "x", executionOptions: { kind: "provider_default" } });
+    await provider.generate({ model: "claude-sonnet-4-5", prompt: "x", executionOptions: { kind: "anthropic_thinking", enabled: true, budgetTokens: 2048 } });
+    expect(bodies[0]).not.toHaveProperty("thinking");
+    expect(bodies[1]).toMatchObject({ model: "claude-sonnet-4-5", max_tokens: 4096, thinking: { type: "enabled", budget_tokens: 2048 } });
+    expect(JSON.stringify(bodies[1])).not.toMatch(/reasoning_effort|thinkingConfig|thinkingBudget/);
+  });
+
+  it("rejects invalid Anthropic budgets and foreign execution options before fetch", async () => {
+    const fetch = vi.fn();
+    const provider = new AnthropicProvider({ credentialStore: { get: async () => "fake", set: vi.fn(), delete: vi.fn() }, fetch: fetch as any });
+    await expect(provider.generate({ model: "claude-sonnet-4-5", prompt: "x", executionOptions: { kind: "anthropic_thinking", enabled: true, budgetTokens: 1000 } })).rejects.toMatchObject({ code: "unsupported_execution_profile" });
+    await expect(provider.generate({ model: "claude-sonnet-4-5", prompt: "x", executionOptions: { kind: "openai_reasoning", effort: "medium" } })).rejects.toMatchObject({ code: "unsupported_execution_profile" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps signed thinking blocks adapter-local while continuing Anthropic tool use", async () => {
+    const bodies: any[] = [];
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return bodies.length === 1
+        ? new Response(JSON.stringify({ model: "claude-sonnet-4-5", content: [{ type: "thinking", thinking: "private chain", signature: "signed" }, { type: "tool_use", id: "call-1", name: "read_file", input: { path: "x" } }] }), { status: 200 })
+        : new Response(JSON.stringify({ model: "claude-sonnet-4-5", content: [{ type: "text", text: "done" }] }), { status: 200 });
+    });
+    const provider = new AnthropicProvider({ credentialStore: { get: async () => "fake", set: vi.fn(), delete: vi.fn() }, fetch: fetch as any });
+    const profile = { kind: "anthropic_thinking", enabled: true, budgetTokens: 2048 } as const;
+    const first = await provider.generate({ model: "claude-sonnet-4-5", prompt: "x", executionOptions: profile });
+    expect(first).not.toHaveProperty("thinking");
+    await provider.generate({ model: "claude-sonnet-4-5", prompt: "x", executionOptions: profile, conversation: [
+      { role: "assistant", toolCalls: first.toolCalls },
+      { role: "tool", toolResult: { callId: "call-1", name: "read_file", result: "ok" } },
+    ] });
+    expect(bodies[1].messages[1].content[0]).toEqual({ type: "thinking", thinking: "private chain", signature: "signed" });
+    expect(JSON.stringify(first)).not.toContain("private chain");
+  });
 });

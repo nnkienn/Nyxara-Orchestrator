@@ -1,4 +1,4 @@
-import type { ModelProvider, ProviderInfo } from "@nyxara/provider-sdk";
+import type { ModelCapabilities, ModelProvider, ProviderInfo } from "@nyxara/provider-sdk";
 
 export type ProviderRegistryErrorCode =
   | "duplicate_provider"
@@ -67,8 +67,13 @@ export class ProviderRegistry {
   list(): ProviderInfo[] {
     return [...this.providers.values()].map((provider) => ({
       id: provider.id,
+      ...(provider.providerId ? { providerId: provider.providerId } : {}),
       displayName: provider.displayName,
       capabilities: { ...provider.capabilities() },
     }));
+  }
+
+  modelCapabilities(providerConfigId: string, modelId: string): ModelCapabilities | undefined {
+    return this.get(providerConfigId).modelCapabilities?.(modelId);
   }
 }

@@ -1,4 +1,4 @@
-import type { CredentialStore } from "@nyxara/provider-sdk";
+import { PROVIDER_DEFAULT_EXECUTION, parseExecutionOptions, type CredentialStore, type ExecutionOptions } from "@nyxara/provider-sdk";
 import {
   AnthropicProvider,
   CliSubscriptionProvider,
@@ -25,6 +25,20 @@ export interface ProviderConfig {
 export const PROVIDER_CONFIGS_SETTING = "nyxara.providerConfigs";
 export const DEFAULT_PROVIDER_SETTING = "nyxara.defaultProviderConfigId";
 export const LEGACY_SECRET_KEY = "openai-compatible.apiKey";
+export type ConfigurableRole = "planner" | "executor" | "reviewer";
+
+export function roleExecutionSetting(role: ConfigurableRole): string {
+  return `nyxara.${role}.execution`;
+}
+
+/** Missing alpha.8 values migrate in memory to Provider Default; malformed values remain visibly stale. */
+export function readPersistedExecution(value: unknown): { readonly executionOptions: ExecutionOptions; readonly malformed: boolean; readonly migrated: boolean } {
+  if (value === undefined || value === null || value === "") return { executionOptions: PROVIDER_DEFAULT_EXECUTION, malformed: false, migrated: true };
+  const parsed = parseExecutionOptions(value);
+  return parsed
+    ? { executionOptions: parsed, malformed: false, migrated: false }
+    : { executionOptions: PROVIDER_DEFAULT_EXECUTION, malformed: true, migrated: false };
+}
 
 export function providerSecretKey(providerConfigId: string): string {
   return `provider/${providerConfigId}/api-key`;
@@ -73,9 +87,10 @@ export function createProvider(config: ProviderConfig, secrets: { get(key: strin
     set: (key, value) => secrets.store(key, value),
     delete: (key) => secrets.delete(key),
   };
-  if (config.type === "anthropic") return new AnthropicProvider({ id: config.id, displayName: config.displayName, baseUrl: config.baseUrl, credentialStore, credentialKey });
-  if (config.type === "gemini") return new GeminiProvider({ id: config.id, displayName: config.displayName, baseUrl: config.baseUrl, credentialStore, credentialKey });
-  return new OpenAICompatibleProvider({ id: config.id, displayName: config.displayName, baseUrl: config.baseUrl, credentialStore, credentialKey, credentialRequired: config.authStrategy === "api_key" });
+  const providerId = config.catalogId ?? config.type;
+  if (config.type === "anthropic") return new AnthropicProvider({ id: config.id, providerId, displayName: config.displayName, baseUrl: config.baseUrl, credentialStore, credentialKey });
+  if (config.type === "gemini") return new GeminiProvider({ id: config.id, providerId, displayName: config.displayName, baseUrl: config.baseUrl, credentialStore, credentialKey });
+  return new OpenAICompatibleProvider({ id: config.id, providerId, displayName: config.displayName, baseUrl: config.baseUrl, credentialStore, credentialKey, credentialRequired: config.authStrategy === "api_key" });
 }
 
 export function defaultProviderId(configs: readonly ProviderConfig[], configuredId: string): string | undefined {

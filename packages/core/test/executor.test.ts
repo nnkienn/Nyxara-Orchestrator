@@ -116,6 +116,7 @@ describe("Executor", () => {
       role: "executor",
       providerId: "fake",
       modelId: "executor-model",
+      executionOptions: { kind: "provider_default" },
     });
     expect(nyxara.getTaskExecutionStates(plan)).toEqual(
       expect.arrayContaining([

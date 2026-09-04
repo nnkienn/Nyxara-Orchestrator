@@ -100,7 +100,7 @@
 
   const SETTINGS_SECTIONS = [
     ["aiProviders", "AI Providers", "provider connect account credential sign out disconnect remove"],
-    ["modelsRoles", "Models & Roles", "default simple advanced planner executor reviewer repair model routing"],
+    ["modelsRoles", "Models & Roles", "default simple advanced planner executor reviewer repair model routing execution reasoning thinking provider default"],
     ["workflow", "Workflow", "approval pause resume automatic repair"],
     ["planning", "Planning", "profile locale conservative concise detailed"],
     ["engineeringRules", "Engineering Rules", "rules precedence scope severity n+1 secret dependencies"],
@@ -211,19 +211,88 @@
     return select;
   }
 
+  function executionCapability(provider, modelId) {
+    const normalized = String(modelId || "").trim().toLocaleLowerCase();
+    return (provider && provider.executionCapabilityRules || []).find((rule) => rule.match === "exact" ? normalized === String(rule.modelId).toLocaleLowerCase() : normalized.startsWith(String(rule.modelId).toLocaleLowerCase()))?.capability;
+  }
+
+  function executionSupported(options, capability) {
+    if (!options || options.kind === "provider_default") return true;
+    if (!capability || options.kind !== capability.kind) return false;
+    if (capability.control === "select") {
+      const selected = options.effort === undefined ? options.level : options.effort;
+      return capability.values.some((item) => item.value === selected);
+    }
+    const budget = Number(options.budgetTokens);
+    return Number.isFinite(budget) && Number.isInteger(budget) && ((capability.allowZero && budget === 0) || (budget >= capability.minimumBudgetTokens && budget <= capability.maximumBudgetTokens));
+  }
+
+  function executionEditor(projection, providerControl, modelControl, initialOptions, initiallyStale, initialCapability, initialProviderId, initialModelId) {
+    const host = node("div", "execution-config");
+    let current = initialOptions || { kind: "provider_default" };
+    const render = () => {
+      host.replaceChildren();
+      const provider = projection.providers.find((item) => item.id === providerControl.value);
+      const capability = executionCapability(provider, modelControl.value) || (providerControl.value === initialProviderId && modelControl.value.trim() === String(initialModelId || "").trim() ? initialCapability : undefined);
+      const stale = initiallyStale || (current.kind !== "provider_default" && !executionSupported(current, capability));
+      host.append(node("label", "field-label", capability ? capability.label : "Execution"));
+      if (capability && capability.control === "select") {
+        const select = node("select", "settings-select");
+        const defaultOption = node("option", "", "Provider Default"); defaultOption.value = "__provider_default__"; select.append(defaultOption);
+        capability.values.forEach((item) => { const option = node("option", "", item.label); option.value = item.value; select.append(option); });
+        const selected = current.kind === capability.kind ? (current.effort === undefined ? current.level : current.effort) : "__provider_default__";
+        select.value = stale ? "__provider_default__" : selected;
+        select.addEventListener("change", () => {
+          if (select.value === "__provider_default__") current = { kind: "provider_default" };
+          else current = capability.kind === "openai_reasoning" ? { kind: capability.kind, effort: select.value } : { kind: capability.kind, level: select.value };
+          initiallyStale = false; render();
+        });
+        host.append(select);
+      } else if (capability && capability.control === "toggle_number") {
+        const mode = node("select", "settings-select");
+        const defaultOption = node("option", "", "Provider Default"); defaultOption.value = "default"; mode.append(defaultOption);
+        const enabledOption = node("option", "", capability.enabledLabel); enabledOption.value = "enabled"; mode.append(enabledOption);
+        const enabled = current.kind === capability.kind && !stale; mode.value = enabled ? "enabled" : "default";
+        const numberInput = node("input", "settings-input"); numberInput.type = "number"; numberInput.step = "1"; numberInput.min = String(capability.allowZero ? 0 : capability.minimumBudgetTokens); numberInput.max = String(capability.maximumBudgetTokens); numberInput.value = enabled ? String(current.budgetTokens) : String(capability.minimumBudgetTokens); numberInput.disabled = !enabled; numberInput.setAttribute("aria-label", capability.budgetLabel);
+        const update = () => {
+          if (mode.value === "default") current = { kind: "provider_default" };
+          else {
+            const budgetTokens = Number(numberInput.value);
+            current = capability.kind === "anthropic_thinking" ? { kind: capability.kind, enabled: true, budgetTokens } : { kind: capability.kind, budgetTokens };
+          }
+          initiallyStale = false;
+        };
+        mode.addEventListener("change", () => { if (mode.value === "enabled" && current.kind !== capability.kind) numberInput.value = String(capability.minimumBudgetTokens); update(); render(); });
+        numberInput.addEventListener("input", update);
+        host.append(mode, node("label", "field-label", capability.budgetLabel), numberInput, node("p", "muted", `Allowed: ${formatNumber(capability.minimumBudgetTokens)}–${formatNumber(capability.maximumBudgetTokens)} tokens${capability.allowZero ? "; 0 disables thinking" : ""}.`));
+      } else {
+        current = current.kind === "provider_default" ? current : current;
+        const select = node("select", "settings-select"); const option = node("option", "", "Provider Default"); option.value = "provider_default"; select.append(option); host.append(select, node("p", "muted", "Advanced tuning unavailable for this provider/model."));
+      }
+      if (stale) {
+        const warning = node("div", "stale-execution"); warning.append(node("p", "failed", "Execution setting no longer supported by the selected model."));
+        const reset = node("button", "secondary", "Use Provider Default"); reset.type = "button"; reset.addEventListener("click", () => { current = { kind: "provider_default" }; initiallyStale = false; render(); }); warning.append(reset); host.append(warning);
+      }
+    };
+    providerControl.addEventListener("change", render); modelControl.addEventListener("input", render); render();
+    return { host, read: () => current };
+  }
+
   function renderModelsRoles(projection) {
     settingsHeading("Models & Roles");
     const mode = node("div", "mode-tabs"); mode.append(node("span", projection.modelMode === "simple" ? "chip selected" : "chip", "Simple"), node("span", projection.modelMode === "advanced" ? "chip selected" : "chip", "Advanced")); timeline.append(mode);
     if (!projection.providers.length) { timeline.append(node("p", "muted settings-empty", "No providers configured."), button("Connect Provider", "primary", "connectProvider")); return; }
     const simple = card("Simple"); const defaultProvider = projection.providers.find((provider) => provider.id === projection.defaultProviderConfigId) || projection.providers[0];
     const simpleProvider = providerSelect(projection, defaultProvider && defaultProvider.id, "Default provider"); const simpleModel = node("input", "settings-input"); simpleModel.placeholder = "Default model ID"; simpleModel.maxLength = 2048; simpleModel.value = defaultProvider && defaultProvider.defaultModel || "";
-    simple.append(node("label", "field-label", "Default Provider"), simpleProvider, node("label", "field-label", "Default Model"), simpleModel, node("p", "muted", "Use this exact provider/model for Planner, Executor, and Reviewer. Repair uses Executor."));
-    const saveSimple = node("button", "primary", "Use Simple Mode"); saveSimple.type = "button"; saveSimple.addEventListener("click", () => { if (simpleProvider.value && simpleModel.value.trim()) vscode.postMessage({ type: "setDefaultModel", providerConfigId: simpleProvider.value, modelId: simpleModel.value.trim() }); }); simple.append(saveSimple); timeline.append(simple);
+    const plannerAssignment = projection.roles.find((item) => item.role === "planner");
+    const simpleExecution = executionEditor(projection, simpleProvider, simpleModel, plannerAssignment && plannerAssignment.executionOptions, plannerAssignment && plannerAssignment.executionProfileStatus === "stale", plannerAssignment && plannerAssignment.executionCapability, plannerAssignment && plannerAssignment.providerConfigId, plannerAssignment && plannerAssignment.modelId);
+    simple.append(node("label", "field-label", "Default Provider"), simpleProvider, node("label", "field-label", "Default Model"), simpleModel, simpleExecution.host, node("p", "muted", "Use this exact provider/model/execution profile for Planner, Executor, and Reviewer. Repair uses Executor."));
+    const saveSimple = node("button", "primary", "Use Simple Mode"); saveSimple.type = "button"; saveSimple.addEventListener("click", () => { if (simpleProvider.value && simpleModel.value.trim()) vscode.postMessage({ type: "setDefaultModel", providerConfigId: simpleProvider.value, modelId: simpleModel.value.trim(), executionOptions: simpleExecution.read() }); }); simple.append(saveSimple); timeline.append(simple);
     const advanced = card("Advanced Role Assignments"); const controls = []; const providerSearch = node("input", "settings-input"); providerSearch.type = "search"; providerSearch.placeholder = "Search configured providers…"; providerSearch.maxLength = 200; providerSearch.setAttribute("aria-label", "Search role providers"); advanced.append(providerSearch);
-    ["planner", "executor", "reviewer"].forEach((roleName) => { const assignment = projection.roles.find((item) => item.role === roleName) || {}; const group = node("div", "role-config"); const select = providerSelect(projection, assignment.providerConfigId || defaultProvider.id, `${friendly(roleName)} provider`); const modelInput = node("input", "settings-input"); modelInput.placeholder = `${friendly(roleName)} model ID`; modelInput.maxLength = 2048; modelInput.value = assignment.modelId || ""; group.append(node("div", "field-label", friendly(roleName)), select, modelInput); advanced.append(group); controls.push({ role: roleName, select, modelInput }); });
+    ["planner", "executor", "reviewer"].forEach((roleName) => { const assignment = projection.roles.find((item) => item.role === roleName) || {}; const group = node("div", "role-config"); const select = providerSelect(projection, assignment.providerConfigId || defaultProvider.id, `${friendly(roleName)} provider`); const modelInput = node("input", "settings-input"); modelInput.placeholder = `${friendly(roleName)} model ID`; modelInput.maxLength = 2048; modelInput.value = assignment.modelId || ""; const execution = executionEditor(projection, select, modelInput, assignment.executionOptions, assignment.executionProfileStatus === "stale", assignment.executionCapability, assignment.providerConfigId, assignment.modelId); group.append(node("div", "field-label", friendly(roleName)), select, modelInput, execution.host); advanced.append(group); controls.push({ role: roleName, select, modelInput, execution }); });
     providerSearch.addEventListener("input", () => { const query = providerSearch.value.trim().toLocaleLowerCase(); controls.forEach((control) => control.select._providerOptions.forEach((entry) => { entry.option.hidden = !!query && !entry.text.includes(query); })); });
     advanced.append(node("p", "muted", "Selections are validated and committed together. Cancellation or incomplete input saves nothing. Repair uses Executor."));
-    const saveAdvanced = node("button", "primary", "Save Advanced Roles"); saveAdvanced.type = "button"; saveAdvanced.addEventListener("click", () => { const assignments = controls.map((control) => ({ role: control.role, providerConfigId: control.select.value, modelId: control.modelInput.value.trim() })); if (assignments.every((item) => item.providerConfigId && item.modelId)) vscode.postMessage({ type: "updateRoleAssignments", assignments }); }); advanced.append(saveAdvanced); timeline.append(advanced);
+    const saveAdvanced = node("button", "primary", "Save Advanced Roles"); saveAdvanced.type = "button"; saveAdvanced.addEventListener("click", () => { const assignments = controls.map((control) => ({ role: control.role, providerConfigId: control.select.value, modelId: control.modelInput.value.trim(), executionOptions: control.execution.read() })); if (assignments.every((item) => item.providerConfigId && item.modelId)) vscode.postMessage({ type: "updateRoleAssignments", assignments }); }); advanced.append(saveAdvanced); timeline.append(advanced);
   }
 
   function renderPlanning(projection) {
@@ -245,7 +314,7 @@
     else if (section === "repair") { const p = projection.repair; const value = card("Automatic Repair"); value.append(booleanRow("Enabled", p.automatic), booleanRow("Validation First", p.validationFirst), booleanRow("Planner Replan", p.plannerReplan), booleanRow("Context Reuse", p.contextReuse), labeledValue("Model Assignment", `Uses ${p.usesRole}`), labeledValue("Maximum Cycles", p.maximumCycles)); timeline.append(value); }
     else if (section === "usage") { const p = projection.usage; const value = card("Usage Sources"); value.append(labeledValue("Tokens", p.tokenSource), labeledValue("Cost", p.cost), labeledValue("History Metrics", p.historyMetrics)); timeline.append(value); }
     else if (section === "privacy") { const p = projection.privacy; const value = card("Privacy & Storage"); [["Credentials", p.credentials], ["Task History", p.taskHistory], ["Cloud Sync", p.cloudSync], ["Nyxara Account", p.account], ["Telemetry", p.telemetry], ["Provider Requests", p.providerRequests]].forEach(([key, val]) => value.append(labeledValue(key, val))); timeline.append(value); }
-    else if (section === "advanced") { const p = projection.advanced; const value = card("Supported Technical Configuration"); [["Manual Model ID", p.manualModelId], ["Custom Endpoints", p.customEndpoints], ["Role Routing", p.roleRouting], ["Diagnostics", p.diagnosticState]].forEach(([key, val]) => value.append(labeledValue(key, val))); timeline.append(value, node("p", "muted", "Reasoning/thinking profiles, automatic routing, Budget Engine, Skills, MCP, Hooks, Plugins, and Marketplace are not available in this phase.")); }
+    else if (section === "advanced") { const p = projection.advanced; const value = card("Supported Technical Configuration"); [["Manual Model ID", p.manualModelId], ["Custom Endpoints", p.customEndpoints], ["Role Routing", p.roleRouting], ["Execution Profiles", "Capability-driven per role/model"], ["Diagnostics", p.diagnosticState]].forEach(([key, val]) => value.append(labeledValue(key, val))); timeline.append(value, node("p", "muted", "Automatic routing, Budget Engine, Skills, MCP, Hooks, Plugins, and Marketplace are not available in this phase.")); }
   }
 
   function renderHistorySettings(projection) {

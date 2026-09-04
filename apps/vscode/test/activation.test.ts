@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mock = vi.hoisted(() => ({
-  commands: new Map<string, (...args: any[]) => any>(), settings: new Map<string, any>(), updates: [] as Array<[string, unknown, unknown]>, inputs: [] as Array<string | undefined>, inputOptions: [] as any[], pickIndexes: [] as Array<number | undefined>, pickCalls: [] as any[][], errors: [] as string[], info: [] as string[], infoResults: [] as Array<string | undefined>, externalUrls: [] as string[], clipboard: [] as string[], terminals: [] as Array<{ name: string; commands: string[]; shown: boolean }>, providers: [] as any[], workspaceFolders: [] as any[], warnings: [] as string[], warningResult: "Disconnect" as string | undefined, output: { appendLine: vi.fn(), dispose: vi.fn() },
+  commands: new Map<string, (...args: any[]) => any>(), settings: new Map<string, any>(), updates: [] as Array<[string, unknown, unknown]>, failNextUpdateKey: undefined as string | undefined, inputs: [] as Array<string | undefined>, inputOptions: [] as any[], pickIndexes: [] as Array<number | undefined>, pickCalls: [] as any[][], errors: [] as string[], info: [] as string[], infoResults: [] as Array<string | undefined>, externalUrls: [] as string[], clipboard: [] as string[], terminals: [] as Array<{ name: string; commands: string[]; shown: boolean }>, providers: [] as any[], workspaceFolders: [] as any[], warnings: [] as string[], warningResult: "Disconnect" as string | undefined, output: { appendLine: vi.fn(), dispose: vi.fn() },
 }));
 
 vi.mock("vscode", () => {
@@ -12,7 +12,7 @@ vi.mock("vscode", () => {
     commands: { registerCommand: vi.fn((name: string, handler: (...args: any[]) => any) => { mock.commands.set(name, handler); return { dispose: vi.fn() }; }), executeCommand: vi.fn() },
     workspace: {
       get workspaceFolders() { return mock.workspaceFolders; },
-      getConfiguration: vi.fn(() => ({ get: (key: string, fallback: any) => mock.settings.has(key) ? mock.settings.get(key) : fallback, update: async (key: string, value: unknown, target: unknown) => { mock.updates.push([key, value, target]); mock.settings.set(key, value); } })),
+      getConfiguration: vi.fn(() => ({ get: (key: string, fallback: any) => mock.settings.has(key) ? mock.settings.get(key) : fallback, update: async (key: string, value: unknown, target: unknown) => { if (mock.failNextUpdateKey === key) { mock.failNextUpdateKey = undefined; throw new Error("settings write failed"); } mock.updates.push([key, value, target]); mock.settings.set(key, value); } })),
     },
     window: {
       createOutputChannel: vi.fn(() => mock.output), registerWebviewViewProvider: vi.fn((_id: string, provider: any) => { mock.providers.push(provider); return { dispose: vi.fn() }; }), createTerminal: vi.fn((options: { name: string }) => { const state = { name: options.name, commands: [] as string[], shown: false }; mock.terminals.push(state); return { show: () => { state.shown = true; }, sendText: (command: string) => { state.commands.push(command); }, dispose: vi.fn() }; }),
@@ -31,7 +31,7 @@ import { readFileSync } from "node:fs";
 const EXTENSION_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 function fakeSession(configured = false) {
-  const core = { listModels: vi.fn(async () => [{ id: "ha-op/gpt-5.6-sol", name: "Routed" }]), listProviders: vi.fn(() => []), listPlanningProfiles: vi.fn(() => [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }]), listEngineeringRules: vi.fn(() => []), configureAgent: vi.fn(), createPlan: vi.fn(), runApprovedPlan: vi.fn(), startWorkflow: vi.fn() };
+  const core = { listModels: vi.fn(async () => [{ id: "ha-op/gpt-5.6-sol", name: "Routed" }]), listProviders: vi.fn(() => []), getModelCapabilities: vi.fn(() => undefined), listPlanningProfiles: vi.fn(() => [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }]), listEngineeringRules: vi.fn(() => []), configureAgent: vi.fn(), createPlan: vi.fn(), runApprovedPlan: vi.fn(), startWorkflow: vi.fn() };
   return { core, configured, validation: new Map(), validationDurations: new Map(), currentPlan: undefined as any, snapshot: undefined as any, result: undefined as any, prompt: undefined as string | undefined, reviewStatus: undefined as string | undefined, reviewFindingCount: undefined as number | undefined, repairCycle: undefined as number | undefined, onChange: undefined as (() => void) | undefined, upsertProvider: vi.fn(), removeProvider: vi.fn(), configureAgents: vi.fn(), generate: vi.fn(), regenerate: vi.fn(), approveAndRun: vi.fn(async () => ({ status: "paused" })), rejectPlan: vi.fn(), pause: vi.fn(), resume: vi.fn(), abort: vi.fn(), resolvePermission: vi.fn(), resetPresentation: vi.fn() };
 }
 
@@ -65,7 +65,7 @@ const CODEX_CLI = { id: "codex-cli", type: "codex-cli", displayName: "OpenAI Cod
 
 describe("VS Code provider onboarding and command safety", () => {
   beforeEach(() => {
-    mock.commands.clear(); mock.settings.clear(); mock.updates.length = 0; mock.inputs.length = 0; mock.inputOptions.length = 0; mock.pickIndexes.length = 0; mock.pickCalls.length = 0; mock.errors.length = 0; mock.info.length = 0; mock.infoResults.length = 0; mock.externalUrls.length = 0; mock.clipboard.length = 0; mock.terminals.length = 0; mock.providers.length = 0; mock.workspaceFolders.length = 0; mock.warnings.length = 0; mock.warningResult = "Disconnect"; vi.clearAllMocks();
+    mock.commands.clear(); mock.settings.clear(); mock.updates.length = 0; mock.failNextUpdateKey = undefined; mock.inputs.length = 0; mock.inputOptions.length = 0; mock.pickIndexes.length = 0; mock.pickCalls.length = 0; mock.errors.length = 0; mock.info.length = 0; mock.infoResults.length = 0; mock.externalUrls.length = 0; mock.clipboard.length = 0; mock.terminals.length = 0; mock.providers.length = 0; mock.workspaceFolders.length = 0; mock.warnings.length = 0; mock.warningResult = "Disconnect"; vi.clearAllMocks();
   });
 
   it("activation only registers UI and performs no provider, credential, repository, workflow, or timer work", () => {
@@ -482,8 +482,47 @@ describe("VS Code provider onboarding and command safety", () => {
 
   it("atomically saves mixed-provider advanced roles and blocks known incompatible executor adapters", async () => {
     mock.settings.set("nyxara.providerConfigs", [OPENAI, { ...GATEWAY, authStrategy: "none" }]); const session = fakeSession(true); session.core.listProviders.mockReturnValue([{ id: OPENAI.id, capabilities: { textGeneration: true, toolCalling: true } }, { id: GATEWAY.id, capabilities: { textGeneration: true, toolCalling: true } }]); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "hidden"); const view = resolveRegisteredWebview();
-    const assignments = [{ role: "planner", providerConfigId: OPENAI.id, modelId: "plan-model" }, { role: "executor", providerConfigId: GATEWAY.id, modelId: "exec-model" }, { role: "reviewer", providerConfigId: OPENAI.id, modelId: "review-model" }]; view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(mock.settings.get("nyxara.modelMode")).toBe("advanced")); expect(mock.settings.get("nyxara.executor.model")).toBe("exec-model"); expect(mock.settings.get("nyxara.reviewer.model")).toBe("review-model");
+    const assignments = [{ role: "planner", providerConfigId: OPENAI.id, modelId: "plan-model", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: GATEWAY.id, modelId: "exec-model", executionOptions: { kind: "provider_default" } }, { role: "reviewer", providerConfigId: OPENAI.id, modelId: "review-model", executionOptions: { kind: "provider_default" } }]; view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(mock.settings.get("nyxara.modelMode")).toBe("advanced")); expect(mock.settings.get("nyxara.executor.model")).toBe("exec-model"); expect(mock.settings.get("nyxara.reviewer.model")).toBe("review-model");
     mock.updates.length = 0; session.core.listProviders.mockReturnValue([{ id: OPENAI.id, capabilities: { textGeneration: true, toolCalling: false } }, { id: GATEWAY.id, capabilities: { textGeneration: true, toolCalling: false } }]); view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError")); expect(view.posted.at(-1)?.message).toContain("incompatible"); expect(mock.updates).toHaveLength(0);
+  });
+
+  it("migrates alpha.8 roles to Provider Default and opens Models & Roles without discovery or timers", async () => {
+    vi.useFakeTimers(); mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "gpt-5.1" }]); mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id);
+    for (const role of ["planner", "executor", "reviewer"]) { mock.settings.set(`nyxara.${role}.provider`, OPENAI.id); mock.settings.set(`nyxara.${role}.model`, "gpt-5.1"); }
+    const session = fakeSession(true); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "hidden"); const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettingsSection", section: "modelsRoles" }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.settings?.projection).toBeDefined());
+    expect(view.posted.at(-1).state.settings.projection.roles.every((role: any) => role.executionOptions.kind === "provider_default")).toBe(true);
+    expect(session.core.listModels).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0); vi.useRealTimers();
+  });
+
+  it("atomically persists independent mixed execution profiles and rolls back on storage failure", async () => {
+    const anthropic = { id: "anthropic", type: "anthropic", displayName: "Claude", baseUrl: "https://api.anthropic.com", authStrategy: "api_key" };
+    const gemini = { id: "gemini", type: "gemini", displayName: "Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", authStrategy: "api_key" };
+    mock.settings.set("nyxara.providerConfigs", [OPENAI, anthropic, gemini]); const session = fakeSession(true); session.core.listProviders.mockReturnValue([OPENAI, anthropic, gemini].map((provider) => ({ id: provider.id, capabilities: { textGeneration: true, toolCalling: true } })));
+    const { secretValues } = activateFake(session); for (const id of ["openai", "anthropic", "gemini"]) secretValues.set(`provider/${id}/api-key`, "hidden"); const view = resolveRegisteredWebview();
+    const assignments = [
+      { role: "planner", providerConfigId: "anthropic", modelId: "claude-sonnet-4-5", executionOptions: { kind: "anthropic_thinking", enabled: true, budgetTokens: 2048 } },
+      { role: "executor", providerConfigId: "openai", modelId: "gpt-5.1", executionOptions: { kind: "openai_reasoning", effort: "medium" } },
+      { role: "reviewer", providerConfigId: "gemini", modelId: "gemini-3-flash", executionOptions: { kind: "gemini_thinking_level", level: "high" } },
+    ];
+    view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(mock.settings.get("nyxara.modelMode")).toBe("advanced"));
+    expect(mock.settings.get("nyxara.planner.execution")).toEqual(assignments[0].executionOptions); expect(mock.settings.get("nyxara.executor.execution")).toEqual(assignments[1].executionOptions); expect(mock.settings.get("nyxara.reviewer.execution")).toEqual(assignments[2].executionOptions);
+    const before = new Map(mock.settings); mock.failNextUpdateKey = "nyxara.reviewer.execution";
+    const changed = assignments.map((assignment) => ({ ...assignment, modelId: `${assignment.modelId}-changed` })); view.receive({ type: "updateRoleAssignments", assignments: changed });
+    await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError"));
+    for (const [key, value] of before) expect(mock.settings.get(key)).toEqual(value);
+  });
+
+  it("preserves execution profiles across sign out/reconnect and clears them only with provider removal", async () => {
+    mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "gpt-5.1" }]); mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id);
+    for (const role of ["planner", "executor", "reviewer"]) { mock.settings.set(`nyxara.${role}.provider`, OPENAI.id); mock.settings.set(`nyxara.${role}.model`, "gpt-5.1"); mock.settings.set(`nyxara.${role}.execution`, { kind: "openai_reasoning", effort: "low" }); }
+    const session = fakeSession(true); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "hidden"); const view = resolveRegisteredWebview(); mock.warningResult = "Disconnect";
+    view.receive({ type: "signOutProvider", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")[0].signedOut).toBe(true));
+    expect(mock.settings.get("nyxara.executor.execution")).toEqual({ kind: "openai_reasoning", effort: "low" });
+    mock.inputs.push("replacement-key"); view.receive({ type: "updateCredential", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")[0].signedOut).toBe(false));
+    expect(mock.settings.get("nyxara.executor.execution")).toEqual({ kind: "openai_reasoning", effort: "low" });
+    mock.warningResult = "Remove Provider"; view.receive({ type: "removeProvider", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")).toEqual([]));
+    for (const role of ["planner", "executor", "reviewer"]) expect([mock.settings.get(`nyxara.${role}.provider`), mock.settings.get(`nyxara.${role}.model`), mock.settings.get(`nyxara.${role}.execution`)]).toEqual(["", "", { kind: "provider_default" }]);
   });
 
   it("delegates explicit connection testing only to model discovery and updates profile/history/workspace settings", async () => {

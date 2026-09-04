@@ -1,4 +1,6 @@
 import {
+  assertExecutionOptionsSupported,
+  capabilityForModel,
   ProviderError,
   type CredentialStore,
   type GenerateRequest,
@@ -7,11 +9,14 @@ import {
   type ModelCapabilities,
   type ModelConversationMessage,
   type ModelInfo,
+  type ModelExecutionCapability,
+  type ModelExecutionCapabilityRule,
   type ModelProvider,
   type ModelToolCall,
   type ProviderCapabilities,
   type ProviderErrorCode,
 } from "@nyxara/provider-sdk";
+import { knownModelExecutionCapability } from "../execution-capabilities.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_PROVIDER_ID = "openai-compatible";
@@ -27,6 +32,10 @@ export interface OpenAICompatibleProviderConfig {
   readonly credentialKey?: string;
   readonly credentialRequired?: boolean;
   readonly fetch?: typeof globalThis.fetch;
+  /** Stable catalog/provider identity, distinct from the local configuration ID. */
+  readonly providerId?: string;
+  /** Explicit provider-owned declaration for compatible gateways. Empty means unknown. */
+  readonly modelExecutionCapabilities?: readonly ModelExecutionCapabilityRule[];
 }
 
 type Operation = "list_models" | "generate";
@@ -34,6 +43,7 @@ type UnknownRecord = Record<string, unknown>;
 
 export class OpenAICompatibleProvider implements ModelProvider {
   readonly id: string;
+  readonly providerId: string;
   readonly displayName: string;
 
   private readonly baseUrl: string;
@@ -43,9 +53,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly credentialKey: string;
   private readonly credentialRequired: boolean;
   private readonly fetchImplementation: typeof globalThis.fetch;
+  private readonly discoveredModelCapabilities = new Map<string, ModelCapabilities>();
 
-  constructor(config: OpenAICompatibleProviderConfig = {}) {
+  constructor(private readonly config: OpenAICompatibleProviderConfig = {}) {
     this.id = config.id ?? DEFAULT_PROVIDER_ID;
+    this.providerId = config.providerId ?? this.id;
     this.displayName = config.displayName ?? DEFAULT_DISPLAY_NAME;
     this.baseUrl = this.normalizeBaseUrl(config.baseUrl ?? DEFAULT_BASE_URL);
     this.apiKey = config.apiKey;
@@ -72,12 +84,24 @@ export class OpenAICompatibleProvider implements ModelProvider {
       throw this.invalidResponse("Provider returned an invalid models response");
     }
 
-    return record.data.map((model, index) =>
+    const models = record.data.map((model, index) =>
       this.normalizeModel(model, `models response item ${index}`),
     );
+    for (const model of models) if (model.capabilities) this.discoveredModelCapabilities.set(model.id, model.capabilities);
+    return models;
+  }
+
+  modelCapabilities(modelId: string): ModelCapabilities | undefined {
+    const discovered = this.discoveredModelCapabilities.get(modelId);
+    const candidate = capabilityForModel(this.configuredExecutionRules(), modelId)
+      ?? knownModelExecutionCapability(this.providerId, modelId);
+    const declared = candidate?.kind === "openai_reasoning" ? candidate : undefined;
+    if (!discovered && !declared) return undefined;
+    return { ...discovered, ...(declared && !discovered?.execution ? { execution: declared } : {}) };
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
+    const executionOptions = assertExecutionOptionsSupported(request.executionOptions, this.modelCapabilities(request.model)?.execution);
     const payload = await this.request(
       "/chat/completions",
       {
@@ -106,6 +130,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
             : {}),
           ...(request.responseFormat === "json"
             ? { response_format: { type: "json_object" } }
+            : {}),
+          ...(executionOptions.kind === "openai_reasoning"
+            ? { reasoning_effort: executionOptions.effort }
             : {}),
         }),
       },
@@ -280,6 +307,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
       model.context_window ?? model.contextWindow,
     );
     const capabilities = this.normalizeModelCapabilities(model.capabilities);
+    const candidateExecution = capabilityForModel(this.configuredExecutionRules(), model.id)
+      ?? knownModelExecutionCapability(this.providerId, model.id);
+    const declaredExecution = candidateExecution?.kind === "openai_reasoning" ? candidateExecution : undefined;
 
     return {
       id: model.id,
@@ -289,7 +319,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           : model.id,
       provider: this.id,
       ...(contextWindow !== undefined ? { contextWindow } : {}),
-      ...(capabilities ? { capabilities } : {}),
+      ...(capabilities || declaredExecution ? { capabilities: { ...capabilities, ...(declaredExecution && !capabilities?.execution ? { execution: declaredExecution } : {}) } } : {}),
     };
   }
 
@@ -313,9 +343,35 @@ export class OpenAICompatibleProvider implements ModelProvider {
               value.structured_output) as boolean,
           }
         : {}),
+      ...(this.normalizeDiscoveredExecution(value.execution ?? value.executionOptions ?? value.execution_options)
+        ? { execution: this.normalizeDiscoveredExecution(value.execution ?? value.executionOptions ?? value.execution_options)! }
+        : {}),
     };
 
     return Object.keys(capabilities).length > 0 ? capabilities : undefined;
+  }
+
+  private configuredExecutionRules(): readonly ModelExecutionCapabilityRule[] {
+    return this.config.modelExecutionCapabilities ?? [];
+  }
+
+  private normalizeDiscoveredExecution(value: unknown): ModelExecutionCapability | undefined {
+    if (!this.isRecord(value)) return undefined;
+    const reasoning = this.isRecord(value.reasoningEffort ?? value.reasoning_effort)
+      ? value.reasoningEffort ?? value.reasoning_effort
+      : value.kind === "openai_reasoning" ? value : undefined;
+    if (!this.isRecord(reasoning)) return undefined;
+    const rawValues = reasoning.values;
+    if (!Array.isArray(rawValues)) return undefined;
+    const supported = rawValues.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+    if (supported.length === 0 || supported.length !== rawValues.length) return undefined;
+    return {
+      kind: "openai_reasoning",
+      label: "Reasoning",
+      control: "select",
+      values: supported.map((item) => ({ value: item, label: item[0]!.toUpperCase() + item.slice(1) })),
+      provenance: "provider_discovery",
+    };
   }
 
   private normalizeUsage(value: unknown): GenerateUsage | undefined {

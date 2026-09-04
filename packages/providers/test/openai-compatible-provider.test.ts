@@ -270,4 +270,38 @@ describe("OpenAICompatibleProvider", () => {
       code: "invalid_response",
     });
   });
+
+  it("maps only explicitly supported OpenAI reasoning and omits Provider Default", async () => {
+    const bodies: any[] = [];
+    const fetchMock = vi.fn(async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return jsonResponse({ model: "gpt-5.1", choices: [{ message: { content: "ok" } }] }); }) as unknown as typeof fetch;
+    const provider = new OpenAICompatibleProvider({ id: "openai-work", providerId: "openai", fetch: fetchMock });
+    expect(provider.modelCapabilities("gpt-5.1")?.execution).toMatchObject({ kind: "openai_reasoning", provenance: "adapter_known" });
+    await provider.generate({ model: "gpt-5.1", prompt: "x", executionOptions: { kind: "provider_default" } });
+    await provider.generate({ model: "gpt-5.1", prompt: "x", executionOptions: { kind: "openai_reasoning", effort: "medium" } });
+    expect(bodies[0]).not.toHaveProperty("reasoning_effort");
+    expect(bodies[1]).toMatchObject({ model: "gpt-5.1", reasoning_effort: "medium" });
+    expect(JSON.stringify(bodies[1])).not.toMatch(/thinkingBudget|budget_tokens|thinkingConfig/);
+    await expect(provider.generate({ model: "gpt-5.1", prompt: "x", executionOptions: { kind: "openai_reasoning", effort: "xhigh" } })).rejects.toMatchObject({ code: "unsupported_execution_profile" });
+  });
+
+  it("keeps generic compatible models default-only unless explicitly advertised", async () => {
+    const fetchDefault = vi.fn(async () => jsonResponse({ model: "gpt-5.1", choices: [{ message: { content: "ok" } }] })) as unknown as typeof fetch;
+    const generic = new OpenAICompatibleProvider({ id: "router", providerId: "openai-compatible", fetch: fetchDefault });
+    await expect(generic.generate({ model: "gpt-5.1", prompt: "x", executionOptions: { kind: "openai_reasoning", effort: "low" } })).rejects.toMatchObject({ code: "unsupported_execution_profile" });
+    expect(fetchDefault).not.toHaveBeenCalled();
+
+    let body: any;
+    const fetchExplicit = vi.fn(async (_url, init) => { body = JSON.parse(String(init?.body)); return jsonResponse({ model: "route/model", choices: [{ message: { content: "ok" } }] }); }) as unknown as typeof fetch;
+    const explicit = new OpenAICompatibleProvider({ id: "router", providerId: "openai-compatible", fetch: fetchExplicit, modelExecutionCapabilities: [{ match: "exact", modelId: "route/model", capability: { kind: "openai_reasoning", label: "Reasoning", control: "select", values: [{ value: "low", label: "Low" }], provenance: "provider_catalog" } }] });
+    await explicit.generate({ model: "route/model", prompt: "x", executionOptions: { kind: "openai_reasoning", effort: "low" } });
+    expect(body).toMatchObject({ model: "route/model", reasoning_effort: "low" });
+  });
+
+  it("uses authoritative discovered capability metadata without fabricating it", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ data: [{ id: "route/exact", capabilities: { execution: { reasoningEffort: { values: ["eco", "deep"] } } } }] })) as unknown as typeof fetch;
+    const provider = new OpenAICompatibleProvider({ id: "router", providerId: "openai-compatible", fetch: fetchMock });
+    const models = await provider.listModels();
+    expect(models[0]?.capabilities?.execution).toMatchObject({ kind: "openai_reasoning", provenance: "provider_discovery", values: [{ value: "eco", label: "Eco" }, { value: "deep", label: "Deep" }] });
+    expect(provider.modelCapabilities("route/exact")?.execution).toEqual(models[0]?.capabilities?.execution);
+  });
 });
