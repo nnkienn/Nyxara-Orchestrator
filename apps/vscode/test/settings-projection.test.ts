@@ -35,6 +35,10 @@ describe("Settings authoritative projection", () => {
     const value = projection(); expect(value.context).toMatchObject({ strategy: "Automatic", repositoryContext: "On demand", targetedExpansion: "Enabled", bounded: "Enabled", maxTaskFiles: 6 }); expect(value.validation.steps.map((step) => step.kind)).toEqual(["Typecheck", "Lint", "Tests", "Build"]); expect(value.review).toMatchObject({ rulesApplied: true, validationFailuresForceFail: true, boundedEvidence: true }); expect(value.repair).toMatchObject({ automatic: true, validationFirst: true, plannerReplan: false, contextReuse: true, usesRole: "Executor", maximumCycles: 3 });
   });
 
+  it("projects local Usage & Performance policy without optimization or a pricing engine", () => {
+    expect(projection().usage).toEqual({ tokenReporting: "Provider-reported when available", usageEstimates: "Provenance retained", cost: "Provider-reported only / existing provenance", taskPerformance: "Stored locally", executionProfiles: "Attributed per role/model", automaticOptimization: "Not enabled" });
+  });
+
   it("exposes safe permission policy without an allow-all state", () => {
     const text = JSON.stringify(projection().permissions); expect(text).toContain("Outside workspace"); expect(text).toContain("Credential file writes"); expect(text).toContain("Git push/reset/clean"); expect(text.toLocaleLowerCase()).not.toContain("allow everything"); expect(text.toLocaleLowerCase()).not.toContain("yolo");
   });

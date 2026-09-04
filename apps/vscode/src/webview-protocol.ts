@@ -37,6 +37,8 @@ export type WebviewToExtensionMessage =
   | { readonly type: "pauseWorkflow" }
   | { readonly type: "resumeWorkflow" }
   | { readonly type: "newTask" }
+  | { readonly type: "openPerformance"; readonly taskId?: string }
+  | { readonly type: "closePerformance" }
   | { readonly type: "openHistory" }
   | { readonly type: "listTasks"; readonly scope: "current" | "all" }
   | { readonly type: "searchTasks"; readonly query: string }
@@ -59,6 +61,7 @@ export type StateMessageType =
   | "repairUpdated"
   | "workflowCompleted"
   | "workflowFailed"
+  | "performanceProjection"
   | "recentTasks"
   | "taskHistory"
   | "historySearchResults"
@@ -86,7 +89,8 @@ export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage |
   if (!record(value) || typeof value.type !== "string") return undefined;
   const text = (key: string, max = MAX_FIELD_INPUT): string | undefined => typeof value[key] === "string" && value[key].length <= max ? value[key] as string : undefined;
   switch (value.type) {
-    case "ready": case "approvePlan": case "rejectPlan": case "abortWorkflow": case "pauseWorkflow": case "resumeWorkflow": case "newTask": case "openProviderSetup": case "openSettings": case "closeSettings": case "connectProvider": case "openHistory": case "clearHistory": case "returnToActiveTask": case "requestDiagnostics": case "copyDiagnostics": return { type: value.type };
+    case "ready": case "approvePlan": case "rejectPlan": case "abortWorkflow": case "pauseWorkflow": case "resumeWorkflow": case "newTask": case "openProviderSetup": case "openSettings": case "closeSettings": case "closePerformance": case "connectProvider": case "openHistory": case "clearHistory": case "returnToActiveTask": case "requestDiagnostics": case "copyDiagnostics": return { type: value.type };
+    case "openPerformance": { const taskId = text("taskId", 200)?.trim(); return value.taskId === undefined ? { type: value.type } : taskId ? { type: value.type, taskId } : undefined; }
     case "openSettingsSection": {
       const section = text("section", 40) as SettingsSection | undefined;
       const sections: SettingsSection[] = ["home", "aiProviders", "modelsRoles", "workflow", "planning", "engineeringRules", "permissions", "context", "validation", "review", "repair", "usage", "taskHistory", "workspace", "privacy", "advanced", "about"];

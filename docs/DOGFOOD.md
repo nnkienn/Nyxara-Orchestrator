@@ -74,7 +74,7 @@ Workflow, planning profiles, engineering rules, permission policy, context, vali
 6. Choose **Approve & Run**, or **Reject** if the plan is unsuitable.
 7. Watch execution tasks, Validation, Review, and Repair progress inline.
 8. If Core requests a sensitive permission, choose **Allow Once** or **Deny** on the inline permission card.
-9. Inspect the completion/failure card and Core usage totals, then choose **New Task**.
+9. Inspect the completion/failure card and choose **View Performance** for the local detailed projection, then choose **New Task**.
 
 The normal task flow stays entirely inside Nyxara; the Command Palette and InputBox are retained only for accessibility, power-user commands, debugging, and exceptional setup choices. For the first run, use a small reversible task such as **“Add a small pure utility function and unit tests.”** Use the inline **Abort** action to stop an active workflow. Existing repository edits remain for inspection; abort does not discard them.
 
@@ -89,6 +89,16 @@ Task history is stored only in VS Code's local extension storage. It defaults to
 Use **Delete Task** in a terminal task detail to remove only that local history record. Use **Clear History** on the History screen to remove terminal records while preserving an active task. Both actions require native confirmation and never touch repository files, provider configuration, or SecretStorage.
 
 If VS Code reloads while a workflow is non-terminal, the old projection is marked **Interrupted** because this version does not persist or fake workflow resume. Its timeline remains readable and explains that it cannot resume automatically. While an authoritative in-process workflow is active, it continues when History is open; choose the active row or **Return to Active Task** to navigate back without duplicating execution.
+
+## Performance
+
+Terminal success, failure, and aborted task cards offer **View Performance** whenever authoritative usage exists. The view stays inside Nyxara and reads only the completed Core usage projection or its bounded local history copy. Opening it does not call a provider, refresh models, scan the repository, build context, run Git, or start background polling.
+
+Performance reports input/output/total tokens, role breakdown, requested and resolved model identity, execution-profile attribution, provider latency, workflow and local orchestration duration, executor-task aggregates, context file/byte/truncation/expansion counts, tool outcomes and bounded by-name counts, validation steps, review and repair timing, repair cycles, and provider-reported cost with provenance when available. Unknown measurements remain **-**. Measured durations can overlap, so child timings are not presented as a stacked total. No prompts, source, diffs, tool arguments/results, validation logs, provider responses, hidden reasoning, thinking signatures, credentials, or headers are stored in Performance history.
+
+Older alpha history remains readable. When it has only the previous compact summary, Nyxara states that detailed performance was not recorded and shows only the available totals. Historical Performance keeps safe provider display metadata, so it remains readable after Disconnect, Sign Out, or provider removal.
+
+Do not compare quality using token count alone. Token volume, latency, tool activity, and cost are factual observations rather than a quality or efficiency score. Nyxara does not auto-optimize models, reasoning, thinking, or provider routing.
 
 ## Reporting issues
 
@@ -110,4 +120,4 @@ Record the command, workspace type, requested role model IDs, visible error, exp
 - Bug:
 - Severity: P0 / P1 / P2 / P3
 
-Detailed Performance UI, Skills, MCP, Hooks, Plugins, Marketplace, cloud sync, accounts/billing, pricing and budgets, automatic routing/tuning, graph UI, parallel execution, persistent workflow resume, and remote daemons remain deferred.
+Skills, MCP, Hooks, Plugins, Marketplace, cloud sync, accounts/billing, pricing and budgets, automatic routing/tuning, graph UI, parallel execution, persistent workflow resume, and remote daemons remain deferred.

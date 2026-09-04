@@ -41,6 +41,7 @@ export class NyxaraWorkspaceViewProvider implements vscode.WebviewViewProvider {
 }
 
 function updateType(state: WorkspaceViewState): StateMessageType {
+  if (state.performanceView) return "performanceProjection";
   if (state.settings) return "settingsProjection";
   if (state.history?.screen === "history") return "taskHistory";
   if (state.history?.screen === "historical") return "historicalTaskLoaded";

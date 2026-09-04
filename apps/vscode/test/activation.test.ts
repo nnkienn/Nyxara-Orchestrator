@@ -62,6 +62,7 @@ function resolveRegisteredWebview() {
 const OPENAI = { id: "openai", type: "openai", displayName: "OpenAI", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" };
 const GATEWAY = { id: "openai-compatible", type: "openai-compatible", displayName: "Work Gateway", baseUrl: "https://router.example/v1", authStrategy: "api_key" };
 const CODEX_CLI = { id: "codex-cli", type: "codex-cli", displayName: "OpenAI Codex (ChatGPT)", authStrategy: "subscription" };
+const terminalUsage = { workflowId: "terminal", planner: { role: "planner", providerConfigId: "openai", providerId: "openai", requestedModelId: "route/gpt", resolvedModelId: "gpt", executionProfileSummary: { kind: "provider_default" }, calls: 1, inputTokens: 8, outputTokens: 2, totalTokens: 10, usageSource: "provider_reported", providerDurationMs: 50 }, executor: { role: "executor", calls: 0 }, reviewer: { role: "reviewer", calls: 0 }, repair: { role: "repair", calls: 0 }, tasks: [], totalProviderCalls: 1, totalInputTokens: 8, totalOutputTokens: 2, totalTokens: 10, totalProviderDurationMs: 50, totalToolCalls: 0, usageSource: "provider_reported", providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable", totalDurationMs: 80, repairCycles: 0 };
 
 describe("VS Code provider onboarding and command safety", () => {
   beforeEach(() => {
@@ -91,6 +92,23 @@ describe("VS Code provider onboarding and command safety", () => {
     expect(session.core.startWorkflow).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
     vi.useRealTimers();
+  });
+
+  it("opens and closes live Performance from terminal Core usage with no provider/model/repository/process/timer work", async () => {
+    vi.useFakeTimers(); mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "route/gpt" }]);
+    const session = fakeSession(true); session.snapshot = { workflowId: "terminal", status: "completed", tasks: [], usage: terminalUsage }; session.result = { status: "completed", changedFiles: [], durationMs: 80, repairCycles: 0, usage: terminalUsage };
+    activateFake(session); const view = resolveRegisteredWebview();
+    view.receive({ type: "openPerformance" }); await vi.advanceTimersByTimeAsync(0); await Promise.resolve();
+    expect(view.posted.at(-1)).toMatchObject({ type: "performanceProjection", state: { performanceView: { source: "live", taskStatus: "completed", projection: { overview: { totalTokens: 10 } } } } });
+    expect(session.core.listModels).not.toHaveBeenCalled(); expect(session.core.createPlan).not.toHaveBeenCalled(); expect(session.core.runApprovedPlan).not.toHaveBeenCalled(); expect(session.core.startWorkflow).not.toHaveBeenCalled(); expect(mock.pickCalls).toHaveLength(0); expect(vi.getTimerCount()).toBe(0);
+    view.receive({ type: "closePerformance" }); await vi.advanceTimersByTimeAsync(0); await Promise.resolve(); expect(view.posted.at(-1)?.state.performanceView).toBeUndefined();
+    vi.useRealTimers();
+  });
+
+  it("rejects an unknown historical Performance task ID without external work", async () => {
+    const session = fakeSession(); activateFake(session); const view = resolveRegisteredWebview();
+    view.receive({ type: "openPerformance", taskId: "../../not-a-task" }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError"));
+    expect(session.core.listModels).not.toHaveBeenCalled(); expect(session.core.createPlan).not.toHaveBeenCalled(); expect(session.core.startWorkflow).not.toHaveBeenCalled();
   });
 
   it("opens a native provider chooser with official, compatible, and local labels", async () => {
@@ -365,6 +383,44 @@ describe("VS Code provider onboarding and command safety", () => {
     expect(session.core.listModels).not.toHaveBeenCalled();
   });
 
+  it("runs a deterministic multi-role workflow projection through completion, history, and reopen with identical Performance and no network", async () => {
+    const providers = [
+      { id: "claude", type: "anthropic", displayName: "Claude", modelId: "claude-sonnet", authStrategy: "api_key" },
+      { id: "openai", type: "openai", displayName: "OpenAI", modelId: "gpt-5.6-sol", authStrategy: "api_key" },
+      { id: "gemini", type: "gemini", displayName: "Gemini", modelId: "gemini-pro", authStrategy: "api_key" },
+    ];
+    mock.settings.set("nyxara.providerConfigs", providers); mock.settings.set("nyxara.defaultProviderConfigId", "openai");
+    const session = fakeSession(true);
+    const usage: any = {
+      ...terminalUsage, workflowId: "performance-workflow",
+      planner: { ...terminalUsage.planner, providerConfigId: "claude", providerId: "anthropic", requestedModelId: "claude-sonnet", resolvedModelId: "claude-sonnet", executionProfileSummary: { kind: "provider_default" }, totalTokens: 100 },
+      executor: { ...terminalUsage.planner, role: "executor", providerConfigId: "openai", providerId: "openai", requestedModelId: "route/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol", executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, totalTokens: 200 },
+      reviewer: { ...terminalUsage.planner, role: "reviewer", providerConfigId: "gemini", providerId: "gemini", requestedModelId: "gemini-pro", resolvedModelId: "gemini-pro", executionProfileSummary: { kind: "gemini_thinking_level", value: "high" }, totalTokens: 80 },
+      repair: { ...terminalUsage.planner, role: "repair", providerConfigId: "openai", providerId: "openai", requestedModelId: "route/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol", executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, totalTokens: 20 },
+      tasks: [{ taskId: "task-1", executorCalls: 1, inputTokens: 160, outputTokens: 40, totalTokens: 200, usageSource: "provider_reported", providerDurationMs: 60, toolCalls: 2, toolDurationMs: 10, contextBytes: 500 }],
+      totalProviderCalls: 4, totalInputTokens: 320, totalOutputTokens: 80, totalTokens: 400, totalProviderDurationMs: 200, totalToolCalls: 2,
+      modelRequestedToolCalls: 2, executedToolCalls: 2, successfulToolCalls: 2, failedToolCalls: 0, invalidToolCalls: 0, toolCallsByName: { read_file: 1, apply_patch: 1 }, toolDurationMs: 10,
+      totalDurationMs: 300, repairCycles: 1, repairSummary: { cycles: 1, calls: 1, providerDurationMs: 50, totalDurationMs: 70, tokens: 20 },
+      validation: { status: "passed", durationMs: 20, steps: [{ name: "tests", status: "passed", durationMs: 20 }] }, review: { status: "passed", calls: 1, providerDurationMs: 50, totalDurationMs: 60 },
+      contextFiles: 3, contextBytes: 500, contextTruncated: false, targetedExpansions: 1, localOrchestrationDurationMs: 70,
+    };
+    session.generate.mockImplementation(async (task: string) => {
+      session.prompt = task; session.currentPlan = { id: "plan", objective: task, tasks: [{ id: "task-1", title: "Implement", description: "", acceptanceCriteria: ["Pass"], dependencies: [] }], risks: [] };
+      session.snapshot = { workflowId: "performance-workflow", status: "completed", tasks: [{ taskId: "task-1", executionStatus: "completed" }], usage };
+      session.result = { status: "completed", changedFiles: ["src/a.ts"], durationMs: 300, repairCycles: 1, usage }; session.validation = new Map([["tests", "passed"]]); session.validationDurations = new Map([["tests", 20]]); session.reviewStatus = "passed"; session.onChange?.();
+    });
+    activateFake(session); mock.workspaceFolders.push({ name: "Project", uri: { fsPath: "/project" } }); const view = resolveRegisteredWebview();
+    view.receive({ type: "submitRequirement", task: "Mocked performance flow" }); await vi.waitFor(() => expect(session.generate).toHaveBeenCalledOnce());
+    const task = [...view.posted].reverse().find((message) => message.state?.history?.recentTasks?.[0]?.performanceSummary)?.state.history.recentTasks[0];
+    expect(task.performanceSummary.roles.map((role: any) => [role.role, role.providerName, role.executionProfileLabel])).toEqual([["planner", "Claude", "Provider Default"], ["executor", "OpenAI", "Reasoning · Medium"], ["reviewer", "Gemini", "Thinking Level · High"], ["repair", "OpenAI", "Reasoning · Medium"]]);
+    view.receive({ type: "openPerformance" }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("performanceProjection")); const live = view.posted.at(-1).state.performanceView.projection;
+    view.receive({ type: "closePerformance" }); view.receive({ type: "openHistory" }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.history.screen).toBe("history"));
+    view.receive({ type: "openTask", taskId: task.id }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.history.selectedTask?.id).toBe(task.id));
+    view.receive({ type: "openPerformance", taskId: task.id }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.performanceView?.source).toBe("history"));
+    expect(view.posted.at(-1).state.performanceView.projection).toEqual(live);
+    expect(session.core.listModels).not.toHaveBeenCalled(); expect(session.core.createPlan).not.toHaveBeenCalled(); expect(session.core.runApprovedPlan).not.toHaveBeenCalled(); expect(session.core.startWorkflow).not.toHaveBeenCalled();
+  });
+
   it("inline plan decisions delegate to the existing session/Core adapter", async () => {
     const session = fakeSession(true);
     activateFake(session);
@@ -440,9 +496,9 @@ describe("VS Code provider onboarding and command safety", () => {
 
   it("keeps historical tasks readable with persisted provider/model summaries after sign out and removal", async () => {
     mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "gpt-history" }]); mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id); for (const role of ["planner", "executor", "reviewer"]) { mock.settings.set(`nyxara.${role}.provider`, OPENAI.id); mock.settings.set(`nyxara.${role}.model`, "gpt-history"); }
-    const session = fakeSession(true); session.generate.mockImplementation(async (task: string) => { session.prompt = task; session.snapshot = { workflowId: "history-done", status: "completed", tasks: [] }; session.onChange?.(); }); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "hidden"); mock.workspaceFolders.push({ name: "Project", uri: { fsPath: "/workspace" } }); const view = resolveRegisteredWebview(); view.receive({ type: "submitRequirement", task: "Preserve historical provider summary" }); await vi.waitFor(() => expect(session.generate).toHaveBeenCalledOnce());
+    const session = fakeSession(true); session.generate.mockImplementation(async (task: string) => { session.prompt = task; session.snapshot = { workflowId: "history-done", status: "completed", tasks: [], usage: { ...terminalUsage, workflowId: "history-done", planner: { ...terminalUsage.planner, requestedModelId: "gpt-history", resolvedModelId: "gpt-history" } } }; session.onChange?.(); }); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "hidden"); mock.workspaceFolders.push({ name: "Project", uri: { fsPath: "/workspace" } }); const view = resolveRegisteredWebview(); view.receive({ type: "submitRequirement", task: "Preserve historical provider summary" }); await vi.waitFor(() => expect(session.generate).toHaveBeenCalledOnce());
     view.receive({ type: "openSettings" }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.settings?.projection.history.count).toBe(1)); mock.warningResult = "Disconnect"; view.receive({ type: "signOutProvider", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")?.[0]?.signedOut).toBe(true)); expect(view.posted.at(-1)?.state.settings.projection.history.count).toBe(1);
-    mock.warningResult = "Remove Provider"; view.receive({ type: "removeProvider", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")).toEqual([])); expect(view.posted.at(-1)?.state.settings.projection.history.count).toBe(1); view.receive({ type: "closeSettings" }); view.receive({ type: "openHistory" }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.history.tasks).toHaveLength(1)); expect(view.posted.at(-1)?.state.history.tasks[0].providerSummary).toEqual({ provider: "OpenAI", model: "gpt-history" });
+    mock.warningResult = "Remove Provider"; view.receive({ type: "removeProvider", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")).toEqual([])); expect(view.posted.at(-1)?.state.settings.projection.history.count).toBe(1); view.receive({ type: "closeSettings" }); view.receive({ type: "openHistory" }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.history.tasks).toHaveLength(1)); const task = view.posted.at(-1).state.history.tasks[0]; expect(task.providerSummary).toEqual({ provider: "OpenAI", model: "gpt-history" }); expect(task.performanceSummary.roles[0]).toMatchObject({ providerConfigId: "openai", providerName: "OpenAI", requestedModelId: "gpt-history", resolvedModelId: "gpt-history" }); view.receive({ type: "openPerformance", taskId: task.id }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.performanceView?.projection?.roles?.[0]?.providerName).toBe("OpenAI"));
   });
 
   it("blocks sign out and removal while an assigned provider participates in an active workflow", async () => {

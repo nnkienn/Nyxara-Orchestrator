@@ -69,6 +69,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   let historyFilter: TaskHistoryViewState["filter"] = "all";
   let historyScope: TaskHistoryViewState["scope"] = "current";
   let selectedHistoryTaskId: string | undefined;
+  let performanceScreen: { readonly source: "live" } | { readonly source: "history"; readonly taskId: string } | undefined;
   let settingsSection: SettingsSection | undefined;
   let selectedSettingsProviderId: string | undefined;
   let settingsProjection: SettingsProjection | undefined;
@@ -117,6 +118,14 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       ...(selectedHistoryTaskId && historyStore.get(selectedHistoryTaskId) ? { selectedTask: historyStore.get(selectedHistoryTaskId)! } : {}),
     };
   };
+  const performanceTarget = () => {
+    if (performanceScreen?.source === "live") return { source: "live" as const };
+    if (performanceScreen?.source === "history") {
+      const task = historyStore.get(performanceScreen.taskId);
+      if (task) return { source: "history" as const, task };
+    }
+    return undefined;
+  };
   const workspaceState = () => buildWorkspaceState({
     version, configured: session.configured, folders: (vscode.workspace.workspaceFolders ?? []).length,
     providers: providerConfigs, ...(selectedProviderId ? { defaultProviderId: selectedProviderId } : {}),
@@ -127,6 +136,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     ...(session.reviewFindingCount !== undefined ? { reviewFindingCount: session.reviewFindingCount } : {}),
     ...(session.repairCycle ? { repairCycle: session.repairCycle } : {}), ...(session.result ? { result: session.result } : {}),
     history: historyState(),
+    ...(performanceTarget() ? { performanceTarget: performanceTarget()! } : {}),
     ...(settingsSection && settingsProjection ? { settings: { section: settingsSection, ...(selectedSettingsProviderId ? { providerConfigId: selectedSettingsProviderId } : {}), projection: settingsProjection, ...(settingsDiagnostics ? { diagnostics: settingsDiagnostics } : {}) } } : {}),
   });
   const refreshSettingsProjection = async (): Promise<void> => {
@@ -193,7 +203,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     try { switch (message.type) {
       case "ready": if (settingsSection) await refreshSettingsProjection(); webview.refresh(settingsSection ? "settingsProjection" : "initialState"); return;
       case "openProviderSetup": await connectProvider(); webview.refresh("providerState"); return;
-      case "openSettings": settingsSection = "home"; selectedSettingsProviderId = undefined; settingsDiagnostics = undefined; await refreshSettingsProjection(); webview.refresh("settingsProjection"); return;
+      case "openSettings": performanceScreen = undefined; settingsSection = "home"; selectedSettingsProviderId = undefined; settingsDiagnostics = undefined; await refreshSettingsProjection(); webview.refresh("settingsProjection"); return;
       case "closeSettings": settingsSection = undefined; selectedSettingsProviderId = undefined; settingsDiagnostics = undefined; webview.refresh("providerState"); return;
       case "openSettingsSection": settingsSection = message.section; selectedSettingsProviderId = message.providerConfigId; settingsDiagnostics = undefined; await refreshSettingsProjection(); webview.refresh("settingsProjection"); return;
       case "searchSettings": return;
@@ -250,19 +260,33 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       case "abortWorkflow": session.abort(); return;
       case "pauseWorkflow": session.pause(); return;
       case "resumeWorkflow": await session.resume(); return;
-      case "newTask": session.resetPresentation(); currentTaskSessionId = undefined; selectedHistoryTaskId = undefined; historyScreen = "workspace"; webview.refresh("recentTasks"); return;
-      case "openHistory": historyScreen = "history"; selectedHistoryTaskId = undefined; webview.refresh("taskHistory"); return;
+      case "newTask": performanceScreen = undefined; session.resetPresentation(); currentTaskSessionId = undefined; selectedHistoryTaskId = undefined; historyScreen = "workspace"; webview.refresh("recentTasks"); return;
+      case "openPerformance": {
+        if (message.taskId) {
+          const task = historyStore.get(message.taskId);
+          if (!task || !TERMINAL_TASK_SESSION_STATUSES.has(task.status)) throw new Error("Performance is available only for a local terminal task.");
+          selectedHistoryTaskId = task.id; historyScreen = "historical"; performanceScreen = { source: "history", taskId: task.id };
+        } else {
+          const terminal = session.result || (session.snapshot && ["completed", "failed", "aborted"].includes(session.snapshot.status));
+          if (!terminal || !(session.result?.usage ?? session.snapshot?.usage)) throw new Error("Performance is unavailable for this task.");
+          performanceScreen = { source: "live" };
+        }
+        webview.refresh("performanceProjection"); return;
+      }
+      case "closePerformance": performanceScreen = undefined; webview.refresh(historyScreen === "historical" ? "historicalTaskLoaded" : "workflowSnapshot"); return;
+      case "openHistory": performanceScreen = undefined; historyScreen = "history"; selectedHistoryTaskId = undefined; webview.refresh("taskHistory"); return;
       case "listTasks": historyScope = message.scope; historyScreen = "history"; webview.refresh("taskHistory"); return;
       case "searchTasks": historyQuery = message.query; historyScreen = "history"; webview.refresh("historySearchResults"); return;
       case "filterTasks": historyFilter = message.filter; historyScreen = "history"; webview.refresh("taskHistory"); return;
       case "openTask": {
         const task = historyStore.get(message.taskId); if (!task) throw new Error("That local task is no longer available.");
-        if (message.taskId === activeTaskId()) { historyScreen = "workspace"; selectedHistoryTaskId = undefined; webview.refresh("workflowSnapshot"); return; }
+        if (message.taskId === activeTaskId()) { performanceScreen = undefined; historyScreen = "workspace"; selectedHistoryTaskId = undefined; webview.refresh("workflowSnapshot"); return; }
+        performanceScreen = undefined;
         selectedHistoryTaskId = task.id; historyScreen = "historical"; webview.refresh("historicalTaskLoaded"); return;
       }
       case "returnToActiveTask": {
         if (!activeTaskId()) throw new Error("There is no active task to return to.");
-        selectedHistoryTaskId = undefined; historyScreen = "workspace"; webview.refresh("workflowSnapshot"); return;
+        performanceScreen = undefined; selectedHistoryTaskId = undefined; historyScreen = "workspace"; webview.refresh("workflowSnapshot"); return;
       }
       case "deleteTask": {
         const task = historyStore.get(message.taskId); if (!task) throw new Error("That local task is no longer available.");

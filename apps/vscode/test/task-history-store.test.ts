@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TaskHistoryStore } from "../src/task-history-store.js";
+import { buildPerformanceProjection } from "../src/performance-projection.js";
 import { createTaskSession, deterministicTaskTitle, safeWorkspaceIdentity, sanitizeTaskSession } from "../src/task-session.js";
 
 const roots: string[] = [];
@@ -10,6 +11,7 @@ const workspace = safeWorkspaceIdentity("Private Project", "/home/person/private
 const input = (requirement: string, id: string, now: string) => ({ requirement, id, now, workspaceIdentity: workspace });
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 async function root(): Promise<string> { const value = await mkdtemp(path.join(tmpdir(), "nyxara-history-")); roots.push(value); return value; }
+const performance = buildPerformanceProjection({ usage: { workflowId: "history", planner: { role: "planner", calls: 1, providerConfigId: "provider-removed", providerId: "openai", requestedModelId: "route/gpt", resolvedModelId: "gpt", executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, inputTokens: 8, outputTokens: 2, totalTokens: 10, usageSource: "provider_reported", providerDurationMs: 50 }, executor: { role: "executor", calls: 0 }, reviewer: { role: "reviewer", calls: 0 }, repair: { role: "repair", calls: 0 }, tasks: [], totalProviderCalls: 1, totalInputTokens: 8, totalOutputTokens: 2, totalTokens: 10, totalProviderDurationMs: 50, totalToolCalls: 0, usageSource: "provider_reported", providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable", totalDurationMs: 80, repairCycles: 0 } as any, providers: [{ id: "provider-removed", displayName: "Removed Provider" }], terminalStatus: "completed" });
 
 describe("TaskSession local history domain", () => {
   it("creates, updates, retrieves, and lists sessions newest first", () => {
@@ -88,6 +90,40 @@ describe("TaskHistoryStore persistence", () => {
     expect(file.schemaVersion).toBe(1);
     expect(await readFile(path.join(directory, "task-history.v1.json.tmp"), "utf8").catch(() => undefined)).toBeUndefined();
     expect(new TaskHistoryStore(directory).get("persist")?.status).toBe("completed");
+  });
+
+  it("persists detailed Performance unchanged and remains independent of live provider credentials/configuration", async () => {
+    const directory = await root(); const store = new TaskHistoryStore(directory);
+    store.create(input("Persist performance", "performance", "2026-01-01T00:00:00.000Z"));
+    store.update("performance", { status: "completed", performanceSummary: performance, usageSummary: { totalTokens: 10, providerCalls: 1, toolCalls: 0, workflowDurationMs: 80, repairCycles: 0 } });
+    await store.flush();
+    const reloaded = new TaskHistoryStore(directory).get("performance");
+    expect(reloaded?.performanceSummary).toEqual(performance);
+    expect(reloaded?.performanceSummary?.roles[0]).toMatchObject({ providerConfigId: "provider-removed", providerName: "Removed Provider", requestedModelId: "route/gpt", resolvedModelId: "gpt" });
+  });
+
+  it("keeps alpha history without detailed Performance readable", async () => {
+    const directory = await root(); const legacy = { ...createTaskSession(input("Legacy", "legacy", "2026-01-01T00:00:00.000Z")), status: "completed", usageSummary: { totalTokens: 7, providerCalls: 1, toolCalls: 0, workflowDurationMs: 20, repairCycles: 0 } };
+    await writeFile(path.join(directory, "task-history.v1.json"), JSON.stringify({ schemaVersion: 1, sessions: [legacy] }));
+    const loaded = new TaskHistoryStore(directory).get("legacy");
+    expect(loaded?.usageSummary).toEqual(legacy.usageSummary);
+    expect(loaded?.performanceSummary).toBeUndefined();
+  });
+
+  it("retains partial Performance for failed, aborted, and interrupted sessions", () => {
+    const store = new TaskHistoryStore();
+    for (const status of ["failed", "aborted", "interrupted"] as const) { store.create(input(status, status, "2026-01-01T00:00:00.000Z")); store.update(status, { status, performanceSummary: performance }); }
+    for (const status of ["failed", "aborted", "interrupted"] as const) expect(store.get(status)?.performanceSummary?.overview.totalTokens).toBe(10);
+  });
+
+  it("keeps a worst-case 50-task bounded Performance history at a reasonable local size", async () => {
+    const directory = await root(); const store = new TaskHistoryStore(directory, 50);
+    const large = buildPerformanceProjection({ usage: { workflowId: "large", planner: { role: "planner", calls: 1 }, executor: { role: "executor", calls: 1 }, reviewer: { role: "reviewer", calls: 1 }, repair: { role: "repair", calls: 1 }, tasks: Array.from({ length: 32 }, (_, index) => ({ taskId: `task-${index}`, executorCalls: 1, inputTokens: index, outputTokens: index, totalTokens: index * 2, usageSource: "provider_reported", providerDurationMs: index, toolCalls: index, toolDurationMs: index, contextBytes: index })), totalProviderCalls: 4, totalInputTokens: 1, totalOutputTokens: 1, totalTokens: 2, totalProviderDurationMs: 4, totalToolCalls: 1, modelRequestedToolCalls: 1, executedToolCalls: 1, successfulToolCalls: 1, failedToolCalls: 0, invalidToolCalls: 0, toolCallsByName: Object.fromEntries(Array.from({ length: 32 }, (_, index) => [`tool-${index}`, index])), usageSource: "provider_reported", providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable", totalDurationMs: 10, repairCycles: 1, validation: { status: "passed", durationMs: 1, steps: Array.from({ length: 32 }, (_, index) => ({ name: `step-${index}`, status: "passed", durationMs: index })) } } as any });
+    for (let index = 0; index < 50; index += 1) { const id = `session-${index}`; store.create(input(`Session ${index}`, id, `2026-01-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`)); store.update(id, { status: "completed", performanceSummary: large }); }
+    await store.flush();
+    const bytes = (await stat(path.join(directory, "task-history.v1.json"))).size;
+    expect(store.list()).toHaveLength(50);
+    expect(bytes).toBeLessThan(2 * 1024 * 1024);
   });
 
   it("ignores malformed records, preserves valid records, and never crashes on corrupt JSON", async () => {

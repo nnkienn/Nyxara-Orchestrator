@@ -49,6 +49,16 @@ describe("workspace Webview state projection", () => {
     expect(state.validation).toEqual([{ kind: "typecheck", status: "passed", durationMs: 1 }, { kind: "lint", status: "skipped", durationMs: 0 }]);
     expect(state.reviewStatus).toBe("needs_more_context");
     expect(state.completion).toEqual({ status: "completed", changedFiles: 2, tokens: 7073, modelCalls: 4, durationMs: 20620, repairCycles: 1 });
+    expect(state.performance?.overview).toMatchObject({ totalTokens: 7073, providerCalls: 4, workflowDurationMs: 20620, repairCycles: 1, validationStatus: "passed", reviewStatus: "needs_more_context" });
+  });
+
+  it("opens live and historical Performance from projection state only", () => {
+    const usage = { totalTokens: 10, totalProviderCalls: 1, totalToolCalls: 0, totalDurationMs: 20, repairCycles: 0, usageSource: "provider_reported", tasks: [] };
+    const live = build({ snapshot: { workflowId: "w", status: "failed", updatedAt: "now", tasks: [], usage }, performanceTarget: { source: "live" } });
+    expect(live.performanceView).toMatchObject({ source: "live", taskStatus: "failed", projection: { detailLevel: "detailed", overview: { totalTokens: 10 } } });
+    const task = { id: "old", schemaVersion: 1, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", workspaceIdentity: { id: "workspace", label: "Project" }, title: "Old", requirement: "Old", status: "completed", usageSummary: { totalTokens: 9, providerCalls: 1, toolCalls: 2, workflowDurationMs: 30, repairCycles: 0 } };
+    const historical = build({ performanceTarget: { source: "history", task } });
+    expect(historical.performanceView).toMatchObject({ source: "history", taskId: "old", taskStatus: "completed", projection: { detailLevel: "legacy", overview: { totalTokens: 9, workflowDurationMs: 30 } } });
   });
 
   it("preserves unavailable usage as null instead of recalculating it", () => {

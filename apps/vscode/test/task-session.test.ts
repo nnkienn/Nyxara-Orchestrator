@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { buildPerformanceProjection } from "../src/performance-projection.js";
 import { MAX_HISTORY_CRITERIA, MAX_HISTORY_DEPENDENCIES, MAX_HISTORY_RISKS, MAX_HISTORY_TASKS, MAX_HISTORY_VALIDATION_STEPS, createTaskSession, projectTaskSession, safeWorkspaceIdentity, sanitizeTaskSession, taskSessionStatus } from "../src/task-session.js";
 import type { WorkspaceViewState } from "../src/workspace-state.js";
 
 const workspace = safeWorkspaceIdentity("Project", "/private/home/project");
 const base = createTaskSession({ id: "session", now: "2026-09-03T00:00:00.000Z", requirement: "Add pagination", workspaceIdentity: workspace, providerSummary: { provider: "Gateway", model: "route/model" } });
 const state = (overrides: Partial<WorkspaceViewState> = {}): WorkspaceViewState => ({ version: "test", configured: true, workspace: { available: true, multiple: false }, providerLabel: "Gateway", advancedRouting: false, providers: [], history: { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "current" }, validation: [], repairCycles: null, ...overrides });
+const performance = buildPerformanceProjection({ usage: { workflowId: "w", planner: { role: "planner", providerConfigId: "removed-provider", providerId: "openai", requestedModelId: "route/gpt", resolvedModelId: "gpt", executionProfileSummary: { kind: "provider_default" }, calls: 1, inputTokens: 8, outputTokens: 2, totalTokens: 10, usageSource: "provider_reported", providerDurationMs: 50 }, executor: { role: "executor", calls: 0 }, reviewer: { role: "reviewer", calls: 0 }, repair: { role: "repair", calls: 0 }, tasks: [], totalProviderCalls: 1, totalInputTokens: 8, totalOutputTokens: 2, totalTokens: 10, totalProviderDurationMs: 50, totalToolCalls: 0, usageSource: "provider_reported", providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable", totalDurationMs: 80, repairCycles: 0 } as any, providers: [{ id: "removed-provider", displayName: "OpenAI Work" }], terminalStatus: "completed" });
 
 describe("TaskSession projection", () => {
   it.each([
@@ -17,6 +19,7 @@ describe("TaskSession projection", () => {
       workflow: { id: "w", status: "completed", stage: "Completed", active: false, approvalStatus: "approved", progress: { completed: 1, total: 1 }, currentTaskId: "one", tasks: [{ id: "one", title: "Task", status: "completed" }] },
       validation: [{ kind: "typecheck", status: "passed", durationMs: 12.25 }], reviewStatus: "passed", reviewFindingCount: 2, repairCycles: 1,
       repairUsage: { durationMs: 40.5, tokens: 6 }, usage: { tokens: 7073, modelCalls: 4, toolCalls: 9, durationMs: 20600.5, repairCycles: 1 },
+      performance,
       completion: { status: "completed", changedFiles: 2, tokens: 7073, modelCalls: 4, durationMs: 20600.5, repairCycles: 1 },
     }), "2026-09-03T00:01:00.000Z");
     expect(projected.status).toBe("completed");
@@ -26,6 +29,7 @@ describe("TaskSession projection", () => {
     expect(projected.reviewSummary).toEqual({ status: "passed", findingCount: 2, ruleViolationCount: null });
     expect(projected.repairSummary).toEqual({ cycles: 1, outcome: "completed", durationMs: 40.5, tokens: 6 });
     expect(projected.usageSummary).toEqual({ totalTokens: 7073, providerCalls: 4, toolCalls: 9, workflowDurationMs: 20600.5, repairCycles: 1 });
+    expect(projected.performanceSummary?.roles[0]).toMatchObject({ providerConfigId: "removed-provider", providerName: "OpenAI Work", requestedModelId: "route/gpt", resolvedModelId: "gpt" });
     expect(JSON.stringify(projected)).not.toContain("not persisted");
   });
 
@@ -52,6 +56,17 @@ describe("TaskSession projection", () => {
     });
     expect(JSON.stringify(sanitized)).not.toContain(secret);
     expect(JSON.stringify(sanitized)).toContain("[redacted]");
+  });
+
+  it("allowlists detailed performance and drops raw provider, tool, source, diff, output, and reasoning fields", () => {
+    const dirty: any = structuredClone(performance);
+    dirty.apiKey = "sk-private-value"; dirty.headers = { Authorization: "Bearer private" }; dirty.source = "RAW_SOURCE"; dirty.diff = "RAW_DIFF";
+    dirty.tools.arguments = "RAW_ARGS"; dirty.tools.results = "RAW_RESULTS"; dirty.validation.stdout = "RAW_STDOUT"; dirty.validation.stderr = "RAW_STDERR";
+    dirty.review.providerResponse = "RAW_RESPONSE"; dirty.review.hiddenReasoning = "RAW_REASONING"; dirty.review.thinkingSignature = "RAW_SIGNATURE";
+    const sanitized = sanitizeTaskSession({ ...base, performanceSummary: dirty });
+    const text = JSON.stringify(sanitized);
+    expect(sanitized?.performanceSummary?.overview.totalTokens).toBe(10);
+    for (const forbidden of ["sk-private-value", "Bearer private", "RAW_SOURCE", "RAW_DIFF", "RAW_ARGS", "RAW_RESULTS", "RAW_STDOUT", "RAW_STDERR", "RAW_RESPONSE", "RAW_REASONING", "RAW_SIGNATURE"]) expect(text).not.toContain(forbidden);
   });
 
   it("bounds nested plan, dependency, risk, execution, and validation arrays", () => {

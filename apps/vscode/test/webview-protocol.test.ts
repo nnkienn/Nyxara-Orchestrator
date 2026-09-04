@@ -25,6 +25,10 @@ describe("webview message boundary", () => {
     expect(parseWebviewMessage({ type: "deleteTask", taskId: " " })).toBeUndefined();
     expect(parseWebviewMessage({ type: "openTask", taskId: "x".repeat(201) })).toBeUndefined();
     expect(parseWebviewMessage({ type: "searchTasks", query: "x".repeat(MAX_HISTORY_SEARCH + 1) })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "openPerformance" })).toEqual({ type: "openPerformance" });
+    expect(parseWebviewMessage({ type: "openPerformance", taskId: " history/exact " })).toEqual({ type: "openPerformance", taskId: "history/exact" });
+    expect(parseWebviewMessage({ type: "openPerformance", taskId: " " })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "closePerformance" })).toEqual({ type: "closePerformance" });
   });
 
   it("validates every mutating Settings message and rejects allow-all or partial role payloads", () => {

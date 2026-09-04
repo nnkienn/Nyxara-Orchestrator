@@ -2,6 +2,7 @@ import type { ExecutionPlan, WorkflowSnapshot } from "@nyxara/core";
 type WorkflowUsage = NonNullable<WorkflowSnapshot["usage"]>;
 import type { ProviderConfig } from "./provider-config.js";
 import type { TaskSession } from "./task-session.js";
+import { buildLegacyPerformanceProjection, buildPerformanceProjection, type TaskPerformanceProjection } from "./performance-projection.js";
 import { friendlyErrorMessage, workflowStage } from "./projection.js";
 import type { SettingsProjection, SettingsSection } from "./settings-projection.js";
 
@@ -57,6 +58,13 @@ export interface WorkspaceViewState {
   readonly repairUsage?: { readonly durationMs: number | null; readonly tokens: number | null };
   readonly usage?: { readonly tokens: number | null; readonly modelCalls: number | null; readonly toolCalls: number | null; readonly durationMs: number | null; readonly repairCycles: number | null };
   readonly completion?: { readonly status: "completed" | "failed" | "aborted"; readonly changedFiles: number | null; readonly tokens: number | null; readonly modelCalls: number | null; readonly durationMs: number | null; readonly repairCycles: number | null };
+  readonly performance?: TaskPerformanceProjection;
+  readonly performanceView?: {
+    readonly source: "live" | "history";
+    readonly taskId?: string;
+    readonly taskStatus: string;
+    readonly projection?: TaskPerformanceProjection;
+  };
   readonly settings?: { readonly section: SettingsSection; readonly providerConfigId?: string; readonly projection: SettingsProjection; readonly diagnostics?: Readonly<Record<string, unknown>> };
 }
 
@@ -78,6 +86,7 @@ export interface BuildWorkspaceStateInput {
   readonly result?: { readonly status: "completed" | "failed" | "aborted"; readonly changedFiles: readonly string[]; readonly durationMs: number; readonly repairCycles: number; readonly usage?: WorkflowUsage };
   readonly history?: TaskHistoryViewState;
   readonly settings?: WorkspaceViewState["settings"];
+  readonly performanceTarget?: { readonly source: "live" } | { readonly source: "history"; readonly task: TaskSession };
 }
 
 const terminal = new Set(["completed", "failed", "aborted"]);
@@ -90,6 +99,9 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
   const snapshot = input.snapshot;
   const usage = input.result?.usage ?? snapshot?.usage;
   const plan = projectPlan(input.plan);
+  const completionStatus = input.result?.status ?? (snapshot && terminal.has(snapshot.status) ? snapshot.status as "completed" | "failed" | "aborted" : undefined);
+  const taskTitles = Object.fromEntries((plan?.tasks ?? []).map((task) => [task.id, task.title]));
+  const performance = usage ? buildPerformanceProjection({ usage, providers: input.providers, executorTaskTitles: taskTitles, ...(completionStatus ? { terminalStatus: completionStatus } : {}) }) : undefined;
   const validation = usage?.validation?.steps?.slice(0, MAX_ITEMS).map((step) => ({ kind: bounded(step.name, 120), status: bounded(step.status, 40), durationMs: step.durationMs }))
     ?? [...input.validation.entries()].slice(0, MAX_ITEMS).map(([kind, status]) => ({ kind: bounded(kind, 120), status: bounded(status, 40), ...(input.validationDurations?.has(kind) ? { durationMs: input.validationDurations.get(kind)! } : {}) }));
   const reviewStatus = bounded(usage?.review?.status ?? input.reviewStatus, 80) || undefined;
@@ -105,16 +117,20 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
     ...(snapshot.pendingPermission ? { permission: { id: bounded(snapshot.pendingPermission.id, 300), action: bounded([snapshot.pendingPermission.capability, snapshot.pendingPermission.resource].filter(Boolean).join(" · "), 300), reason: bounded(snapshot.pendingPermission.reason || "Nyxara needs permission to continue.", 500) } } : {}),
     ...(snapshot.error ? { error: { stage: workflowStage(snapshot), message: friendlyErrorMessage(snapshot.error) } } : {}),
   } : undefined;
-  const completionStatus = input.result?.status ?? (snapshot && terminal.has(snapshot.status) ? snapshot.status as "completed" | "failed" | "aborted" : undefined);
   const completion = completionStatus ? {
     status: completionStatus,
     changedFiles: input.result?.changedFiles.length ?? null,
-    tokens: usage?.totalTokens ?? null,
-    modelCalls: usage?.totalProviderCalls ?? null,
-    durationMs: input.result?.durationMs ?? usage?.totalDurationMs ?? null,
-    repairCycles: input.result?.repairCycles ?? usage?.repairCycles ?? null,
+    tokens: performance?.overview.totalTokens ?? null,
+    modelCalls: performance?.overview.providerCalls ?? null,
+    durationMs: input.result?.durationMs ?? performance?.overview.workflowDurationMs ?? null,
+    repairCycles: input.result?.repairCycles ?? performance?.overview.repairCycles ?? null,
   } : undefined;
-  const projectedUsage = usage ? { tokens: usage.totalTokens, modelCalls: usage.totalProviderCalls, toolCalls: usage.totalToolCalls, durationMs: usage.totalDurationMs ?? null, repairCycles: usage.repairCycles } : undefined;
+  const projectedUsage = performance ? { tokens: performance.overview.totalTokens, modelCalls: performance.overview.providerCalls, toolCalls: performance.overview.toolCalls, durationMs: performance.overview.workflowDurationMs, repairCycles: performance.overview.repairCycles } : undefined;
+  const performanceView = input.performanceTarget?.source === "live"
+    ? { source: "live" as const, taskStatus: completionStatus ?? snapshot?.status ?? "active", ...(performance ? { projection: performance } : {}) }
+    : input.performanceTarget?.source === "history"
+      ? { source: "history" as const, taskId: input.performanceTarget.task.id, taskStatus: input.performanceTarget.task.status, ...(input.performanceTarget.task.performanceSummary ? { projection: input.performanceTarget.task.performanceSummary } : input.performanceTarget.task.usageSummary ? { projection: buildLegacyPerformanceProjection(input.performanceTarget.task.usageSummary, terminalPerformanceStatus(input.performanceTarget.task.status)) } : {}) }
+      : undefined;
   return {
     version: bounded(input.version, 40), configured: input.configured,
     workspace: { available: input.folders > 0, multiple: input.folders > 1 },
@@ -129,8 +145,12 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
     ...(reviewStatus ? { reviewStatus } : {}), ...(input.reviewFindingCount !== undefined ? { reviewFindingCount: input.reviewFindingCount } : {}), repairCycles: input.result?.repairCycles ?? usage?.repairCycles ?? input.repairCycle ?? null,
     ...(usage?.repairSummary ? { repairUsage: { durationMs: usage.repairSummary.totalDurationMs, tokens: usage.repairSummary.tokens } } : {}),
     ...(projectedUsage ? { usage: projectedUsage } : {}),
-    ...(completion ? { completion } : {}), ...(input.settings ? { settings: input.settings } : {}),
+    ...(completion ? { completion } : {}), ...(performance ? { performance } : {}), ...(performanceView ? { performanceView } : {}), ...(input.settings ? { settings: input.settings } : {}),
   };
+}
+
+function terminalPerformanceStatus(status: string): "completed" | "failed" | "aborted" | "interrupted" | undefined {
+  return status === "completed" || status === "failed" || status === "aborted" || status === "interrupted" ? status : undefined;
 }
 
 function projectPlan(plan: ExecutionPlan | undefined): WorkspacePlanState | undefined {

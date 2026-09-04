@@ -68,6 +68,25 @@ function baseState(overrides: Record<string, unknown> = {}) {
 
 const historicalTask = { id: "history-1", schemaVersion: 1, createdAt: "2026-09-03T10:00:00.000Z", updatedAt: "2026-09-03T10:01:00.000Z", workspaceIdentity: { id: "workspace", label: "Project" }, title: "Add <filters>", requirement: "Add <filters> safely", workflowId: "w-old", status: "completed", providerSummary: { provider: "Gate<way>", model: "model<x>" }, planSummary: { objective: "Add <pagination>", approvalStatus: "approved", tasks: [{ id: "one", title: "Update <query>", acceptanceCriteria: ["Tests <pass>"], dependencies: [], risk: "low" }], risks: [] }, executionSummary: { completed: 1, total: 1, tasks: [{ title: "Update query", status: "completed" }] }, validationSummary: { status: "passed", steps: [{ name: "typecheck", status: "passed", durationMs: 50 }] }, reviewSummary: { status: "passed", findingCount: 0, ruleViolationCount: null }, repairSummary: { cycles: 1, outcome: "completed", durationMs: 10, tokens: 5 }, usageSummary: { totalTokens: 7073, providerCalls: 4, toolCalls: 9, workflowDurationMs: 20600, repairCycles: 1 } };
 
+const performanceProjection: any = {
+  detailLevel: "detailed", overview: { terminalStatus: "completed", inputTokens: 5580, outputTokens: 1493, totalTokens: 7073, workflowDurationMs: 25000, providerCalls: 5, toolCalls: 14, repairCycles: 1, usageSource: "provider_reported", validationStatus: "passed", reviewStatus: "passed", cost: 0.034, currency: "USD", costSource: "provider_reported" },
+  roles: [
+    { role: "planner", providerConfigId: "claude-work", providerId: "anthropic", providerName: "Claude Work", requestedModelId: "claude-sonnet", resolvedModelId: "claude-sonnet", executionProfileSummary: { kind: "provider_default" }, executionProfileLabel: "Provider Default", calls: 1, inputTokens: 1000, outputTokens: 200, totalTokens: 1200, providerDurationMs: 3000, usageSource: "provider_reported" },
+    { role: "executor", providerConfigId: "openai-work", providerId: "openai", providerName: "OpenAI Work", requestedModelId: "ha-op/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol", executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, executionProfileLabel: "Reasoning · Medium", calls: 2, inputTokens: 2900, outputTokens: 810, totalTokens: 3710, providerDurationMs: 12100, usageSource: "provider_reported" },
+    { role: "reviewer", providerConfigId: "gemini-work", providerId: "gemini", providerName: "Gemini Work", requestedModelId: "gemini-2.5-pro", resolvedModelId: "gemini-2.5-pro", executionProfileSummary: { kind: "gemini_thinking_level", value: "high" }, executionProfileLabel: "Thinking Level · High", calls: 1, inputTokens: 1200, outputTokens: 400, totalTokens: 1600, providerDurationMs: 4100, usageSource: "provider_reported" },
+    { role: "repair", providerConfigId: "openai-work", providerId: "openai", providerName: "OpenAI Work", requestedModelId: "ha-op/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol", executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, executionProfileLabel: "Reasoning · Medium", calls: 1, inputTokens: 480, outputTokens: 83, totalTokens: 563, providerDurationMs: 1400, usageSource: "provider_reported" },
+  ],
+  executorTasks: [{ taskId: "task-1", title: "Update service", inputTokens: 1000, outputTokens: 240, totalTokens: 1240, providerDurationMs: 3200, providerCalls: 1, toolCalls: 2, toolDurationMs: 410 }],
+  latency: { workflowDurationMs: 25000, totalProviderDurationMs: 20600, providerByRole: { planner: 3000, executor: 12100, reviewer: 4100, repair: 1400 }, toolDurationMs: 2400, validationDurationMs: 6500, reviewDurationMs: 4500, repairDurationMs: 2100, localOrchestrationDurationMs: 1500 },
+  context: { files: 18, bytes: 76000, truncated: false, targetedExpansions: 2 },
+  tools: { requestedByModel: 16, executed: 14, successful: 12, failed: 2, invalid: 2, durationMs: 2400, byName: [{ name: "read_<file>", count: 5 }, { name: "run_command", count: 4 }] },
+  validation: { status: "passed", durationMs: 6500, steps: [{ name: "typecheck", status: "passed", durationMs: 800 }, { name: "lint", status: "skipped", durationMs: null }, { name: "tests", status: "passed", durationMs: 4200 }, { name: "build", status: "passed", durationMs: 1300 }] },
+  review: { status: "passed", durationMs: 4500, contextExpansions: null, role: undefined },
+  repair: { cycles: 1, durationMs: 2100, providerCalls: 1, inputTokens: 480, outputTokens: 83, totalTokens: 563, providerDurationMs: 1400, usesExecutorProfile: true, executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, executionProfileLabel: "Reasoning · Medium" },
+  cost: { amount: 0.034, currency: "USD", source: "provider_reported" },
+};
+performanceProjection.review.role = performanceProjection.roles[2];
+
 const plan = { id: "plan-1", objective: "Add pagination", summary: "Keep compatibility", tasks: [{ id: "task-1", title: "Update query", description: "Add paging", acceptanceCriteria: ["Tests pass"], dependencies: [], risk: "low" }], risks: [{ description: "Offset drift", severity: "low", mitigation: "Stable order" }] };
 const awaiting = { id: "w", status: "awaiting_plan_approval", stage: "Awaiting approval", active: true, tasks: [] };
 const settingsProjection = buildSettingsProjection({ version: "0.1.0-alpha.9", providers: [{ id: "work", catalogId: "openai", type: "openai", displayName: "OpenAI Work", modelId: "gpt-5.1", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" }], defaultProviderId: "work", credentialStored: new Map([["work", true]]), testedProviderIds: new Set(["work"]), modelMode: "simple", roles: [{ role: "planner", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "reviewer", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }], selectedPlanningProfile: "default", planningProfiles: [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }], engineeringRules: [{ id: "avoid-secret-exposure", name: "Avoid secret exposure", description: "Protect secrets", scope: "global", severity: "error", enabled: true }], historyRetention: 50, historyCount: 4, workspaceFolders: [{ id: "root-0", label: "Project" }], selectedWorkspaceRootId: "root-0" } as any);
@@ -174,6 +193,37 @@ describe("Nyxara browser runtime", () => {
     expect(h.text()).toContain("Duration-");
   });
 
+  it("offers View Performance on terminal cards with projected metrics", () => {
+    for (const status of ["completed", "failed", "aborted"]) {
+      const h = harness();
+      h.emit(baseState({ workflow: { id: "w", status, stage: status, active: false, tasks: [] }, completion: { status, changedFiles: 1, tokens: 7073, modelCalls: 5, durationMs: 25000, repairCycles: 1 }, performance: { ...performanceProjection, overview: { ...performanceProjection.overview, terminalStatus: status } } }));
+      expect(h.text()).toContain("PerformanceTokens7,073Duration25.0 sModel Calls5Tool Calls14");
+      h.findButton("View Performance")?.dispatch("click");
+      expect(h.messages.at(-1)).toEqual({ type: "openPerformance" });
+    }
+  });
+
+  it("renders every detailed Performance section with safe role/model/profile attribution and Back", () => {
+    const h = harness();
+    h.emit(baseState({ performanceView: { source: "live", taskStatus: "completed", projection: performanceProjection } }), "performanceProjection");
+    const text = h.text();
+    for (const label of ["Performance", "Overview", "Models & Roles", "Planner", "Executor", "Reviewer", "Repair", "Executor Tasks", "Latency", "Context", "Tools", "Validation", "Review", "Cost"]) expect(text).toContain(label);
+    for (const detail of ["7,073 tokens", "Claude Work", "Modelclaude-sonnet", "Requested Modelha-op/gpt-5.6-sol", "Resolved Modelgpt-5.6-sol", "Reasoning · Medium", "Thinking Level · High", "Update service", "Measured durations may overlap", "74.2 KB", "read_<file>", "Skipped", "Uses Executor · Reasoning · Medium", "Provider Reported"]) expect(text).toContain(detail);
+    expect(text).not.toContain("Requested Modelclaude-sonnet");
+    expect(h.elements.get("timeline")!.descendants().some((item) => item.tagName === "script")).toBe(false);
+    h.findButton("←")?.dispatch("click");
+    expect(h.messages.at(-1)).toEqual({ type: "closePerformance" });
+  });
+
+  it("labels aborted/interrupted Performance as partial and degrades legacy history honestly", () => {
+    const partial = harness(); partial.emit(baseState({ performanceView: { source: "history", taskId: "history-1", taskStatus: "interrupted", projection: performanceProjection } }));
+    expect(partial.text()).toContain("Partial metrics · Interrupted");
+    const legacy = harness(); legacy.emit(baseState({ performanceView: { source: "history", taskId: "old", taskStatus: "completed", projection: { ...performanceProjection, detailLevel: "legacy", roles: [], executorTasks: [], overview: { ...performanceProjection.overview, inputTokens: null, outputTokens: null }, validation: { status: null, durationMs: null, steps: [] }, tools: { ...performanceProjection.tools, byName: [] } } } }));
+    expect(legacy.text()).toContain("Detailed performance was not recorded for this task.");
+    expect(legacy.text()).toContain("Total Tokens7,073");
+    expect(legacy.text()).not.toContain("Models & Roles");
+  });
+
   it("completes the normal sidebar flow without a Command Palette or InputBox", () => {
     const h = harness();
     h.emit(baseState());
@@ -234,6 +284,14 @@ describe("Nyxara browser runtime", () => {
     expect(h.messages.at(-1)).toEqual({ type: "deleteTask", taskId: "history-1" });
   });
 
+  it("opens persisted historical Performance without a provider action", () => {
+    const h = harness(); const task = { ...historicalTask, performanceSummary: performanceProjection };
+    h.emit(baseState({ history: { screen: "historical", recentTasks: [task], tasks: [task], query: "", filter: "all", scope: "current", selectedTask: task } }));
+    h.findButton("View Performance")?.dispatch("click");
+    expect(h.messages.at(-1)).toEqual({ type: "openPerformance", taskId: "history-1" });
+    expect(h.messages.filter((message) => /provider|model|submit/i.test(message.type))).toEqual([]);
+  });
+
   it.each([
     ["failed", "Failed"], ["aborted", "Aborted"], ["interrupted", "This workflow cannot be resumed automatically in the current version."],
   ])("renders historical %s state without fake Resume", (status, label) => {
@@ -263,7 +321,7 @@ describe("Nyxara browser runtime", () => {
 
   it("renders the compact Settings home with every intended top-level section and no Command Palette", () => {
     const h = harness(); h.emit(baseState({ settings: { section: "home", projection: settingsProjection } }), "settingsProjection");
-    for (const label of ["AI Providers", "Models & Roles", "Workflow", "Planning", "Engineering Rules", "Permissions", "Context", "Validation", "Review", "Repair", "Usage", "Task History", "Workspace", "Privacy & Storage", "Advanced", "About"]) expect(h.text()).toContain(label);
+    for (const label of ["AI Providers", "Models & Roles", "Workflow", "Planning", "Engineering Rules", "Permissions", "Context", "Validation", "Review", "Repair", "Usage & Performance", "Task History", "Workspace", "Privacy & Storage", "Advanced", "About"]) expect(h.text()).toContain(label);
     expect(h.text()).not.toContain("Command Palette"); h.elements.get("timeline")!.descendants().find((item) => item.tagName === "button" && item.allText().startsWith("Planning"))?.dispatch("click"); expect(h.messages.at(-1)).toEqual({ type: "openSettingsSection", section: "planning" });
   });
 
@@ -330,6 +388,17 @@ describe("Nyxara browser runtime", () => {
     const h = harness(); h.emit(baseState({ settings: { section: "home", projection: settingsProjection } }), "settingsProjection"); const count = h.messages.length;
     const search = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "input" && item.attributes.get("aria-label") === "Search settings locally")!; search.value = query; search.dispatch("input");
     expect(h.text()).toContain("Models & Roles"); expect(h.messages).toHaveLength(count);
+  });
+
+  it.each(["usage", "performance", "tokens", "latency", "context", "tools", "cost", "repair"])("finds Usage & Performance locally for %s", (query) => {
+    const h = harness(); h.emit(baseState({ settings: { section: "home", projection: settingsProjection } }), "settingsProjection"); const count = h.messages.length;
+    const search = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "input" && item.attributes.get("aria-label") === "Search settings locally")!; search.value = query; search.dispatch("input");
+    expect(h.text()).toContain("Usage & Performance"); expect(h.messages).toHaveLength(count);
+  });
+
+  it("renders factual Usage & Performance settings without optimization", () => {
+    const h = harness(); h.emit(baseState({ settings: { section: "usage", projection: settingsProjection } }), "settingsProjection");
+    for (const value of ["Token Reporting", "Provider-reported when available", "Usage Estimates", "Provenance retained", "Provider-reported only / existing provenance", "Task Performance", "Stored locally", "Attributed per role/model", "Automatic Optimization", "Not enabled"]) expect(h.text()).toContain(value);
   });
 
   it("renders provider details with separate Disconnect and Remove Provider actions and never a stored key", () => {

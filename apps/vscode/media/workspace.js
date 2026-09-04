@@ -27,6 +27,14 @@
   };
   const formatDuration = (ms) => ms == null ? "-" : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
   const formatNumber = (value) => value == null ? "-" : Number(value).toLocaleString();
+  const formatBytes = (value) => value == null || !Number.isFinite(value) || value < 0 ? "-" : value < 1024 ? `${Math.round(value)} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  const formatCost = (amount, currency) => {
+    if (amount == null) return "-";
+    if (typeof currency === "string" && /^[A-Za-z]{3}$/.test(currency)) {
+      try { return new Intl.NumberFormat(undefined, { style: "currency", currency: currency.toUpperCase(), maximumFractionDigits: 6 }).format(amount); } catch { /* render the safe numeric fallback */ }
+    }
+    return formatNumber(amount);
+  };
   const friendly = (value) => String(value || "pending").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
   const isNearBottom = () => timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 72;
   const workflowStatus = () => state.workflow && state.workflow.status;
@@ -34,6 +42,14 @@
   const afterApproval = () => !!state.workflow && !["created", "planning", "awaiting_plan_approval"].includes(state.workflow.status);
   const historyState = () => state.history || { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "all" };
   const terminalHistoryStatus = (status) => ["completed", "failed", "aborted", "interrupted"].includes(status);
+  const hasPerformance = (projection) => {
+    if (!projection) return false;
+    const overview = projection.overview || {};
+    return [overview.inputTokens, overview.outputTokens, overview.totalTokens, overview.workflowDurationMs, overview.providerCalls, overview.toolCalls, overview.repairCycles, overview.validationStatus, overview.reviewStatus, overview.cost].some((value) => value !== null && value !== undefined)
+      || (projection.roles || []).some((role) => [role.providerConfigId, role.providerId, role.requestedModelId, role.resolvedModelId, role.calls, role.totalTokens, role.providerDurationMs].some((value) => value !== null && value !== undefined))
+      || (projection.executorTasks || []).length > 0 || (projection.validation && projection.validation.steps || []).length > 0 || (projection.tools && projection.tools.byName || []).length > 0;
+  };
+  const hasTaskPerformance = (task) => hasPerformance(task.performanceSummary) || !!task.usageSummary && Object.values(task.usageSummary).some((value) => value !== null && value !== undefined);
 
   function relativeTime(timestamp) {
     const elapsed = Math.max(0, Date.now() - Date.parse(timestamp));
@@ -51,8 +67,9 @@
     const head = node("span", "history-row-head");
     head.append(node("span", "history-title", task.title), node("span", "history-time", relativeTime(task.updatedAt)));
     const meta = [friendly(task.status)];
-    if (task.usageSummary && task.usageSummary.totalTokens != null) meta.push(`${formatNumber(task.usageSummary.totalTokens)} tokens`);
-    if (task.usageSummary && task.usageSummary.workflowDurationMs != null) meta.push(formatDuration(task.usageSummary.workflowDurationMs));
+    const usage = task.performanceSummary ? task.performanceSummary.overview : task.usageSummary;
+    if (usage && (usage.totalTokens != null)) meta.push(`${formatNumber(usage.totalTokens)} tokens`);
+    if (usage && (usage.workflowDurationMs != null)) meta.push(formatDuration(usage.workflowDurationMs));
     if (includeWorkspace) meta.push(task.workspaceIdentity.label);
     value.append(head, node("span", `history-meta status-${task.status}`, meta.join(" · ")));
     value.addEventListener("click", () => vscode.postMessage({ type: "openTask", taskId: task.id }));
@@ -109,7 +126,7 @@
     ["validation", "Validation", "typecheck lint tests build fail fast timeout"],
     ["review", "Review", "reviewer evidence rules failures context"],
     ["repair", "Repair", "automatic validation cycles executor replan"],
-    ["usage", "Usage", "tokens cost metrics provider reported estimated"],
+    ["usage", "Usage & Performance", "usage performance tokens latency context tools cost repair reasoning thinking execution provider reported estimated local"],
     ["taskHistory", "Task History", "history retention local clear tasks"],
     ["workspace", "Workspace", "root folder profile rules"],
     ["privacy", "Privacy & Storage", "secretstorage local telemetry cloud sync account requests"],
@@ -312,7 +329,7 @@
     else if (section === "validation") { const value = card("Validation Pipeline"); projection.validation.steps.forEach((step) => value.append(labeledValue(step.kind, step.policy))); value.append(labeledValue("Fail Fast", projection.validation.failFast ? "Enabled" : "Disabled")); timeline.append(value); }
     else if (section === "review") { const p = projection.review; const value = card("Reviewer"); value.append(labeledValue("Assignment", p.reviewer.providerName ? `${p.reviewer.providerName} / ${p.reviewer.modelId}` : "Unconfigured"), booleanRow("Engineering Rules Applied", p.rulesApplied), booleanRow("Validation Failure Forces Fail", p.validationFailuresForceFail), booleanRow("Bounded Evidence", p.boundedEvidence), booleanRow("Targeted Context Expansion", p.targetedContextExpansion)); timeline.append(value); }
     else if (section === "repair") { const p = projection.repair; const value = card("Automatic Repair"); value.append(booleanRow("Enabled", p.automatic), booleanRow("Validation First", p.validationFirst), booleanRow("Planner Replan", p.plannerReplan), booleanRow("Context Reuse", p.contextReuse), labeledValue("Model Assignment", `Uses ${p.usesRole}`), labeledValue("Maximum Cycles", p.maximumCycles)); timeline.append(value); }
-    else if (section === "usage") { const p = projection.usage; const value = card("Usage Sources"); value.append(labeledValue("Tokens", p.tokenSource), labeledValue("Cost", p.cost), labeledValue("History Metrics", p.historyMetrics)); timeline.append(value); }
+    else if (section === "usage") { const p = projection.usage; const value = card("Usage & Performance"); value.append(labeledValue("Token Reporting", p.tokenReporting), labeledValue("Usage Estimates", p.usageEstimates), labeledValue("Cost", p.cost), labeledValue("Task Performance", p.taskPerformance), labeledValue("Execution Profiles", p.executionProfiles), labeledValue("Automatic Optimization", p.automaticOptimization)); timeline.append(value); }
     else if (section === "privacy") { const p = projection.privacy; const value = card("Privacy & Storage"); [["Credentials", p.credentials], ["Task History", p.taskHistory], ["Cloud Sync", p.cloudSync], ["Nyxara Account", p.account], ["Telemetry", p.telemetry], ["Provider Requests", p.providerRequests]].forEach(([key, val]) => value.append(labeledValue(key, val))); timeline.append(value); }
     else if (section === "advanced") { const p = projection.advanced; const value = card("Supported Technical Configuration"); [["Manual Model ID", p.manualModelId], ["Custom Endpoints", p.customEndpoints], ["Role Routing", p.roleRouting], ["Execution Profiles", "Capability-driven per role/model"], ["Diagnostics", p.diagnosticState]].forEach(([key, val]) => value.append(labeledValue(key, val))); timeline.append(value, node("p", "muted", "Automatic routing, Budget Engine, Skills, MCP, Hooks, Plugins, and Marketplace are not available in this phase.")); }
   }
@@ -445,6 +462,7 @@
     final.append(summary); timeline.append(final);
     if (terminalHistoryStatus(task.status) && task.id !== history.activeTaskId) {
       const actions = node("div", "history-detail-actions");
+      if (hasTaskPerformance(task)) actions.append(button("View Performance", "secondary", "openPerformance", { taskId: task.id }));
       actions.append(button("Delete Task", "danger", "deleteTask", { taskId: task.id }));
       if (!history.activeTaskId) actions.append(button("New Task", "primary", "newTask"));
       timeline.append(actions);
@@ -578,12 +596,116 @@
     const completed = state.completion.status === "completed";
     const value = card(completed ? "Completed ✓" : friendly(state.completion.status), completed ? "completion-success" : "completion-failure");
     if (!completed && state.workflow && state.workflow.error) value.append(node("div", "eyebrow", "Stage"), node("p", "", state.workflow.error.stage), node("div", "eyebrow", "Reason"), node("p", "failed", state.workflow.error.message));
-    const summary = node("dl", "summary");
+    const summary = node("dl", "summary completion-status-summary");
     const validation = state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) ? "Failed" : state.validation.length ? "Passed" : "-";
-    [["Validation", validation], ["Review", state.reviewStatus ? friendly(state.reviewStatus) : "-"], ["Changed Files", formatNumber(state.completion.changedFiles)], ["Tokens", formatNumber(state.completion.tokens)], ["Model Calls", formatNumber(state.completion.modelCalls)], ["Duration", formatDuration(state.completion.durationMs)], ["Repair Cycles", formatNumber(state.completion.repairCycles)]].forEach(([key, value]) => summary.append(node("dt", "muted", key), node("dd", "", value)));
+    [["Validation", validation], ["Review", state.reviewStatus ? friendly(state.reviewStatus) : "-"], ["Changed Files", formatNumber(state.completion.changedFiles)]].forEach(([key, value]) => summary.append(node("dt", "muted", key), node("dd", "", value)));
     value.append(summary);
-    addActions(value, [button("New Task", "primary", "newTask")]);
+    const overview = state.performance ? state.performance.overview : { totalTokens: state.completion.tokens, workflowDurationMs: state.completion.durationMs, providerCalls: state.completion.modelCalls, toolCalls: null };
+    const performanceSummary = node("dl", "summary performance-summary");
+    [["Tokens", formatNumber(overview.totalTokens)], ["Duration", formatDuration(overview.workflowDurationMs)], ["Model Calls", formatNumber(overview.providerCalls)], ["Tool Calls", formatNumber(overview.toolCalls)]].forEach(([key, metric]) => performanceSummary.append(node("dt", "muted", key), node("dd", "", metric)));
+    value.append(node("div", "performance-label", "Performance"), performanceSummary);
+    addActions(value, [...(hasPerformance(state.performance) ? [button("View Performance", "secondary", "openPerformance")] : []), button("New Task", "primary", "newTask")]);
     timeline.append(value);
+  }
+
+  function metricRows(host, entries) {
+    entries.forEach(([label, value]) => host.append(labeledValue(label, value == null ? "-" : value)));
+  }
+
+  function modelRows(host, role) {
+    if (role.requestedModelId && role.resolvedModelId && role.requestedModelId === role.resolvedModelId) {
+      host.append(labeledValue("Model", role.requestedModelId));
+      return;
+    }
+    host.append(labeledValue("Requested Model", role.requestedModelId || "-"), labeledValue("Resolved Model", role.resolvedModelId || "-"));
+  }
+
+  function rolePerformance(role, title) {
+    const value = card(title || friendly(role.role), "performance-section");
+    metricRows(value, [
+      ["Provider", role.providerName || role.providerId || "-"],
+      ["Provider Configuration", role.providerConfigId || "-"],
+      ["Adapter", role.providerId || "-"],
+    ]);
+    modelRows(value, role);
+    metricRows(value, [
+      ["Execution", role.executionProfileLabel || "-"],
+      ["Calls", formatNumber(role.calls)],
+      ["Input", role.inputTokens == null ? "-" : `${formatNumber(role.inputTokens)} tokens`],
+      ["Output", role.outputTokens == null ? "-" : `${formatNumber(role.outputTokens)} tokens`],
+      ["Total", role.totalTokens == null ? "-" : `${formatNumber(role.totalTokens)} tokens`],
+      ["Provider Time", formatDuration(role.providerDurationMs)],
+      ["Usage Source", role.usageSource ? friendly(role.usageSource) : "-"],
+    ]);
+    return value;
+  }
+
+  function renderPerformance() {
+    const view = state.performanceView;
+    const heading = node("div", "history-screen-heading performance-heading");
+    heading.append(button("←", "icon-button", "closePerformance"), node("h1", "", "Performance"));
+    timeline.append(heading);
+    if (!view || !view.projection) {
+      timeline.append(node("p", "muted performance-empty", "Detailed performance was not recorded for this task."));
+      return;
+    }
+    const projection = view.projection;
+    const overview = projection.overview;
+    if (["aborted", "interrupted"].includes(view.taskStatus)) timeline.append(node("p", "partial-note", `Partial metrics · ${friendly(view.taskStatus)}`));
+    else if (view.taskStatus === "failed") timeline.append(node("p", "partial-note", "Task failed · recorded metrics"));
+    if (projection.detailLevel === "legacy") {
+      const legacy = card("Available", "performance-section");
+      legacy.append(node("p", "muted", "Detailed performance was not recorded for this task."));
+      metricRows(legacy, [["Total Tokens", overview.totalTokens == null ? "-" : `${formatNumber(overview.totalTokens)} tokens`], ["Duration", formatDuration(overview.workflowDurationMs)], ["Model Calls", formatNumber(overview.providerCalls)], ["Tool Calls", formatNumber(overview.toolCalls)], ["Repair Cycles", formatNumber(overview.repairCycles)]]);
+      timeline.append(legacy);
+      return;
+    }
+
+    const overviewCard = card("Overview", "performance-section performance-overview");
+    overviewCard.append(node("div", "performance-hero", overview.totalTokens == null ? "-" : `${formatNumber(overview.totalTokens)} tokens`), node("div", "performance-compact", [overview.workflowDurationMs == null ? null : formatDuration(overview.workflowDurationMs), overview.providerCalls == null ? null : `${formatNumber(overview.providerCalls)} model call${overview.providerCalls === 1 ? "" : "s"}`, overview.toolCalls == null ? null : `${formatNumber(overview.toolCalls)} tool call${overview.toolCalls === 1 ? "" : "s"}`].filter(Boolean).join(" · ") || "-"));
+    metricRows(overviewCard, [["Input Tokens", formatNumber(overview.inputTokens)], ["Output Tokens", formatNumber(overview.outputTokens)], ["Total Tokens", formatNumber(overview.totalTokens)], ["Workflow Duration", formatDuration(overview.workflowDurationMs)], ["Provider Calls", formatNumber(overview.providerCalls)], ["Tool Calls", formatNumber(overview.toolCalls)], ["Repair Cycles", formatNumber(overview.repairCycles)], ["Usage Source", overview.usageSource ? friendly(overview.usageSource) : "-"], ["Validation Status", overview.validationStatus ? friendly(overview.validationStatus) : "-"], ["Review Status", overview.reviewStatus ? friendly(overview.reviewStatus) : "-"], ["Cost", formatCost(overview.cost, overview.currency)]]);
+    timeline.append(overviewCard);
+
+    const roles = node("section", "performance-group"); roles.append(node("h2", "performance-group-title", "Models & Roles"));
+    projection.roles.forEach((role) => roles.append(rolePerformance(role)));
+    timeline.append(roles);
+
+    if (projection.executorTasks.length) {
+      const tasks = node("section", "performance-group"); tasks.append(node("h2", "performance-group-title", "Executor Tasks"));
+      projection.executorTasks.forEach((task, index) => { const value = card(task.title || `Task ${index + 1}`, "performance-section"); metricRows(value, [["Task ID", task.taskId], ["Input", task.inputTokens == null ? "-" : `${formatNumber(task.inputTokens)} tokens`], ["Output", task.outputTokens == null ? "-" : `${formatNumber(task.outputTokens)} tokens`], ["Total", task.totalTokens == null ? "-" : `${formatNumber(task.totalTokens)} tokens`], ["Provider Time", formatDuration(task.providerDurationMs)], ["Provider Calls", formatNumber(task.providerCalls)], ["Tool Calls", formatNumber(task.toolCalls)], ["Tool Time", formatDuration(task.toolDurationMs)]]); tasks.append(value); });
+      timeline.append(tasks);
+    }
+
+    const latency = card("Latency", "performance-section");
+    latency.append(node("p", "muted", "Measured durations may overlap and are not presented as a stacked total."));
+    metricRows(latency, [["Workflow Total", formatDuration(projection.latency.workflowDurationMs)], ["Provider Time", formatDuration(projection.latency.totalProviderDurationMs)], ["Planner Provider Time", formatDuration(projection.latency.providerByRole.planner)], ["Executor Provider Time", formatDuration(projection.latency.providerByRole.executor)], ["Reviewer Provider Time", formatDuration(projection.latency.providerByRole.reviewer)], ["Repair Provider Time", formatDuration(projection.latency.providerByRole.repair)], ["Tools", formatDuration(projection.latency.toolDurationMs)], ["Validation", formatDuration(projection.latency.validationDurationMs)], ["Review", formatDuration(projection.latency.reviewDurationMs)], ["Repair", formatDuration(projection.latency.repairDurationMs)], ["Local Orchestration", formatDuration(projection.latency.localOrchestrationDurationMs)]]);
+    timeline.append(latency);
+
+    const context = card("Context", "performance-section");
+    metricRows(context, [["Files", formatNumber(projection.context.files)], ["Size", formatBytes(projection.context.bytes)], ["Truncated", projection.context.truncated == null ? "-" : projection.context.truncated ? "Yes" : "No"], ["Targeted Expansions", formatNumber(projection.context.targetedExpansions)]]);
+    timeline.append(context);
+
+    const tools = card("Tools", "performance-section");
+    metricRows(tools, [["Requested by Model", formatNumber(projection.tools.requestedByModel)], ["Executed", formatNumber(projection.tools.executed)], ["Successful", formatNumber(projection.tools.successful)], ["Failed", formatNumber(projection.tools.failed)], ["Invalid", formatNumber(projection.tools.invalid)], ["Duration", formatDuration(projection.tools.durationMs)]]);
+    if (projection.tools.byName.length) { tools.append(node("h3", "performance-subheading", "By Name")); projection.tools.byName.forEach((entry) => tools.append(labeledValue(entry.name, formatNumber(entry.count)))); }
+    timeline.append(tools);
+
+    const validation = card("Validation", "performance-section");
+    metricRows(validation, [["Overall Status", projection.validation.status ? friendly(projection.validation.status) : "-"], ["Duration", formatDuration(projection.validation.durationMs)]]);
+    projection.validation.steps.forEach((step) => { const row = node("div", "step"); row.append(node("span", "", friendly(step.name)), node("span", ["failed", "timed_out", "errored"].includes(step.status) ? "failed" : step.status === "passed" ? "passed" : "muted", `${friendly(step.status)}${step.durationMs == null ? "" : ` · ${formatDuration(step.durationMs)}`}`)); validation.append(row); });
+    timeline.append(validation);
+
+    const review = rolePerformance(projection.review.role, "Review");
+    metricRows(review, [["Status", projection.review.status ? friendly(projection.review.status) : "-"], ["Measured Duration", formatDuration(projection.review.durationMs)], ["Context Expansions", formatNumber(projection.review.contextExpansions)]]);
+    timeline.append(review);
+
+    const repair = card("Repair", "performance-section");
+    metricRows(repair, [["Cycles", formatNumber(projection.repair.cycles)], ["Measured Duration", formatDuration(projection.repair.durationMs)], ["Provider Calls", formatNumber(projection.repair.providerCalls)], ["Input Tokens", formatNumber(projection.repair.inputTokens)], ["Output Tokens", formatNumber(projection.repair.outputTokens)], ["Total Tokens", formatNumber(projection.repair.totalTokens)], ["Provider Time", formatDuration(projection.repair.providerDurationMs)], ["Execution Profile", projection.repair.executionProfileLabel ? `Uses Executor · ${projection.repair.executionProfileLabel}` : "Uses Executor · -"]]);
+    timeline.append(repair);
+
+    const cost = card("Cost", "performance-section");
+    metricRows(cost, [["Cost", formatCost(projection.cost.amount, projection.cost.currency)], ["Source", projection.cost.source ? friendly(projection.cost.source) : "-"]]);
+    timeline.append(cost);
   }
 
   function renderModelSelector() {
@@ -615,11 +737,12 @@
   }
 
   function render() {
-    const screen = state.settings ? `settings:${state.settings.section}:${state.settings.providerConfigId || ""}` : historyState().screen;
+    const screen = state.performanceView ? `performance:${state.performanceView.source}:${state.performanceView.taskId || "live"}` : state.settings ? `settings:${state.settings.section}:${state.settings.providerConfigId || ""}` : historyState().screen;
     const screenChanged = screen !== renderedScreen;
     const stick = !screenChanged && isNearBottom();
     timeline.replaceChildren();
-    if (state.settings) renderSettings();
+    if (state.performanceView) renderPerformance();
+    else if (state.settings) renderSettings();
     else if (screen === "history") renderHistoryScreen();
     else if (screen === "historical") renderHistoricalTask();
     else {
@@ -642,8 +765,8 @@
     el("new-task").title = active ? "Finish or abort the active workflow first" : "New Task";
     if (el("history")) el("history").classList.toggle("selected", !state.settings && historyState().screen !== "workspace");
     el("settings").classList.toggle("selected", !!state.settings);
-    if (el("composer-wrap")) el("composer-wrap").classList.toggle("hidden", !!state.settings);
-    input.disabled = !state.configured || !state.workspace.available || active || !!state.settings;
+    if (el("composer-wrap")) el("composer-wrap").classList.toggle("hidden", !!state.settings || !!state.performanceView);
+    input.disabled = !state.configured || !state.workspace.available || active || !!state.settings || !!state.performanceView;
     submit.disabled = input.disabled || !input.value.trim() || sending;
     const warning = el("workspace-warning");
     warning.classList.toggle("hidden", state.workspace.available && !state.workspace.multiple);

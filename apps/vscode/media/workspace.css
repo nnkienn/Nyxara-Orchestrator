@@ -112,6 +112,17 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .summary { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px 10px; }
 .summary dt, .summary dd { margin: 0; }
 .summary dd { text-align: right; font-variant-numeric: tabular-nums; }
+.performance-label { margin-top: 11px; color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; }
+.performance-compact { margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 12px; overflow-wrap: anywhere; }
+.performance-heading { position: sticky; top: -14px; z-index: 1; padding: 8px 0; background: var(--vscode-sideBar-background); }
+.performance-empty { margin: 18px 4px; text-align: center; }
+.partial-note { margin: 0 0 10px; padding: 7px 9px; border-left: 2px solid var(--vscode-editorWarning-foreground, var(--vscode-notificationsWarningIcon-foreground)); color: var(--vscode-descriptionForeground); background: var(--vscode-textBlockQuote-background); }
+.performance-group { min-width: 0; }
+.performance-group-title { margin: 15px 2px 7px; font-size: 13px; }
+.performance-section .settings-value { grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); }
+.performance-hero { margin: 2px 0; font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.performance-overview .performance-compact { margin-bottom: 10px; }
+.performance-subheading { margin-top: 12px !important; padding-top: 9px; border-top: 1px solid var(--vscode-widget-border); }
 .composer-wrap { position: relative; z-index: 1; flex: 0 0 auto; width: 100%; padding: 8px 9px 10px; border-top: 1px solid var(--vscode-sideBar-border, var(--vscode-widget-border)); background: var(--vscode-sideBar-background); }
 .workspace-warning { margin: 0 2px 7px; color: var(--vscode-descriptionForeground); font-size: 12px; }
 .composer { padding: 7px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 9px; background: var(--vscode-input-background); }

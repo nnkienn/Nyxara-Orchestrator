@@ -39,7 +39,14 @@ export interface SettingsProjection {
   readonly validation: { readonly failFast: true; readonly steps: readonly { readonly kind: string; readonly policy: "Required when available" }[] };
   readonly review: { readonly reviewer: SettingsRoleAssignment; readonly rulesApplied: true; readonly validationFailuresForceFail: true; readonly boundedEvidence: true; readonly targetedContextExpansion: true; readonly maxContextFiles: number };
   readonly repair: { readonly automatic: true; readonly validationFirst: true; readonly plannerReplan: false; readonly contextReuse: true; readonly usesRole: "Executor"; readonly maximumCycles: number };
-  readonly usage: { readonly tokenSource: "Provider reported / estimated / unavailable"; readonly cost: "Provider reported only"; readonly historyMetrics: "Local" };
+  readonly usage: {
+    readonly tokenReporting: "Provider-reported when available";
+    readonly usageEstimates: "Provenance retained";
+    readonly cost: "Provider-reported only / existing provenance";
+    readonly taskPerformance: "Stored locally";
+    readonly executionProfiles: "Attributed per role/model";
+    readonly automaticOptimization: "Not enabled";
+  };
   readonly history: { readonly storage: "Local"; readonly retention: number; readonly count: number; readonly choices: readonly number[] };
   readonly workspace: { readonly available: boolean; readonly multiple: boolean; readonly currentWorkspace?: string; readonly selectedRoot?: string; readonly roots: readonly { readonly id: string; readonly label: string }[]; readonly planningProfile: string; readonly rulesCount: number };
   readonly privacy: { readonly credentials: "VS Code SecretStorage"; readonly taskHistory: "Local"; readonly cloudSync: "Off"; readonly account: "Not required"; readonly telemetry: "None"; readonly providerRequests: "Sent directly to configured providers" };
@@ -103,7 +110,7 @@ export function buildSettingsProjection(input: SettingsProjectionInput): Setting
     validation: { failFast: true, steps: ["Typecheck", "Lint", "Tests", "Build"].map((kind) => ({ kind, policy: "Required when available" as const })) },
     review: { reviewer, rulesApplied: true, validationFailuresForceFail: true, boundedEvidence: true, targetedContextExpansion: true, maxContextFiles: DEFAULT_REVIEW_EVIDENCE_BUDGET.maxContextFiles },
     repair: { automatic: true, validationFirst: true, plannerReplan: false, contextReuse: true, usesRole: "Executor", maximumCycles: DEFAULT_REPAIR_LIMITS.maxRepairCycles },
-    usage: { tokenSource: "Provider reported / estimated / unavailable", cost: "Provider reported only", historyMetrics: "Local" },
+    usage: { tokenReporting: "Provider-reported when available", usageEstimates: "Provenance retained", cost: "Provider-reported only / existing provenance", taskPerformance: "Stored locally", executionProfiles: "Attributed per role/model", automaticOptimization: "Not enabled" },
     history: { storage: "Local", retention: input.historyRetention, count: input.historyCount, choices: [20, 50, 100] },
     workspace: { available: roots.length > 0, multiple: roots.length > 1, ...(selectedRoot ? { currentWorkspace: selectedRoot.label, selectedRoot: selectedRoot.id } : {}), roots, planningProfile: input.selectedPlanningProfile, rulesCount: rules.filter((rule) => rule.enabled).length },
     privacy: { credentials: "VS Code SecretStorage", taskHistory: "Local", cloudSync: "Off", account: "Not required", telemetry: "None", providerRequests: "Sent directly to configured providers" },

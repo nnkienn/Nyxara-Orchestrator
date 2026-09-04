@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { sanitizePerformanceProjection, type TaskPerformanceProjection } from "./performance-projection.js";
 import type { WorkspaceViewState } from "./workspace-state.js";
 
 export const TASK_SESSION_SCHEMA_VERSION = 1;
@@ -56,6 +57,7 @@ export interface TaskSession {
   readonly reviewSummary?: TaskReviewSummary;
   readonly repairSummary?: TaskRepairSummary;
   readonly usageSummary?: TaskUsageSummary;
+  readonly performanceSummary?: TaskPerformanceProjection;
   readonly failureSummary?: { readonly stage: string; readonly message: string };
   readonly interrupted?: true;
 }
@@ -134,6 +136,7 @@ export function projectTaskSession(existing: TaskSession, state: WorkspaceViewSt
     ...(state.reviewStatus ? { reviewSummary: { status: state.reviewStatus, findingCount: state.reviewFindingCount ?? null, ruleViolationCount: null } } : {}),
     ...(state.repairCycles !== null || state.repairUsage ? { repairSummary: { cycles: state.repairCycles, outcome: status === "completed" ? "completed" : status === "failed" ? "failed" : status === "aborted" ? "aborted" : status === "repairing" ? "repairing" : null, durationMs: state.repairUsage?.durationMs ?? null, tokens: state.repairUsage?.tokens ?? null } } : {}),
     ...(usage ? { usageSummary: { totalTokens: usage.tokens, providerCalls: usage.modelCalls, toolCalls: state.usage?.toolCalls ?? null, workflowDurationMs: usage.durationMs, repairCycles: usage.repairCycles } } : {}),
+    ...(state.performance ? { performanceSummary: state.performance } : {}),
     ...(workflow?.error ? { failureSummary: { stage: workflow.error.stage, message: workflow.error.message } } : {}),
   };
   return sanitizeTaskSession(projected)!;
@@ -171,6 +174,7 @@ export function sanitizeTaskSession(value: unknown): TaskSession | undefined {
   if (record(value.reviewSummary)) { const reviewStatus = privacySafe(value.reviewSummary.status, 80); if (reviewStatus) Object.assign(session, { reviewSummary: { status: reviewStatus, findingCount: count(value.reviewSummary.findingCount), ruleViolationCount: count(value.reviewSummary.ruleViolationCount) } }); }
   if (record(value.repairSummary)) Object.assign(session, { repairSummary: { cycles: count(value.repairSummary.cycles), outcome: privacySafe(value.repairSummary.outcome, 80) || null, durationMs: count(value.repairSummary.durationMs), tokens: count(value.repairSummary.tokens) } });
   if (record(value.usageSummary)) Object.assign(session, { usageSummary: { totalTokens: count(value.usageSummary.totalTokens), providerCalls: count(value.usageSummary.providerCalls), toolCalls: count(value.usageSummary.toolCalls), workflowDurationMs: count(value.usageSummary.workflowDurationMs), repairCycles: count(value.usageSummary.repairCycles) } });
+  const performanceSummary = sanitizePerformanceProjection(value.performanceSummary); if (performanceSummary) Object.assign(session, { performanceSummary });
   if (record(value.failureSummary)) { const stage = privacySafe(value.failureSummary.stage, 80); const message = privacySafe(value.failureSummary.message, 240); if (stage && message) Object.assign(session, { failureSummary: { stage, message } }); }
   if (status === "interrupted" || value.interrupted === true) Object.assign(session, { interrupted: true });
   return session;
