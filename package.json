@@ -9,11 +9,12 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "pnpm -r --if-present build",
+    "build": "node_modules/.bin/tsc -p packages/provider-sdk/tsconfig.json && node_modules/.bin/tsc -p packages/shared/tsconfig.json && node_modules/.bin/tsc -p packages/tools/tsconfig.json && node_modules/.bin/tsc -p packages/core/tsconfig.json && node_modules/.bin/tsc -p packages/providers/tsconfig.json && node_modules/.bin/tsc -p apps/cli/tsconfig.json && node_modules/.bin/tsc -p apps/vscode/tsconfig.json",
     "test": "vitest run",
     "vscode:build": "node_modules/.bin/tsc -p packages/provider-sdk/tsconfig.json && node_modules/.bin/tsc -p packages/shared/tsconfig.json && node_modules/.bin/tsc -p packages/tools/tsconfig.json && node_modules/.bin/tsc -p packages/core/tsconfig.json && node_modules/.bin/tsc -p packages/providers/tsconfig.json && node_modules/.bin/tsc -p apps/vscode/tsconfig.json && node_modules/.bin/esbuild apps/vscode/src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=apps/vscode/dist/extension.cjs",
     "vscode:test": "node_modules/.bin/vitest run apps/vscode/test",
-    "vscode:package": "npm run vscode:build && npm run vscode:test && mkdir -p dist/vscode && cd apps/vscode && ../../node_modules/.bin/vsce package --no-dependencies --skip-license --out ../../dist/vscode/nyxara-vscode-0.1.0-alpha.1.vsix",
+    "vscode:package": "npm run vscode:build && npm run vscode:test && node scripts/package-vscode.mjs",
+    "vscode:dogfood": "node scripts/vscode-dogfood.mjs",
     "benchmark:local": "tsc -p packages/provider-sdk/tsconfig.json && tsc -p packages/shared/tsconfig.json && tsc -p packages/tools/tsconfig.json && tsc -p packages/core/tsconfig.json && tsc -p packages/providers/tsconfig.json && tsc -p tools/benchmark/tsconfig.json && node tools/benchmark/dist/cli.js"
   },
   "devDependencies": {

@@ -55,6 +55,20 @@ describe("ProviderRegistry", () => {
     );
   });
 
+  it("replaces one registered adapter without changing its stable provider identity", () => {
+    const registry = new ProviderRegistry();
+    const original = createProvider("work-gateway");
+    const replacement = { ...createProvider("work-gateway"), displayName: "Renamed Work Gateway" };
+    registry.register(original);
+    registry.replace(replacement);
+    expect(registry.get("work-gateway")).toBe(replacement);
+    expect(registry.list()[0]).toMatchObject({ id: "work-gateway", displayName: "Renamed Work Gateway" });
+  });
+
+  it("unregisters only the selected provider adapter", () => {
+    const registry = new ProviderRegistry(); registry.register(createProvider("one")); registry.register(createProvider("two")); expect(registry.unregister("one")).toBe(true); expect(registry.unregister("missing")).toBe(false); expect(registry.list().map((provider) => provider.id)).toEqual(["two"]);
+  });
+
   it("returns a controlled error for an unknown provider", () => {
     const registry = new ProviderRegistry();
 
@@ -79,6 +93,17 @@ describe("ProviderRegistry", () => {
 });
 
 describe("NyxaraOrchestrator provider delegation", () => {
+  it("exposes provider-neutral adapter removal without rewriting role assignments", () => {
+    const nyxara = new NyxaraOrchestrator({ providers: [createProvider("stable"), createProvider("other")] }); nyxara.configureAgent({ role: "planner", providerId: "stable", modelId: "model" }); expect(nyxara.unregisterProvider("stable")).toBe(true); expect(nyxara.listProviders().map((provider) => provider.id)).toEqual(["other"]); expect(nyxara.getAgentModel("planner")).toEqual({ role: "planner", providerId: "stable", modelId: "model" });
+  });
+  it("replaces provider transport without changing configured role semantics", () => {
+    const nyxara = new NyxaraOrchestrator({ providers: [createProvider("stable")] });
+    nyxara.configureAgent({ role: "planner", providerId: "stable", modelId: "requested/model" });
+    nyxara.replaceProvider({ ...createProvider("stable"), displayName: "Updated transport" });
+    expect(nyxara.getAgentModel("planner")).toEqual({ role: "planner", providerId: "stable", modelId: "requested/model" });
+    expect(nyxara.listProviders()[0]).toMatchObject({ id: "stable", displayName: "Updated transport" });
+  });
+
   it("lists models and generates through a registered provider", async () => {
     const provider = createProvider();
     const generateSpy = vi.spyOn(provider, "generate");

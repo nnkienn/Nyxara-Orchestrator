@@ -1,17 +1,24 @@
 {
   "name": "nyxara-vscode",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.8",
   "publisher": "nyxara",
   "private": true,
   "description": "Thin VS Code client for Nyxara Orchestrator",
+  "repository": { "type": "git", "url": "https://github.com/nnkienn/Nyxara-Orchestrator.git" },
   "type": "module",
   "main": "./dist/extension.cjs",
   "engines": { "vscode": "^1.85.0" },
-  "activationEvents": ["onView:nyxara.sidebar", "onCommand:nyxara.open", "onCommand:nyxara.configureProvider", "onCommand:nyxara.testProviderConnection", "onCommand:nyxara.generatePlan", "onCommand:nyxara.approveAndRun", "onCommand:nyxara.rejectPlan", "onCommand:nyxara.regenerate", "onCommand:nyxara.pause", "onCommand:nyxara.resume", "onCommand:nyxara.abort", "onCommand:nyxara.allowOnce", "onCommand:nyxara.denyPermission"],
+  "activationEvents": ["onView:nyxara.sidebar", "onCommand:nyxara.open", "onCommand:nyxara.connectProvider", "onCommand:nyxara.configureProvider", "onCommand:nyxara.manageProviders", "onCommand:nyxara.configureRoleModels", "onCommand:nyxara.chooseDefaultModel", "onCommand:nyxara.changeProvider", "onCommand:nyxara.about", "onCommand:nyxara.testProviderConnection", "onCommand:nyxara.generatePlan", "onCommand:nyxara.approveAndRun", "onCommand:nyxara.rejectPlan", "onCommand:nyxara.regenerate", "onCommand:nyxara.pause", "onCommand:nyxara.resume", "onCommand:nyxara.abort", "onCommand:nyxara.allowOnce", "onCommand:nyxara.denyPermission"],
   "contributes": {
     "commands": [
       { "command": "nyxara.open", "title": "Nyxara: Open" },
+      { "command": "nyxara.connectProvider", "title": "Nyxara: Connect Provider" },
       { "command": "nyxara.configureProvider", "title": "Nyxara: Configure Provider" },
+      { "command": "nyxara.manageProviders", "title": "Nyxara: Manage Providers" },
+      { "command": "nyxara.configureRoleModels", "title": "Nyxara: Configure Models by Role" },
+      { "command": "nyxara.chooseDefaultModel", "title": "Nyxara: Choose Default Model" },
+      { "command": "nyxara.changeProvider", "title": "Nyxara: Change Provider" },
+      { "command": "nyxara.about", "title": "Nyxara: About" },
       { "command": "nyxara.testProviderConnection", "title": "Nyxara: Test Provider Connection" },
       { "command": "nyxara.generatePlan", "title": "Nyxara: Generate Plan" },
       { "command": "nyxara.approveAndRun", "title": "Nyxara: Approve & Run" },
@@ -25,19 +32,24 @@
       { "command": "nyxara.setApiKey", "title": "Nyxara: Set Provider API Key" }
     ],
     "viewsContainers": { "activitybar": [{ "id": "nyxara", "title": "Nyxara", "icon": "media/nyxara.svg" }] },
-    "views": { "nyxara": [{ "id": "nyxara.sidebar", "name": "Nyxara" }] },
+    "views": { "nyxara": [{ "id": "nyxara.sidebar", "name": "Nyxara", "type": "webview" }] },
     "configuration": {
       "title": "Nyxara",
       "properties": {
-        "nyxara.provider": { "type": "string", "default": "openai-compatible", "enum": ["openai-compatible"] },
-        "nyxara.planner.provider": { "type": "string", "default": "openai-compatible" },
+        "nyxara.provider": { "type": "string", "default": "", "description": "Legacy/default provider adapter type. Prefer Nyxara: Connect Provider." },
+        "nyxara.providerConfigs": { "type": "array", "default": [], "description": "Local non-secret provider configurations. Credentials remain in VS Code SecretStorage.", "items": { "type": "object" } },
+        "nyxara.defaultProviderConfigId": { "type": "string", "default": "", "description": "Stable local identity of the default provider configuration." },
+        "nyxara.modelMode": { "type": "string", "enum": ["simple", "advanced"], "default": "simple", "description": "Sidebar model assignment mode." },
+        "nyxara.planner.provider": { "type": "string", "default": "" },
         "nyxara.planner.model": { "type": "string", "default": "" },
-        "nyxara.executor.provider": { "type": "string", "default": "openai-compatible" },
+        "nyxara.executor.provider": { "type": "string", "default": "" },
         "nyxara.executor.model": { "type": "string", "default": "" },
-        "nyxara.reviewer.provider": { "type": "string", "default": "openai-compatible" },
+        "nyxara.reviewer.provider": { "type": "string", "default": "" },
         "nyxara.reviewer.model": { "type": "string", "default": "" },
         "nyxara.planningProfile": { "type": "string", "default": "default" },
-        "nyxara.openaiCompatible.baseUrl": { "type": "string", "default": "https://api.openai.com/v1" }
+        "nyxara.history.retention": { "type": "number", "enum": [20, 50, 100], "default": 50, "description": "Maximum local task history records; active tasks are preserved." },
+        "nyxara.workspace.selectedRoot": { "type": "string", "default": "", "description": "Opaque sidebar identity of the selected multi-root workspace folder." },
+        "nyxara.openaiCompatible.baseUrl": { "type": "string", "default": "https://api.openai.com/v1", "description": "Legacy OpenAI-compatible endpoint retained for alpha upgrade compatibility." }
       }
     }
   },

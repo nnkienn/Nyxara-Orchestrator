@@ -81,6 +81,20 @@ export interface ProviderCapabilities {
   readonly toolCalling?: boolean;
 }
 
+export type ProviderCategory = "official" | "compatible" | "local" | "community";
+export type ProviderAuthMethod = "api_key" | "oauth" | "device_code" | "local" | "none";
+
+/** Provider-owned onboarding facts. Clients render only the capabilities declared here. */
+export interface ProviderOnboardingCapabilities {
+  readonly category: ProviderCategory;
+  readonly authMethods: readonly ProviderAuthMethod[];
+  readonly defaultEndpoint?: string;
+  readonly modelDiscovery: boolean;
+  readonly manualModelId: boolean;
+  /** Official/non-secret destination for creating a provider API key. */
+  readonly apiKeyHelpUrl?: string;
+}
+
 export interface ProviderInfo {
   readonly id: string;
   readonly displayName: string;

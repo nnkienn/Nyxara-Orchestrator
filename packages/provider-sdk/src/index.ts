@@ -17,4 +17,7 @@ export type {
   ModelToolResult,
   ProviderCapabilities,
   ProviderInfo,
+  ProviderAuthMethod,
+  ProviderCategory,
+  ProviderOnboardingCapabilities,
 } from "./provider.types.js";

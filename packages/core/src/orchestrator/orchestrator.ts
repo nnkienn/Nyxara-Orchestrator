@@ -403,6 +403,16 @@ export class NyxaraOrchestrator {
     });
   }
 
+  /** Replaces adapter configuration without changing role or workflow semantics. */
+  replaceProvider(provider: ModelProvider): void {
+    this.providerRegistry.replace(provider);
+  }
+
+  /** Removes one provider adapter without changing workflow or role routing. */
+  unregisterProvider(providerId: string): boolean {
+    return this.providerRegistry.unregister(providerId);
+  }
+
   listProviders(): ProviderInfo[] {
     return this.providerRegistry.list();
   }

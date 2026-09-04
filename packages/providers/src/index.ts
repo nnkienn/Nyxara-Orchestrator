@@ -1,2 +1,10 @@
 export { OpenAICompatibleProvider } from "./openai-compatible/openai-compatible-provider.js";
 export type { OpenAICompatibleProviderConfig } from "./openai-compatible/openai-compatible-provider.js";
+export { AnthropicProvider } from "./anthropic/anthropic-provider.js";
+export type { AnthropicProviderConfig } from "./anthropic/anthropic-provider.js";
+export { GeminiProvider } from "./gemini/gemini-provider.js";
+export type { GeminiProviderConfig } from "./gemini/gemini-provider.js";
+export { CliSubscriptionProvider, NodeCliProcessRunner } from "./cli-subscription/cli-subscription-provider.js";
+export type { CliProcessRunner, CliRunInput, CliRunResult, CliSubscriptionKind, CliSubscriptionProviderConfig } from "./cli-subscription/cli-subscription-provider.js";
+export { PROVIDER_DEFINITIONS, providerDefinition } from "./catalog.js";
+export type { ProviderAdapterType, ProviderDefinition } from "./catalog.js";

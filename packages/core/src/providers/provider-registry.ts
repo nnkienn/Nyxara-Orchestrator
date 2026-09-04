@@ -39,6 +39,17 @@ export class ProviderRegistry {
     this.providers.set(provider.id, provider);
   }
 
+  replace(provider: ModelProvider): void {
+    if (!this.providers.has(provider.id)) {
+      throw new ProviderRegistryError("unknown_provider", provider.id, `Provider is not registered: ${provider.id}`);
+    }
+    this.providers.set(provider.id, provider);
+  }
+
+  unregister(providerId: string): boolean {
+    return this.providers.delete(providerId.trim());
+  }
+
   get(providerId: string): ModelProvider {
     const provider = this.providers.get(providerId);
 
@@ -61,4 +72,3 @@ export class ProviderRegistry {
     }));
   }
 }
-

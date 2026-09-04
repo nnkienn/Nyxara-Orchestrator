@@ -25,6 +25,7 @@ export interface OpenAICompatibleProviderConfig {
   readonly headers?: Readonly<Record<string, string>>;
   readonly credentialStore?: CredentialStore;
   readonly credentialKey?: string;
+  readonly credentialRequired?: boolean;
   readonly fetch?: typeof globalThis.fetch;
 }
 
@@ -40,6 +41,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly headers: Readonly<Record<string, string>>;
   private readonly credentialStore: CredentialStore | undefined;
   private readonly credentialKey: string;
+  private readonly credentialRequired: boolean;
   private readonly fetchImplementation: typeof globalThis.fetch;
 
   constructor(config: OpenAICompatibleProviderConfig = {}) {
@@ -50,6 +52,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.headers = { ...config.headers };
     this.credentialStore = config.credentialStore;
     this.credentialKey = config.credentialKey ?? `${this.id}.apiKey`;
+    this.credentialRequired = config.credentialRequired ?? false;
     this.fetchImplementation = config.fetch ?? globalThis.fetch;
   }
 
@@ -223,8 +226,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
       response = await this.fetchImplementation(`${this.baseUrl}${path}`, {
         ...init,
         headers,
+        signal: init.signal ?? AbortSignal.timeout(30_000),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.name === "TimeoutError") {
+        throw new ProviderError("Provider request timed out", { code: "timeout_error", providerId: this.id });
+      }
       throw new ProviderError("Unable to reach the model provider", {
         code: "network_error",
         providerId: this.id,
@@ -248,8 +255,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
 
     try {
-      return await this.credentialStore?.get(this.credentialKey);
-    } catch {
+      const credential = await this.credentialStore?.get(this.credentialKey);
+      if (!credential && this.credentialRequired) {
+        throw new ProviderError("Provider credential is missing", { code: "authentication_error", providerId: this.id });
+      }
+      return credential;
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
       throw new ProviderError("Unable to load provider credentials", {
         code: "provider_error",
         providerId: this.id,

@@ -127,4 +127,42 @@ describe("NyxaraSession Core boundary", () => {
     session.abort();
     expect(core.abortWorkflow).toHaveBeenCalledWith("workflow-1");
   });
+
+  it("refuses to reset presentation while a workflow is active and never aborts silently", () => {
+    const { session, core } = createSession();
+    session.workflowId = "workflow-1";
+    expect(() => session.resetPresentation()).toThrow("Finish or abort");
+    expect(core.abortWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("clears only presentation state after a terminal workflow", () => {
+    const { session, core } = createSession();
+    core.getWorkflowSnapshot.mockReturnValue({ workflowId: "workflow-1", status: "completed", updatedAt: "now", tasks: [] });
+    session.workflowId = "workflow-1";
+    session.prompt = "task";
+    session.plan = { plan: { id: "plan-1" } } as any;
+    session.result = { status: "completed" } as any;
+    session.validation.set("test", "passed");
+    session.reviewStatus = "passed";
+    session.repairCycle = 1;
+    session.resetPresentation();
+    expect(session.workflowId).toBeUndefined();
+    expect(session.prompt).toBeUndefined();
+    expect(session.currentPlan).toBeUndefined();
+    expect(session.validation.size).toBe(0);
+    expect(session.reviewStatus).toBeUndefined();
+    expect(session.repairCycle).toBeUndefined();
+    expect(core.abortWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("projects existing review and repair events without implementing workflow semantics", () => {
+    const core = fakeCore();
+    const listeners = new Map<string, (event: any) => void>();
+    core.events.on.mockImplementation((name: string, listener: (event: any) => void) => { listeners.set(name, listener); return () => undefined; });
+    const { session } = createSession(core);
+    listeners.get("review.validation_passed")?.({ status: "needs_more_context" });
+    listeners.get("repair.cycle_started")?.({ cycle: 2 });
+    expect(session.reviewStatus).toBe("needs_more_context");
+    expect(session.repairCycle).toBe(2);
+  });
 });

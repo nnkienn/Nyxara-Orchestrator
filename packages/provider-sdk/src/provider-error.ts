@@ -2,6 +2,8 @@ export type ProviderErrorCode =
   | "authentication_error"
   | "rate_limit_error"
   | "network_error"
+  | "timeout_error"
+  | "provider_not_installed"
   | "provider_error"
   | "invalid_model"
   | "invalid_response";
@@ -28,4 +30,3 @@ export class ProviderError extends Error {
     }
   }
 }
-

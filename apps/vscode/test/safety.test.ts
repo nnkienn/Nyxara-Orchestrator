@@ -18,6 +18,13 @@ describe("extension idle and secret safety", () => {
     expect(rendered).toContain("[redacted]");
   });
 
+  it("redacts OAuth-like tokens and cookies even though browser auth is not exposed", () => {
+    const rendered = safeErrorMessage(new Error("access_token=oauth-secret refresh-token=refresh-secret Cookie=session-secret"));
+    expect(rendered).not.toContain("oauth-secret");
+    expect(rendered).not.toContain("refresh-secret");
+    expect(rendered).not.toContain("session-secret");
+  });
+
   it("consumes the authoritative Core usage object without recomputing unavailable values", () => {
     const usage = { totalTokens: null, totalProviderCalls: 7, usageSource: "unavailable", totalDurationMs: null };
     expect(usageSummary({ usage } as any)).toEqual({ tokens: null, modelCalls: 7, usageSource: "Unavailable", durationMs: null });
