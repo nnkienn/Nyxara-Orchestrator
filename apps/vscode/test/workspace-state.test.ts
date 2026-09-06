@@ -32,7 +32,7 @@ describe("workspace Webview state projection", () => {
   });
 
   it.each([
-    ["created", "Analyzing"], ["planning", "Planning"], ["awaiting_plan_approval", "Awaiting approval"], ["executing", "Executing"], ["validating", "Validating"], ["reviewing", "Reviewing"], ["repairing", "Repairing"], ["waiting_for_permission", "Waiting for permission"], ["paused", "Paused"], ["completed", "Completed"], ["failed", "Failed"], ["aborted", "Aborted"],
+    ["created", "Analyzing"], ["planning", "Planning"], ["awaiting_plan_approval", "Awaiting Approval"], ["executing", "Executing"], ["validating", "Validating"], ["reviewing", "Reviewing"], ["repairing", "Repairing"], ["waiting_for_permission", "Waiting for Permission"], ["paused", "Paused"], ["completed", "Completed"], ["failed", "Failed"], ["aborted", "Aborted"],
   ])("maps Core state %s to %s", (status, stage) => {
     const state = build({ plan, snapshot: { workflowId: "w", status, updatedAt: "now", tasks: [] } });
     expect(state.workflow?.stage).toBe(stage);

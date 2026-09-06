@@ -8,6 +8,14 @@ describe("workflow usage accounting", () => {
     expect(normalizeUsage({ inputTokens: 4, outputTokens: 1, usageSource: "estimated" }).usageSource).toBe("estimated");
   });
 
+  it("keeps cache accounting provider-neutral and defines total as processed tokens", () => {
+    expect(normalizeUsage({ inputTokens: 2, outputTokens: 2048, cacheReadTokens: 126000, cacheWriteTokens: 1000, totalTokens: 2050 })).toEqual({
+      inputTokens: 2, outputTokens: 2048, cacheReadTokens: 126000, cacheWriteTokens: 1000, totalTokens: 129050, usageSource: "provider_reported",
+    });
+    // Vendor field names must be normalized by the adapter, not leak into Core.
+    expect(normalizeUsage({ inputTokens: 2, outputTokens: 1, cache_read_input_tokens: 99 })).toMatchObject({ cacheReadTokens: null, totalTokens: 3 });
+  });
+
   it("aggregates roles, tasks, models and safe derived metrics", () => {
     const usage = aggregateWorkflowUsage("wf", [
       { role: "planner", providerId: "p1", requestedModelId: "route/model", resolvedModelId: "model", inputTokens: 10, outputTokens: 5, totalTokens: 15, providerDurationMs: 20 },

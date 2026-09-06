@@ -17,6 +17,7 @@ import {
   type ProviderErrorCode,
 } from "@nyxara/provider-sdk";
 import { knownModelExecutionCapability } from "../execution-capabilities.js";
+import { consumeSse, parseSseJson } from "../sse.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_PROVIDER_ID = "openai-compatible";
@@ -73,6 +74,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
       modelDiscovery: true,
       textGeneration: true,
       toolCalling: true,
+      // Generic compatible gateways do not all implement the OpenAI stream
+      // contract. Only the official OpenAI catalog identity opts in.
+      progressStreaming: this.providerId === "openai",
     };
   }
 
@@ -103,40 +107,29 @@ export class OpenAICompatibleProvider implements ModelProvider {
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const executionOptions = assertExecutionOptionsSupported(request.executionOptions, this.modelCapabilities(request.model)?.execution);
     const maxOutputTokens = boundedOutputTokens(request.maxOutputTokens);
+    const body = {
+      model: request.model,
+      messages: [
+        { role: "user", content: request.prompt },
+        ...(request.conversation?.map((message) => this.serializeMessage(message)) ?? []),
+      ],
+      ...(maxOutputTokens !== undefined ? { max_tokens: maxOutputTokens } : {}),
+      ...(request.tools && request.tools.length > 0 ? {
+        tools: request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
+        tool_choice: "auto",
+      } : {}),
+      ...(request.responseFormat === "json" ? { response_format: { type: "json_object" } } : {}),
+      ...(executionOptions.kind === "openai_reasoning" ? { reasoning_effort: executionOptions.effort } : {}),
+    };
+    if (request.onProgress && this.capabilities().progressStreaming) {
+      return this.generateStreaming(request, body);
+    }
     const payload = await this.request(
       "/chat/completions",
       {
         method: "POST",
-        body: JSON.stringify({
-          model: request.model,
-          messages: [
-            { role: "user", content: request.prompt },
-            ...(request.conversation?.map((message) =>
-              this.serializeMessage(message),
-            ) ?? []),
-          ],
-          stream: false,
-          ...(maxOutputTokens !== undefined ? { max_tokens: maxOutputTokens } : {}),
-          ...(request.tools && request.tools.length > 0
-            ? {
-                tools: request.tools.map((tool) => ({
-                  type: "function",
-                  function: {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.inputSchema,
-                  },
-                })),
-                tool_choice: "auto",
-              }
-            : {}),
-          ...(request.responseFormat === "json"
-            ? { response_format: { type: "json_object" } }
-            : {}),
-          ...(executionOptions.kind === "openai_reasoning"
-            ? { reasoning_effort: executionOptions.effort }
-            : {}),
-        }),
+        body: JSON.stringify({ ...body, stream: false }),
+        ...(request.signal ? { signal: request.signal } : {}),
       },
       "generate",
     );
@@ -167,6 +160,55 @@ export class OpenAICompatibleProvider implements ModelProvider {
         : {}),
       ...(usage ? { usage } : {}),
     };
+  }
+
+  private async generateStreaming(request: GenerateRequest, body: UnknownRecord): Promise<GenerateResponse> {
+    request.onProgress?.({ phase: "request_started" });
+    const response = await this.requestResponse("/chat/completions", {
+      method: "POST",
+      headers: { Accept: "text/event-stream" },
+      body: JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } }),
+      ...(request.signal ? { signal: request.signal } : {}),
+    }, "generate");
+    let id: string | undefined;
+    let model = request.model;
+    let text = "";
+    let finishReason: string | undefined;
+    let usage: GenerateUsage | undefined;
+    let responseStarted = false;
+    let receiving = false;
+    const calls = new Map<number, { id: string; name: string; arguments: string }>();
+    try { await consumeSse(response, this.id, (data) => {
+      const event = parseSseJson(data, this.id);
+      if (!event) return;
+      if (isRecord(event.error)) throw this.invalidResponse("Provider stream failed");
+      if (typeof event.id === "string") id = event.id;
+      if (typeof event.model === "string") model = event.model;
+      if (isRecord(event.usage)) usage = this.normalizeUsage(event.usage);
+      const choice = Array.isArray(event.choices) && event.choices.length > 0 ? this.requireRecord(event.choices[0], "stream choice") : undefined;
+      if (!choice) return;
+      if (!responseStarted) { responseStarted = true; request.onProgress?.({ phase: "response_started" }); }
+      if (typeof choice.finish_reason === "string") finishReason = choice.finish_reason;
+      const delta = isRecord(choice.delta) ? choice.delta : {};
+      if (typeof delta.content === "string") text += delta.content;
+      if (Array.isArray(delta.tool_calls)) for (const raw of delta.tool_calls) {
+        if (!isRecord(raw) || typeof raw.index !== "number") continue;
+        const current = calls.get(raw.index) ?? { id: "", name: "", arguments: "" };
+        const fn = isRecord(raw.function) ? raw.function : {};
+        if (typeof raw.id === "string") current.id += raw.id;
+        if (typeof fn.name === "string") current.name += fn.name;
+        if (typeof fn.arguments === "string") current.arguments += fn.arguments;
+        calls.set(raw.index, current);
+        if (typeof fn.name === "string" && fn.name && current.name === fn.name) request.onProgress?.({ phase: "tool_call_requested", toolName: safeToolName(fn.name) });
+      }
+      if (!receiving && (typeof delta.content === "string" || Array.isArray(delta.tool_calls))) {
+        receiving = true; request.onProgress?.({ phase: "output_receiving" });
+      }
+    }); } catch (error) { throw streamError(error, this.id); }
+    const toolCalls = this.normalizeToolCalls([...calls.values()].map((call) => ({ id: call.id, function: { name: call.name, arguments: call.arguments } })));
+    if (!text && toolCalls.length === 0) throw this.invalidResponse("Provider returned no text content");
+    request.onProgress?.({ phase: "request_completed" });
+    return { ...(id ? { id } : {}), provider: this.id, model, text, ...(toolCalls.length ? { toolCalls } : {}), ...(finishReason ? { finishReason } : {}), ...(usage ? { usage } : {}) };
   }
 
   private serializeMessage(message: ModelConversationMessage): UnknownRecord {
@@ -237,8 +279,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
     init: RequestInit,
     operation: Operation,
   ): Promise<unknown> {
+    const response = await this.requestResponse(path, init, operation);
+    try { return await response.json(); }
+    catch { throw this.invalidResponse("Provider returned invalid JSON"); }
+  }
+
+  private async requestResponse(path: string, init: RequestInit, operation: Operation): Promise<Response> {
     const headers = new Headers(this.headers);
     headers.set("Accept", "application/json");
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
 
     if (init.body !== undefined) {
       headers.set("Content-Type", "application/json");
@@ -258,6 +307,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         signal: init.signal ?? AbortSignal.timeout(30_000),
       });
     } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error;
       if (error instanceof Error && error.name === "TimeoutError") {
         throw new ProviderError("Provider request timed out", { code: "timeout_error", providerId: this.id });
       }
@@ -270,12 +320,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (!response.ok) {
       throw this.httpError(response.status, operation);
     }
-
-    try {
-      return await response.json();
-    } catch {
-      throw this.invalidResponse("Provider returned invalid JSON");
-    }
+    return response;
   }
 
   private async resolveApiKey(): Promise<string | undefined> {
@@ -449,6 +494,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
       });
     }
   }
+}
+
+function isRecord(value: unknown): value is UnknownRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function safeToolName(value: string): string { return /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : "tool"; }
+function streamError(error: unknown, providerId: string): unknown {
+  if (error instanceof ProviderError || error instanceof Error && error.name === "AbortError") return error;
+  return new ProviderError("Provider stream was interrupted", { code: "network_error", providerId });
 }
 
 function boundedOutputTokens(value: number | undefined): number | undefined {

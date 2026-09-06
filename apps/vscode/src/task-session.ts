@@ -40,7 +40,7 @@ export interface TaskExecutionSummary { readonly completed: number; readonly tot
 export interface TaskValidationSummary { readonly status: "passed" | "failed" | "pending" | "unavailable"; readonly steps: readonly { readonly name: string; readonly status: string; readonly durationMs: number | null }[] }
 export interface TaskReviewSummary { readonly status: string; readonly findingCount: number | null; readonly ruleViolationCount: number | null }
 export interface TaskRepairSummary { readonly cycles: number | null; readonly outcome: string | null; readonly durationMs: number | null; readonly tokens: number | null }
-export interface TaskUsageSummary { readonly totalTokens: number | null; readonly providerCalls: number | null; readonly toolCalls: number | null; readonly workflowDurationMs: number | null; readonly repairCycles: number | null }
+export interface TaskUsageSummary { readonly inputTokens?: number | null; readonly outputTokens?: number | null; readonly cacheReadTokens?: number | null; readonly cacheWriteTokens?: number | null; readonly totalTokens: number | null; readonly providerCalls: number | null; readonly toolCalls: number | null; readonly workflowDurationMs: number | null; readonly repairCycles: number | null }
 
 export interface TaskSession {
   readonly id: string;
@@ -150,7 +150,10 @@ export function projectTaskSession(existing: TaskSession, state: WorkspaceViewSt
     ...(validationOccurred ? { validationSummary: { status: validationStatus, steps: state.validation.map((step) => ({ name: step.kind, status: step.status, durationMs: step.durationMs ?? null })) } } : {}),
     ...(state.reviewStatus ? { reviewSummary: { status: state.reviewStatus, findingCount: state.reviewFindingCount ?? null, ruleViolationCount: null } } : {}),
     ...((state.repairCycles ?? 0) > 0 || state.repairUsage ? { repairSummary: { cycles: state.repairCycles, outcome: status === "completed" ? "completed" : status === "failed" ? "failed" : status === "aborted" ? "aborted" : status === "repairing" ? "repairing" : null, durationMs: state.repairUsage?.durationMs ?? null, tokens: state.repairUsage?.tokens ?? null } } : {}),
-    ...(usage ? { usageSummary: { totalTokens: usage.tokens, providerCalls: usage.modelCalls, toolCalls: state.usage?.toolCalls ?? null, workflowDurationMs: usage.durationMs, repairCycles: usage.repairCycles } } : {}),
+    ...(usage ? { usageSummary: {
+      ...(state.performance ? { inputTokens: state.performance.overview.inputTokens, outputTokens: state.performance.overview.outputTokens, cacheReadTokens: state.performance.overview.cacheReadTokens, cacheWriteTokens: state.performance.overview.cacheWriteTokens } : {}),
+      totalTokens: usage.tokens, providerCalls: usage.modelCalls, toolCalls: state.usage?.toolCalls ?? null, workflowDurationMs: usage.durationMs, repairCycles: usage.repairCycles,
+    } } : {}),
     ...(state.performance ? { performanceSummary: state.performance } : {}),
     ...(occurredStages.length ? { occurredStages: [...occurredStages] } : {}),
     ...(workflow?.error && status !== "rejected" ? { failureSummary: { stage: workflow.error.stage, message: workflow.error.message } } : {}),
@@ -189,18 +192,36 @@ export function sanitizeTaskSession(value: unknown): TaskSession | undefined {
   const workflowId = bounded(value.workflowId, 200); if (workflowId) Object.assign(session, { workflowId });
   if (record(value.providerSummary)) { const provider = privacySafe(value.providerSummary.provider, 100); const model = privacySafe(value.providerSummary.model, 200); if (provider) Object.assign(session, { providerSummary: { provider, ...(model ? { model } : {}) } }); }
   const planSummary = sanitizePlan(value.planSummary); if (planSummary) Object.assign(session, { planSummary });
-  const executionSummary = sanitizeExecution(value.executionSummary); if (executionSummary) Object.assign(session, { executionSummary });
-  const validationSummary = sanitizeValidation(value.validationSummary); if (validationSummary) Object.assign(session, { validationSummary });
-  if (record(value.reviewSummary)) { const reviewStatus = privacySafe(value.reviewSummary.status, 80); if (reviewStatus) Object.assign(session, { reviewSummary: { status: reviewStatus, findingCount: count(value.reviewSummary.findingCount), ruleViolationCount: count(value.reviewSummary.ruleViolationCount) } }); }
-  if (record(value.repairSummary)) Object.assign(session, { repairSummary: { cycles: count(value.repairSummary.cycles), outcome: privacySafe(value.repairSummary.outcome, 80) || null, durationMs: count(value.repairSummary.durationMs), tokens: count(value.repairSummary.tokens) } });
-  if (record(value.usageSummary)) Object.assign(session, { usageSummary: { totalTokens: count(value.usageSummary.totalTokens), providerCalls: count(value.usageSummary.providerCalls), toolCalls: count(value.usageSummary.toolCalls), workflowDurationMs: count(value.usageSummary.workflowDurationMs), repairCycles: count(value.usageSummary.repairCycles) } });
-  const performanceSummary = sanitizePerformanceProjection(value.performanceSummary); if (performanceSummary) Object.assign(session, { performanceSummary });
-  // A rejected task has no failure to report; the outcome itself is the message.
-  if (status !== "rejected" && record(value.failureSummary)) { const stage = privacySafe(value.failureSummary.stage, 80); const message = privacySafe(value.failureSummary.message, 240); if (stage && message) Object.assign(session, { failureSummary: { stage, message } }); }
   const occurredStages = Array.isArray(value.occurredStages)
     ? value.occurredStages.slice(0, 8).map((entry) => bounded(entry, 40)).filter((entry) => KNOWN_STAGES.has(entry))
     : undefined;
   if (occurredStages) Object.assign(session, { occurredStages });
+  const executionSummary = sanitizeExecution(value.executionSummary);
+  const executionOccurred = occurredStages?.includes("execution") || Boolean(executionSummary && (executionSummary.completed > 0 || executionSummary.tasks.some((task) => task.status !== "pending")));
+  if (executionSummary && (status !== "rejected" || executionOccurred)) Object.assign(session, { executionSummary });
+  const validationSummary = sanitizeValidation(value.validationSummary);
+  const validationOccurred = occurredStages?.includes("validation") || Boolean(validationSummary?.steps.length);
+  if (validationSummary && (status !== "rejected" || validationOccurred)) Object.assign(session, { validationSummary });
+  if (record(value.reviewSummary)) {
+    const reviewStatus = privacySafe(value.reviewSummary.status, 80);
+    const reviewOccurred = occurredStages?.includes("review") || !["", "pending", "unavailable"].includes(reviewStatus.toLocaleLowerCase());
+    if (reviewStatus && (status !== "rejected" || reviewOccurred)) Object.assign(session, { reviewSummary: { status: reviewStatus, findingCount: count(value.reviewSummary.findingCount), ruleViolationCount: count(value.reviewSummary.ruleViolationCount) } });
+  }
+  if (record(value.repairSummary)) {
+    const repairSummary = { cycles: count(value.repairSummary.cycles), outcome: privacySafe(value.repairSummary.outcome, 80) || null, durationMs: count(value.repairSummary.durationMs), tokens: count(value.repairSummary.tokens) };
+    const repairOccurred = occurredStages?.includes("repair") || (repairSummary.cycles ?? 0) > 0 || repairSummary.durationMs !== null || repairSummary.tokens !== null;
+    if (status !== "rejected" || repairOccurred) Object.assign(session, { repairSummary });
+  }
+  if (record(value.usageSummary)) Object.assign(session, { usageSummary: {
+    ...(Object.hasOwn(value.usageSummary, "inputTokens") ? { inputTokens: count(value.usageSummary.inputTokens) } : {}),
+    ...(Object.hasOwn(value.usageSummary, "outputTokens") ? { outputTokens: count(value.usageSummary.outputTokens) } : {}),
+    ...(Object.hasOwn(value.usageSummary, "cacheReadTokens") ? { cacheReadTokens: count(value.usageSummary.cacheReadTokens) } : {}),
+    ...(Object.hasOwn(value.usageSummary, "cacheWriteTokens") ? { cacheWriteTokens: count(value.usageSummary.cacheWriteTokens) } : {}),
+    totalTokens: count(value.usageSummary.totalTokens), providerCalls: count(value.usageSummary.providerCalls), toolCalls: count(value.usageSummary.toolCalls), workflowDurationMs: count(value.usageSummary.workflowDurationMs), repairCycles: count(value.usageSummary.repairCycles),
+  } });
+  const performanceSummary = sanitizePerformanceProjection(value.performanceSummary); if (performanceSummary) Object.assign(session, { performanceSummary });
+  // A rejected task has no failure to report; the outcome itself is the message.
+  if (status !== "rejected" && record(value.failureSummary)) { const stage = privacySafe(value.failureSummary.stage, 80); const message = privacySafe(value.failureSummary.message, 240); if (stage && message) Object.assign(session, { failureSummary: { stage, message } }); }
   if (status === "interrupted" || value.interrupted === true) Object.assign(session, { interrupted: true });
   return session;
 }
@@ -209,9 +230,11 @@ const KNOWN_STAGES = new Set(["planning", "approval", "execution", "validation",
 
 /** Deterministically identifies a pre-Rejected history record for a user rejection. */
 function isLegacyRejection(value: Record<string, any>): boolean {
-  const message = record(value.failureSummary) ? String(value.failureSummary.message ?? "") : "";
+  const messages = [value.reason, record(value.failureSummary) ? value.failureSummary.message : undefined]
+    .filter((message): message is string => typeof message === "string")
+    .map((message) => message.trim().toLocaleLowerCase());
   const planStatus = record(value.planSummary) ? value.planSummary.approvalStatus : undefined;
-  return message.includes(LEGACY_PLAN_REJECTED_MESSAGE) || (planStatus === "rejected" && !record(value.executionSummary));
+  return messages.includes(LEGACY_PLAN_REJECTED_MESSAGE.toLocaleLowerCase()) || (planStatus === "rejected" && !record(value.executionSummary));
 }
 
 function sanitizePlan(value: unknown): TaskPlanSummary | undefined {

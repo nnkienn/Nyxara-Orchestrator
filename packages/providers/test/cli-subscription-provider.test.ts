@@ -174,7 +174,7 @@ describe("CliSubscriptionProvider", () => {
     const process = runner(ok(JSON.stringify({ response: envelope, stats: {} })));
     const provider = new CliSubscriptionProvider({ kind: "gemini-cli", runner: process });
     await expect(provider.generate({ model: "default", prompt: "work" })).resolves.toMatchObject({ provider: "gemini-cli", finishReason: "stop" });
-    expect(process.run.mock.calls[0]?.[0].args).toEqual(expect.arrayContaining(["--output-format", "json", "--approval-mode", "plan", "--allowed-tools", ""]));
+    expect(process.run.mock.calls[0]?.[0].args).toEqual(expect.arrayContaining(["--output-format", "stream-json", "--approval-mode", "plan", "--allowed-tools", ""]));
   });
 
   it("maps missing binaries, login failures, and subscription limits without leaking CLI output", async () => {
@@ -218,19 +218,49 @@ describe("CliSubscriptionProvider", () => {
     expect(serialized).not.toContain("Thinking");
   });
 
-  it("reports no progress streaming for CLIs that only return a final payload", async () => {
+  it("declares documented JSONL progress for Claude Code and Gemini CLI", async () => {
     const claude = new CliSubscriptionProvider({ kind: "claude-code-cli", runner: runner(), claudeModelCatalog: claudeCatalog() });
     const gemini = new CliSubscriptionProvider({ kind: "gemini-cli", runner: runner() });
-    expect(claude.capabilities().progressStreaming).toBe(false);
-    expect(gemini.capabilities().progressStreaming).toBe(false);
+    expect(claude.capabilities().progressStreaming).toBe(true);
+    expect(gemini.capabilities().progressStreaming).toBe(true);
   });
 
-  it("does not call the progress sink for a non-streaming CLI transport", async () => {
+  it("uses only structured Claude JSONL phases and ignores human spinner output", async () => {
     const process = runner(ok(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })), ok(JSON.stringify({ result: envelope, usage: { input_tokens: 5, output_tokens: 1 } })));
     const provider = new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process, claudeModelCatalog: claudeCatalog() });
     await provider.listModels();
     const onProgress = vi.fn();
     await provider.generate({ model: "default", prompt: "work", onProgress });
-    expect(onProgress).not.toHaveBeenCalled();
+    expect(onProgress.mock.calls.map(([event]) => event.phase)).toEqual(["request_started", "request_completed"]);
+  });
+
+  it("consumes documented Claude and Gemini JSONL without exposing raw events", async () => {
+    const claudeLines = [
+      "\u001b[2Kspinner private-account",
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "thinking", thinking: "hidden" }] } }),
+      JSON.stringify({ type: "result", result: envelope, usage: { input_tokens: 2, cache_read_input_tokens: 126000, cache_creation_input_tokens: 1000, output_tokens: 2048 } }),
+    ];
+    const claudeRunner: CliProcessRunner = { run: async (input) => { for (const line of claudeLines) input.onOutputLine?.(line); return ok(claudeLines.join("\n")); } };
+    const claude = new CliSubscriptionProvider({ kind: "claude-code-cli", runner: claudeRunner, claudeModelCatalog: claudeCatalog() });
+    const claudeProgress: any[] = [];
+    const claudeResponse = await claude.generate({ model: "sonnet", prompt: "x", onProgress: (event) => claudeProgress.push(event) });
+    expect(claudeResponse.usage).toEqual({ inputTokens: 2, outputTokens: 2048, cacheReadTokens: 126000, cacheWriteTokens: 1000, totalTokens: 129050 });
+    expect(claudeProgress.map((event) => event.phase)).toEqual(["request_started", "response_started", "request_completed"]);
+    expect(JSON.stringify(claudeProgress)).not.toMatch(/hidden|private-account|assistant/);
+
+    const geminiLines = [JSON.stringify({ type: "init" }), JSON.stringify({ type: "message", role: "assistant", content: "raw private result" }), JSON.stringify({ type: "result", response: envelope, stats: {} })];
+    const geminiRunner: CliProcessRunner = { run: async (input) => { for (const line of geminiLines) input.onOutputLine?.(line); return ok(geminiLines.join("\n")); } };
+    const gemini = new CliSubscriptionProvider({ kind: "gemini-cli", runner: geminiRunner });
+    const geminiProgress: any[] = [];
+    await gemini.generate({ model: "default", prompt: "x", onProgress: (event) => geminiProgress.push(event) });
+    expect(geminiProgress.map((event) => event.phase)).toEqual(["request_started", "output_receiving", "request_completed"]);
+    expect(JSON.stringify(geminiProgress)).not.toContain("raw private result");
+  });
+
+  it("cancels a running CLI process through the existing AbortSignal", async () => {
+    const controller = new AbortController();
+    const pending = new NodeCliProcessRunner().run({ command: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"], cwd: tmpdir(), timeoutMs: 5_000, maxOutputBytes: 1024, signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError", code: "ABORT_ERR" });
   });
 });

@@ -45,6 +45,8 @@
     return value;
   };
   const formatDuration = (ms) => ms == null ? "-" : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+  const formatSummaryDuration = (ms) => ms == null ? null : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`;
+  const formatHistoryDuration = (ms) => ms == null ? null : `${Math.max(1, Math.round(ms / 1000))}s`;
   const formatNumber = (value) => value == null ? "-" : Number(value).toLocaleString();
   const formatBytes = (value) => value == null || !Number.isFinite(value) || value < 0 ? "-" : value < 1024 ? `${Math.round(value)} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
   const formatCost = (amount, currency) => {
@@ -59,11 +61,12 @@
   const elapsedLabel = (startedAt) => {
     const started = Date.parse(startedAt || "");
     if (!Number.isFinite(started)) return null;
-    const seconds = Math.max(0, Math.round((Date.now() - started) / 1000));
+    const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
     return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   };
   const outcomeOf = (task) => task.status === "rejected" ? "rejected" : task.status;
   const outcomeLabel = (outcome) => outcome === "rejected" ? "Plan Rejected" : outcome === "completed" ? "Completed" : friendly(outcome);
+  const historyOutcomeLabel = (outcome) => outcome === "rejected" ? "Rejected" : outcomeLabel(outcome);
   /** Rejection and abort are neutral: red error styling is reserved for real failures. */
   const outcomeClass = (outcome) => outcome === "completed" ? "outcome-success" : outcome === "failed" ? "outcome-failure" : "outcome-neutral";
   const stageOccurred = (stages, stage) => Array.isArray(stages) && stages.includes(stage);
@@ -71,6 +74,7 @@
   const workflowStatus = () => state.workflow && state.workflow.status;
   const isTerminal = () => !!state.completion;
   const afterApproval = () => !!state.workflow && !["created", "planning", "awaiting_plan_approval"].includes(state.workflow.status);
+  const liveDisclosureKey = (name) => `${name}:${state.workflow && state.workflow.id || state.plan && state.plan.id || "task"}`;
   const historyState = () => state.history || { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "all" };
   const terminalHistoryStatus = (status) => ["completed", "failed", "aborted", "rejected", "interrupted"].includes(status);
   const hasPerformance = (projection) => {
@@ -98,10 +102,11 @@
     const head = node("span", "history-row-head");
     head.append(node("span", "history-title", task.title), node("span", "history-time", relativeTime(task.updatedAt)));
     // Compact row: outcome plus at most two metrics. Plan content never appears here.
-    const meta = [outcomeLabel(outcomeOf(task))];
+    const outcome = outcomeOf(task);
+    const meta = [historyOutcomeLabel(outcome)];
     const usage = task.performanceSummary ? task.performanceSummary.overview : task.usageSummary;
-    if (usage && (usage.totalTokens != null)) meta.push(`${compactTokens(usage.totalTokens)} tokens`);
-    if (usage && (usage.workflowDurationMs != null)) meta.push(formatDuration(usage.workflowDurationMs));
+    if (outcome !== "rejected" && usage && (usage.totalTokens != null)) meta.push(`${compactTokens(usage.totalTokens)} tokens`);
+    if (outcome !== "rejected" && usage && (usage.workflowDurationMs != null)) meta.push(formatHistoryDuration(usage.workflowDurationMs));
     if (includeWorkspace) meta.push(task.workspaceIdentity.label);
     value.append(head, node("span", `history-meta status-${task.status}`, meta.join(" · ")));
     value.addEventListener("click", () => vscode.postMessage({ type: "openTask", taskId: task.id }));
@@ -130,6 +135,7 @@
     const value = node("details", "section-disclosure");
     if (expanded) value.setAttribute("open", "true");
     const summary = node("summary", "section-disclosure-title");
+    summary.setAttribute("aria-expanded", String(expanded));
     summary.append(node("span", "", title));
     if (meta) summary.append(node("span", "muted section-disclosure-meta", meta));
     summary.addEventListener("click", () => {
@@ -499,7 +505,7 @@
   function renderHistoricalPlanSummary(task) {
     if (!task.planSummary) return;
     const count = task.planSummary.tasks.length;
-    const section = disclosure(`history-plan:${task.id}`, "Implementation Plan", `${count} ${count === 1 ? "task" : "tasks"}`, false);
+    const section = disclosure(`history-plan:${task.id}`, "Plan", `${count} ${count === 1 ? "task" : "tasks"}`, false);
     const body = node("div", "plan-card-body");
     historicalPlanBody(task, body);
     section.append(body);
@@ -526,15 +532,15 @@
     if (task.failureSummary && outcome !== "rejected") summaryCard.append(node("p", "failed", task.failureSummary.message));
     const usage = task.usageSummary;
     const overview = task.performanceSummary ? task.performanceSummary.overview : undefined;
-    const tokenParts = overview ? [
+    const tokenParts = outcome !== "rejected" && overview ? [
       overview.inputTokens == null ? null : `${compactTokens(overview.inputTokens)} input`,
       overview.cacheWriteTokens ? `${compactTokens(overview.cacheWriteTokens)} cache write` : null,
       overview.cacheReadTokens ? `${compactTokens(overview.cacheReadTokens)} cache read` : null,
       overview.outputTokens == null ? null : `${compactTokens(overview.outputTokens)} output`,
     ].filter(Boolean) : [];
-    renderUsageSummary(summaryCard, [
+    renderUsageSummary(summaryCard, outcome === "rejected" ? [] : [
       tokenParts.length ? tokenParts.join(" · ") : (usage && usage.totalTokens != null ? `${compactTokens(usage.totalTokens)} tokens` : null),
-      usage && usage.workflowDurationMs != null ? formatDuration(usage.workflowDurationMs) : null,
+      usage && usage.workflowDurationMs != null ? formatSummaryDuration(usage.workflowDurationMs) : null,
       task.providerSummary ? `${task.providerSummary.provider}${task.providerSummary.model ? ` · ${task.providerSummary.model}` : ""}` : null,
     ]);
     timeline.append(summaryCard);
@@ -555,9 +561,9 @@
       section.append(tasks);
       timeline.append(section);
     }
-    if (task.validationSummary && task.validationSummary.steps.length) {
+    if (task.validationSummary && (stageOccurred(stages, "validation") || task.validationSummary.steps.length)) {
       const failed = task.validationSummary.status === "failed";
-      const section = disclosure(`history-validation:${task.id}`, "Validation", friendly(task.validationSummary.status), failed);
+      const section = disclosure(`history-validation:${task.id}`, "Validation", friendly(task.validationSummary.status), false);
       task.validationSummary.steps.forEach((step) => {
         const row = node("div", "step");
         row.append(node("span", "", friendly(step.name)), node("span", step.status === "passed" ? "passed" : ["failed", "timed_out", "errored"].includes(step.status) ? "failed" : "muted", `${friendly(step.status)}${step.durationMs == null ? "" : ` · ${formatDuration(step.durationMs)}`}`));
@@ -565,20 +571,20 @@
       });
       timeline.append(section);
     }
-    if (task.reviewSummary) {
-      const section = disclosure(`history-review:${task.id}`, "Review", friendly(task.reviewSummary.status), task.reviewSummary.status === "failed");
+    if (task.reviewSummary && (stageOccurred(stages, "review") || !["pending", "unavailable"].includes(task.reviewSummary.status))) {
+      const section = disclosure(`history-review:${task.id}`, "Review", friendly(task.reviewSummary.status), false);
       section.append(node("p", task.reviewSummary.status === "passed" ? "passed" : task.reviewSummary.status === "failed" ? "failed" : "muted", friendly(task.reviewSummary.status)));
       if (task.reviewSummary.findingCount != null) section.append(node("p", "muted", `${task.reviewSummary.findingCount} structured finding${task.reviewSummary.findingCount === 1 ? "" : "s"}`));
       timeline.append(section);
     }
-    if (task.repairSummary && task.repairSummary.cycles) {
+    if (task.repairSummary && (stageOccurred(stages, "repair") || task.repairSummary.cycles > 0 || task.repairSummary.durationMs != null || task.repairSummary.tokens != null)) {
       const section = disclosure(`history-repair:${task.id}`, "Repair", `${task.repairSummary.cycles} ${task.repairSummary.cycles === 1 ? "cycle" : "cycles"}`, false);
       section.append(node("p", "", `${task.repairSummary.cycles} cycle${task.repairSummary.cycles === 1 ? "" : "s"} · ${friendly(task.repairSummary.outcome || "unavailable")}`));
       timeline.append(section);
     }
     if (terminalHistoryStatus(task.status) && task.id !== history.activeTaskId) {
       const actions = node("div", "history-detail-actions");
-      if (hasTaskPerformance(task)) actions.append(button("View Performance", "secondary", "openPerformance", { taskId: task.id }));
+      if (outcome !== "rejected" && hasTaskPerformance(task)) actions.append(button("View Performance", "secondary", "openPerformance", { taskId: task.id }));
       actions.append(button("Edit Requirement", "secondary", "editRequirement", { taskId: task.id }));
       actions.append(button("Delete Task", "danger", "deleteTask", { taskId: task.id }));
       if (!history.activeTaskId) actions.append(button("New Task", "primary", "newTask"));
@@ -601,15 +607,16 @@
   function renderLiveStage() {
     const workflow = state.workflow;
     if (!workflow || !workflow.active || isTerminal()) return;
-    if (workflow.status === "awaiting_plan_approval" || workflow.permission) return;
     const value = node("section", "live-stage");
     const head = node("div", "live-stage-head");
     const elapsed = elapsedLabel(workflow.stageStartedAt);
-    head.append(node("span", "spinner"), node("span", "live-stage-name", elapsed ? `${workflow.stage} · ${elapsed}` : workflow.stage));
+    const timed = workflow.status !== "awaiting_plan_approval" && elapsed;
+    if (workflow.status !== "awaiting_plan_approval" && workflow.status !== "waiting_for_permission") head.append(node("span", "spinner"));
+    head.append(node("span", "live-stage-name", timed ? `${workflow.stage} · ${elapsed}` : workflow.stage));
     value.append(head);
-    if (workflow.providerLabel) value.append(node("div", "muted live-stage-provider", workflow.providerLabel));
-    const waiting = workflow.progressLabel || (elapsed ? `Waiting for model response · ${elapsed}` : "Waiting for model response");
-    value.append(node("div", "muted live-stage-detail", waiting));
+    const providerWait = ["planning", "executing", "running", "reviewing", "repairing"].includes(workflow.status);
+    if (providerWait && workflow.providerLabel) value.append(node("div", "muted live-stage-provider", workflow.providerLabel));
+    if (providerWait) value.append(node("div", "muted live-stage-detail", workflow.progressLabel || "Waiting for provider response..."));
     if (workflow.progress && workflow.progress.total) {
       value.append(node("div", "muted live-stage-detail", `Task ${Math.min(workflow.progress.completed + 1, workflow.progress.total)} / ${workflow.progress.total}`));
     }
@@ -677,7 +684,7 @@
       timeline.append(value);
       return;
     }
-    const collapsed = disclosure("plan", "Implementation Plan", meta, false);
+    const collapsed = disclosure(liveDisclosureKey("plan"), "Implementation Plan", meta, false);
     const body = node("div", "plan-card-body");
     planBody(body);
     collapsed.append(body);
@@ -691,7 +698,7 @@
   function renderExecutionSummary() {
     const workflow = state.workflow;
     if (!workflow || workflow.status === "awaiting_plan_approval" || isTerminal()) return;
-    if (!stageOccurred(workflow.occurredStages, "execution") && !afterApproval()) return;
+    if (!stageOccurred(workflow.occurredStages, "execution") && !workflow.tasks.some((task) => task.status !== "pending")) return;
     const value = card(workflow.stage);
     if (afterApproval()) value.append(node("div", "approved-line", "Approved ✓"));
     const grid = node("div", "stage-grid");
@@ -708,7 +715,7 @@
     const done = workflow.tasks.filter((task) => task.status === "completed");
     const remaining = workflow.tasks.filter((task) => task.status !== "completed");
     if (done.length) {
-      const completedSection = disclosure("execution-completed", `${done.length} ${done.length === 1 ? "task" : "tasks"} completed`, "", false);
+      const completedSection = disclosure(liveDisclosureKey("execution-completed"), `${done.length} ${done.length === 1 ? "task" : "tasks"} completed`, "", false);
       const list = node("ul", "workflow-tasks");
       done.forEach((task) => { const item = node("li"); item.append(node("span", "passed", "✓"), node("span", "", task.title)); list.append(item); });
       completedSection.append(list);
@@ -796,29 +803,35 @@
     if (rejected) {
       value.append(node("p", "", "No repository changes were made."));
       const actions = [];
-      if (state.plan) actions.push(expandButton("View Plan", "secondary", "plan"));
+      if (state.plan) actions.push(expandButton("View Plan", "secondary", liveDisclosureKey("plan")));
       actions.push(button("Edit Requirement", "secondary", "editRequirement"), button("New Task", "primary", "newTask"));
       addActions(value, actions);
       timeline.append(value);
       return;
     }
-    if (!completed && state.workflow && state.workflow.error) {
-      value.append(node("p", outcome === "failed" ? "failed" : "muted", state.workflow.error.message));
-    }
     const lines = [];
-    if (state.completion.changedFiles != null && stageOccurred(stages, "execution")) lines.push(`${formatNumber(state.completion.changedFiles)} files changed`);
-    if (stageOccurred(stages, "validation") && state.validation.length) {
-      lines.push(state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) ? "Validation failed" : "Validation passed");
+    if (outcome === "aborted") value.append(node("p", "", "Workflow stopped by user."));
+    if (outcome === "interrupted") value.append(node("p", "", "Workflow interrupted."));
+    if (!completed && outcome !== "aborted" && state.workflow && state.workflow.error) {
+      const message = state.workflow.error.message;
+      const standardValidationFailure = stageOccurred(stages, "validation") && state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) && message.toLocaleLowerCase() === "validation failed.";
+      if (!standardValidationFailure) value.append(node("p", outcome === "failed" ? "failed" : "muted", message));
     }
-    if (stageOccurred(stages, "review") && state.reviewStatus) lines.push(`Review ${friendly(state.reviewStatus).toLowerCase()}`);
+    if (outcome !== "aborted" && state.completion.changedFiles != null && stageOccurred(stages, "execution")) lines.push(`${formatNumber(state.completion.changedFiles)} files changed`);
+    if (outcome !== "aborted" && stageOccurred(stages, "validation") && state.validation.length) {
+      lines.push(state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) ? "Validation failed" : "Validation passed");
+      const failedTests = state.validation.filter((step) => /tests?/i.test(step.kind) && ["failed", "timed_out", "errored"].includes(step.status));
+      if (failedTests.length) lines.push(`Tests: ${failedTests.length} failed`);
+    }
+    if (outcome !== "aborted" && stageOccurred(stages, "review") && state.reviewStatus) lines.push(`Review ${friendly(state.reviewStatus).toLowerCase()}`);
     if (lines.length) value.append(node("p", "muted completion-lines", lines.join(" · ")));
     const overview = state.performance ? state.performance.overview : { totalTokens: state.completion.tokens, workflowDurationMs: state.completion.durationMs, providerCalls: state.completion.modelCalls, toolCalls: null };
     renderUsageSummary(value, [
       (state.completion.tokenParts && state.completion.tokenParts.length ? state.completion.tokenParts.join(" · ") : (compactTokens(overview.totalTokens) ? `${compactTokens(overview.totalTokens)} tokens` : null)),
-      overview.workflowDurationMs == null ? null : formatDuration(overview.workflowDurationMs),
+      overview.workflowDurationMs == null ? null : formatSummaryDuration(overview.workflowDurationMs),
     ]);
     const actions = [];
-    if (stages.length) actions.push(expandButton("View Details", "secondary", "terminal-details"));
+    if (hasTerminalDetails(stages)) actions.push(expandButton("View Details", "secondary", liveDisclosureKey("terminal-details")));
     if (hasPerformance(state.performance)) actions.push(button("View Performance", "secondary", "openPerformance"));
     if (outcome === "failed" && state.prompt) actions.push(button("Try Again", "primary", "retryPlanning"), button("Choose Model", "secondary", "openSettingsSection", { section: "modelsRoles" }));
     actions.push(button("New Task", completed ? "primary" : "secondary", "newTask"));
@@ -827,12 +840,31 @@
     renderTerminalDetails(stages);
   }
 
+  function hasTerminalDetails(stages) {
+    const workflow = state.workflow;
+    return (stageOccurred(stages, "execution") && !!workflow)
+      || (stageOccurred(stages, "validation") && state.validation.length > 0)
+      || (stageOccurred(stages, "review") && !!state.reviewStatus)
+      || (stageOccurred(stages, "repair") && state.repairCycles > 0);
+  }
+
   function renderTerminalDetails(stages) {
-    if (!stages.length) return;
+    if (!hasTerminalDetails(stages)) return;
     const failedValidation = state.validation.filter((step) => ["failed", "timed_out", "errored"].includes(step.status));
-    const details = disclosure("terminal-details", "Details", "", false);
+    const details = disclosure(liveDisclosureKey("terminal-details"), "Details", "", false);
+    if (stageOccurred(stages, "execution") && state.workflow) {
+      const progress = state.workflow.progress;
+      const meta = progress && progress.total > 0 ? `${progress.completed} / ${progress.total}` : "Started";
+      const section = disclosure(liveDisclosureKey("terminal-execution"), "Execution", meta, false);
+      if (state.workflow.tasks.length) {
+        const tasks = node("ul", "workflow-tasks");
+        state.workflow.tasks.forEach((task) => { const item = node("li"); item.append(node("span", task.status === "completed" ? "passed" : task.status === "failed" ? "failed" : "muted", task.status === "completed" ? "✓" : task.status === "failed" ? "✕" : "○"), node("span", "", `${task.title} — ${friendly(task.status)}`)); tasks.append(item); });
+        section.append(tasks);
+      }
+      details.append(section);
+    }
     if (stageOccurred(stages, "validation") && state.validation.length) {
-      const section = disclosure("terminal-validation", "Validation", failedValidation.length ? "Failed" : "Passed", failedValidation.length > 0);
+      const section = disclosure(liveDisclosureKey("terminal-validation"), "Validation", failedValidation.length ? "Failed" : "Passed", failedValidation.length > 0);
       state.validation.forEach((step) => {
         const row = node("div", "step");
         const failed = ["failed", "timed_out", "errored"].includes(step.status);
@@ -842,12 +874,12 @@
       details.append(section);
     }
     if (stageOccurred(stages, "review") && state.reviewStatus) {
-      const section = disclosure("terminal-review", "Review", friendly(state.reviewStatus), state.reviewStatus === "failed");
+      const section = disclosure(liveDisclosureKey("terminal-review"), "Review", friendly(state.reviewStatus), state.reviewStatus === "failed");
       section.append(node("p", state.reviewStatus === "passed" ? "passed" : state.reviewStatus === "failed" ? "failed" : "muted", friendly(state.reviewStatus)));
       details.append(section);
     }
     if (stageOccurred(stages, "repair") && state.repairCycles > 0) {
-      const section = disclosure("terminal-repair", "Repair", `${state.repairCycles} ${state.repairCycles === 1 ? "cycle" : "cycles"}`, false);
+      const section = disclosure(liveDisclosureKey("terminal-repair"), "Repair", `${state.repairCycles} ${state.repairCycles === 1 ? "cycle" : "cycles"}`, false);
       section.append(node("p", "muted", `${state.repairCycles} ${state.repairCycles === 1 ? "cycle" : "cycles"}`));
       details.append(section);
     }

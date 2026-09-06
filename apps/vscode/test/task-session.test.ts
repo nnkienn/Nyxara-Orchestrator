@@ -28,7 +28,7 @@ describe("TaskSession projection", () => {
     expect(projected.validationSummary).toEqual({ status: "passed", steps: [{ name: "typecheck", status: "passed", durationMs: 12.25 }] });
     expect(projected.reviewSummary).toEqual({ status: "passed", findingCount: 2, ruleViolationCount: null });
     expect(projected.repairSummary).toEqual({ cycles: 1, outcome: "completed", durationMs: 40.5, tokens: 6 });
-    expect(projected.usageSummary).toEqual({ totalTokens: 7073, providerCalls: 4, toolCalls: 9, workflowDurationMs: 20600.5, repairCycles: 1 });
+    expect(projected.usageSummary).toEqual({ inputTokens: 8, outputTokens: 2, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: 7073, providerCalls: 4, toolCalls: 9, workflowDurationMs: 20600.5, repairCycles: 1 });
     expect(projected.performanceSummary?.roles[0]).toMatchObject({ providerConfigId: "removed-provider", providerName: "OpenAI Work", requestedModelId: "route/gpt", resolvedModelId: "gpt" });
     expect(JSON.stringify(projected)).not.toContain("not persisted");
   });
@@ -64,6 +64,25 @@ describe("TaskSession projection", () => {
     });
     expect(legacy?.status).toBe("rejected");
     expect(legacy?.failureSummary).toBeUndefined();
+  });
+
+  it("maps a legacy reason field to Rejected and removes fixed-template stages that never occurred", () => {
+    const legacy = sanitizeTaskSession({
+      ...base,
+      status: "failed",
+      reason: "Plan rejected by user",
+      planSummary: { objective: "Objective", approvalStatus: "rejected", tasks: [], risks: [] },
+      executionSummary: { completed: 0, total: 0, tasks: [] },
+      validationSummary: { status: "pending", steps: [] },
+      reviewSummary: { status: "pending", findingCount: null, ruleViolationCount: null },
+      repairSummary: { cycles: 0, outcome: null, durationMs: null, tokens: null },
+      occurredStages: ["planning", "approval"],
+    });
+    expect(legacy?.status).toBe("rejected");
+    expect(legacy?.executionSummary).toBeUndefined();
+    expect(legacy?.validationSummary).toBeUndefined();
+    expect(legacy?.reviewSummary).toBeUndefined();
+    expect(legacy?.repairSummary).toBeUndefined();
   });
 
   it("keeps a genuine failure classified as failed", () => {

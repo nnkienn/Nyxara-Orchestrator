@@ -7,10 +7,12 @@ import {
   type ModelInfo,
   type ModelCapabilities,
   type ModelProvider,
+  type ModelToolCall,
   type ProviderCapabilities,
   type ProviderErrorCode,
 } from "@nyxara/provider-sdk";
 import { knownModelExecutionCapability } from "../execution-capabilities.js";
+import { consumeSse, parseSseJson } from "../sse.js";
 
 export interface GeminiProviderConfig {
   readonly id?: string;
@@ -45,7 +47,7 @@ export class GeminiProvider implements ModelProvider {
   }
 
   capabilities(): ProviderCapabilities {
-    return { modelDiscovery: true, textGeneration: true, structuredOutput: true, toolCalling: true };
+    return { modelDiscovery: true, textGeneration: true, structuredOutput: true, toolCalling: true, progressStreaming: true };
   }
 
   async listModels(): Promise<ModelInfo[]> {
@@ -103,9 +105,7 @@ export class GeminiProvider implements ModelProvider {
         contents.push({ role: "user", parts: [{ functionResponse: { name: message.toolResult.name, response: message.toolResult.error ? { error: message.toolResult.error } : { result: message.toolResult.result ?? null } } }] });
       }
     }
-    const payload = record(await this.request(`/models/${encodeURIComponent(modelId)}:generateContent`, {
-      method: "POST",
-      body: JSON.stringify({
+    const body = {
         contents,
         ...(input.tools?.length ? { tools: [{ functionDeclarations: input.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })) }] } : {}),
         ...(input.responseFormat === "json" || executionOptions.kind !== "provider_default" || maxOutputTokens !== undefined ? { generationConfig: {
@@ -114,13 +114,18 @@ export class GeminiProvider implements ModelProvider {
           ...(executionOptions.kind === "gemini_thinking_budget" ? { thinkingConfig: { thinkingBudget: executionOptions.budgetTokens } } : {}),
           ...(executionOptions.kind === "gemini_thinking_level" ? { thinkingConfig: { thinkingLevel: executionOptions.level.toUpperCase() } } : {}),
         } } : {}),
-      }),
+    };
+    if (input.onProgress) return this.generateStreaming(input, modelId, body);
+    const payload = record(await this.request(`/models/${encodeURIComponent(modelId)}:generateContent`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      ...(input.signal ? { signal: input.signal } : {}),
     }, "generate"));
     const candidate = record(Array.isArray(payload.candidates) ? payload.candidates[0] : undefined);
     const content = record(candidate.content);
     if (!Array.isArray(content.parts)) throw this.invalidResponse("Provider returned no content");
     const parts = content.parts.map(record);
-    const text = parts.map((part) => typeof part.text === "string" ? part.text : "").filter(Boolean).join("\n");
+    const text = parts.map((part) => part.thought !== true && typeof part.text === "string" ? part.text : "").filter(Boolean).join("\n");
     const toolCalls = parts.flatMap((part) => {
       const call = record(part.functionCall);
       if (typeof call.name !== "string" || !call.name) return [];
@@ -147,6 +152,52 @@ export class GeminiProvider implements ModelProvider {
     };
   }
 
+  private async generateStreaming(input: GenerateRequest, modelId: string, body: JsonRecord): Promise<GenerateResponse> {
+    input.onProgress?.({ phase: "request_started" });
+    const response = await this.requestResponse(`/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse`, {
+      method: "POST",
+      headers: { Accept: "text/event-stream" },
+      body: JSON.stringify(body),
+      ...(input.signal ? { signal: input.signal } : {}),
+    }, "generate");
+    let text = "";
+    let responseModel = input.model;
+    let finishReason: string | undefined;
+    let usage: GenerateResponse["usage"];
+    let started = false;
+    let receiving = false;
+    const toolCalls: ModelToolCall[] = [];
+    try { await consumeSse(response, this.id, (data) => {
+      const payload = parseSseJson(data, this.id);
+      if (!payload) return;
+      if (isRecord(payload.error)) throw new ProviderError("Provider stream failed", { code: "provider_error", providerId: this.id });
+      if (!started) { started = true; input.onProgress?.({ phase: "response_started" }); }
+      if (typeof payload.modelVersion === "string") responseModel = payload.modelVersion;
+      const candidate = record(Array.isArray(payload.candidates) ? payload.candidates[0] : undefined);
+      if (typeof candidate.finishReason === "string") finishReason = candidate.finishReason;
+      const parts = Array.isArray(record(candidate.content).parts) ? (record(candidate.content).parts as unknown[]).map(record) : [];
+      for (const part of parts) {
+        if (part.thought !== true && typeof part.text === "string") text += part.text;
+        const call = record(part.functionCall);
+        if (typeof call.name === "string" && call.name) {
+          const id = `gemini-call-${++this.toolCallSequence}`;
+          if (typeof part.thoughtSignature === "string" && part.thoughtSignature) this.rememberThoughtSignature(id, part.thoughtSignature);
+          toolCalls.push({ id, name: call.name, arguments: call.args ?? {} });
+          input.onProgress?.({ phase: "tool_call_requested", toolName: safeToolName(call.name) });
+        }
+      }
+      if (!receiving && (parts.some((part) => part.thought !== true && typeof part.text === "string") || toolCalls.length)) { receiving = true; input.onProgress?.({ phase: "output_receiving" }); }
+      const rawUsage = record(payload.usageMetadata);
+      const inputTokens = finiteNumber(rawUsage.promptTokenCount);
+      const outputTokens = finiteNumber(rawUsage.candidatesTokenCount);
+      const totalTokens = finiteNumber(rawUsage.totalTokenCount);
+      if (inputTokens !== undefined || outputTokens !== undefined || totalTokens !== undefined) usage = { ...(inputTokens !== undefined ? { inputTokens } : {}), ...(outputTokens !== undefined ? { outputTokens } : {}), ...(totalTokens !== undefined ? { totalTokens } : {}) };
+    }); } catch (error) { throw streamError(error, this.id); }
+    if (!text && toolCalls.length === 0) throw this.invalidResponse("Provider returned no text or tool calls");
+    input.onProgress?.({ phase: "request_completed" });
+    return { provider: this.id, model: responseModel, text, ...(toolCalls.length ? { toolCalls } : {}), ...(finishReason ? { finishReason } : {}), ...(usage ? { usage } : {}) };
+  }
+
   private rememberThoughtSignature(toolCallId: string, signature: string): void {
     this.thoughtSignaturesByToolCallId.set(toolCallId, signature);
     while (this.thoughtSignaturesByToolCallId.size > 256) {
@@ -157,15 +208,22 @@ export class GeminiProvider implements ModelProvider {
   }
 
   private async request(path: string, init: RequestInit, operation: "list_models" | "generate"): Promise<unknown> {
+    const response = await this.requestResponse(path, init, operation);
+    try { return await response.json(); } catch { throw this.invalidResponse("Provider returned invalid JSON"); }
+  }
+
+  private async requestResponse(path: string, init: RequestInit, operation: "list_models" | "generate"): Promise<Response> {
     let apiKey: string | undefined;
     try { apiKey = await this.config.credentialStore?.get(this.credentialKey); }
     catch { throw new ProviderError("Unable to load provider credentials", { code: "provider_error", providerId: this.id }); }
     if (!apiKey) throw new ProviderError("Provider credential is missing", { code: "authentication_error", providerId: this.id });
     const headers = new Headers({ Accept: "application/json", "x-goog-api-key": apiKey });
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
     if (init.body) headers.set("Content-Type", "application/json");
     let response: Response;
     try { response = await this.fetchImplementation(`${this.baseUrl}${path}`, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(30_000) }); }
     catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error;
       if (error instanceof Error && error.name === "TimeoutError") throw new ProviderError("Provider request timed out", { code: "timeout_error", providerId: this.id });
       throw new ProviderError("Unable to reach the model provider", { code: "network_error", providerId: this.id });
     }
@@ -176,7 +234,7 @@ export class GeminiProvider implements ModelProvider {
       else if (operation === "generate" && response.status === 404) code = "invalid_model";
       throw new ProviderError(`Provider request failed with status ${response.status}`, { code, providerId: this.id, statusCode: response.status });
     }
-    try { return await response.json(); } catch { throw this.invalidResponse("Provider returned invalid JSON"); }
+    return response;
   }
 
   private invalidResponse(message: string): ProviderError {
@@ -192,6 +250,12 @@ function boundedOutputTokens(value: number | undefined): number | undefined {
 
 function record(value: unknown): JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as JsonRecord : {};
+}
+function isRecord(value: unknown): value is JsonRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function safeToolName(value: string): string { return /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : "tool"; }
+function streamError(error: unknown, providerId: string): unknown {
+  if (error instanceof ProviderError || error instanceof Error && error.name === "AbortError") return error;
+  return new ProviderError("Provider stream was interrupted", { code: "network_error", providerId });
 }
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;

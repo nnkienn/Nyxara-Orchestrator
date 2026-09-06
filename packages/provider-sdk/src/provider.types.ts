@@ -114,6 +114,8 @@ export interface GenerateRequest {
    * the transport exposes an equivalent control; it never changes role routing.
    */
   readonly maxOutputTokens?: number;
+  /** Existing workflow cancellation, forwarded to transports that support it. */
+  readonly signal?: AbortSignal;
   /**
    * Safe structured progress sink. Adapters call it only when the transport
    * genuinely exposes machine-readable progress, and only with the enumerated

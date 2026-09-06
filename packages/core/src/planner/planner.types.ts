@@ -83,6 +83,7 @@ export interface PlannerRunInput {
   readonly planningProfile?: PlanningProfile;
   readonly engineeringRules?: ResolvedRuleSet;
   readonly workflowId?: string;
+  readonly signal?: AbortSignal;
   /**
    * Planner-specific output bound. It is role-scoped: Executor, Reviewer, and
    * Repair generation is unaffected.

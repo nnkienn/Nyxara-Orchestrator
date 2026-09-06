@@ -70,6 +70,7 @@ export class Reviewer {
           evidence.context.length,
           reviewContextBytes(evidence),
           evidence.truncated,
+          runInput.signal,
         );
         const result = this.parseAndValidate(response, input);
 
@@ -191,13 +192,27 @@ export class Reviewer {
     contextFiles?: number,
     contextBytes?: number | null,
     contextTruncated?: boolean,
+    signal?: AbortSignal,
   ): Promise<GenerateResponse> {
     try {
       const started = performance.now();
+      const streaming = provider.capabilities().progressStreaming === true;
       const response = await provider.generate({
         model: model.id,
         prompt,
+        ...(signal ? { signal } : {}),
         ...(executionOptions ? { executionOptions } : {}),
+        ...(streaming ? { onProgress: (event) => this.events.emit("provider.generation.progress", {
+          providerId: provider.providerId ?? provider.id,
+          providerConfigId,
+          modelId: model.id,
+          role: "reviewer",
+          ...(workflowId ? { workflowId } : {}),
+          ...(taskId ? { taskId } : {}),
+          phase: event.phase,
+          ...(event.toolName ? { toolName: event.toolName } : {}),
+          timestamp: new Date().toISOString(),
+        }) } : {}),
         ...(model.capabilities?.structuredOutput ||
         provider.capabilities().structuredOutput
           ? { responseFormat: "json" as const }

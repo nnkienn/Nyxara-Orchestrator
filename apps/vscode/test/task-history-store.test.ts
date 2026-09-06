@@ -148,6 +148,7 @@ describe("TaskHistoryStore persistence", () => {
     expect(reloaded.get("running")?.status).toBe("interrupted");
     expect(reloaded.get("complete")?.status).toBe("completed");
     expect(reloaded.get("failed")?.status).toBe("failed");
+    await reloaded.flush();
   });
 
   it("preserves a matching authoritative active workflow while interrupting stale projections", () => {

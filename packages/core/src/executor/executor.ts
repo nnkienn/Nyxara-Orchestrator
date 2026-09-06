@@ -151,12 +151,25 @@ export class Executor {
           throw new ExecutorError("executor_aborted", "Executor run was aborted");
         }
         const providerStarted = performance.now();
+        const streaming = provider.capabilities().progressStreaming === true;
         const response = await provider.generate({
           model: selectedModel.id,
           prompt,
           tools: EXECUTOR_TOOL_DEFINITIONS,
+          ...(input.signal ? { signal: input.signal } : {}),
           ...(model.executionOptions ? { executionOptions: model.executionOptions } : {}),
           ...(conversation.length > 0 ? { conversation } : {}),
+          ...(streaming && runInput.workflowId ? { onProgress: (event) => this.events.emit("provider.generation.progress", {
+            providerId: provider.providerId ?? provider.id,
+            providerConfigId: model.providerId,
+            modelId: selectedModel.id,
+            role: repairInput ? "repair" : "executor",
+            workflowId: runInput.workflowId!,
+            taskId: input.task.id,
+            phase: event.phase,
+            ...(event.toolName ? { toolName: event.toolName } : {}),
+            timestamp: new Date().toISOString(),
+          }) } : {}),
           ...(selectedModel.capabilities?.structuredOutput ||
           provider.capabilities().structuredOutput
             ? { responseFormat: "json" as const }

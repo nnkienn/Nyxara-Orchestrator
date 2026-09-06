@@ -3,6 +3,7 @@ import { ProviderError } from "@nyxara/provider-sdk";
 import { AnthropicProvider } from "../src/anthropic/anthropic-provider.js";
 
 describe("AnthropicProvider", () => {
+  const sse = (events: readonly unknown[]) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
   it("discovers official models with SecretStorage-backed x-api-key auth", async () => {
     const fetch = vi.fn(async (_url: string, init: RequestInit) => {
       expect((init.headers as Headers).get("x-api-key")).toBe("fake-key");
@@ -127,8 +128,45 @@ describe("AnthropicProvider", () => {
     expect(bodies[2].max_tokens).toBe(4096);
   });
 
-  it("does not declare progress streaming for the HTTP Messages transport", () => {
+  it("declares documented SSE progress streaming for the HTTP Messages transport", () => {
     const provider = new AnthropicProvider({ credentialStore: { get: async () => "fake", set: vi.fn(), delete: vi.fn() }, fetch: vi.fn() as any });
-    expect(provider.capabilities().progressStreaming).toBeUndefined();
+    expect(provider.capabilities().progressStreaming).toBe(true);
+  });
+
+  it("assembles official SSE privately, emits bounded phases, and preserves cache usage", async () => {
+    const fetch = vi.fn(async () => sse([
+      { type: "message_start", message: { id: "msg-stream", model: "claude-resolved", usage: { input_tokens: 2, cache_creation_input_tokens: 1000, cache_read_input_tokens: 126000 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "private chain" } },
+      { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "{\"tasks\":[]}" } },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2048 } },
+      { type: "message_stop" },
+    ]));
+    const provider = new AnthropicProvider({ credentialStore: credentials("fake"), fetch: fetch as any });
+    const progress: any[] = [];
+    const response = await provider.generate({ model: "claude", prompt: "plan", onProgress: (event) => progress.push(event) });
+    expect(response).toMatchObject({ id: "msg-stream", model: "claude-resolved", text: "{\"tasks\":[]}", usage: { inputTokens: 2, cacheWriteTokens: 1000, cacheReadTokens: 126000, outputTokens: 2048, totalTokens: 129050 } });
+    expect(progress.map((event) => event.phase)).toEqual(["request_started", "response_started", "output_receiving", "request_completed"]);
+    expect(JSON.stringify(progress)).not.toMatch(/private chain|tasks|thinking_delta|message_start/);
+  });
+
+  it("terminates a stream safely on provider error and forwards cancellation", async () => {
+    const failed = new AnthropicProvider({ credentialStore: credentials("fake"), fetch: vi.fn(async () => sse([{ type: "message_start", message: {} }, { type: "error", error: { message: "secret provider payload" } }])) as any });
+    await expect(failed.generate({ model: "claude", prompt: "x", onProgress: vi.fn() })).rejects.toMatchObject({ code: "provider_error", message: expect.not.stringContaining("secret provider payload") });
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const waitingFetch = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      receivedSignal = init.signal as AbortSignal;
+      init.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+    }));
+    const waiting = new AnthropicProvider({ credentialStore: credentials("fake"), fetch: waitingFetch as any });
+    const pending = waiting.generate({ model: "claude", prompt: "x", onProgress: vi.fn(), signal: controller.signal });
+    await vi.waitFor(() => expect(receivedSignal).toBe(controller.signal));
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(receivedSignal).toBe(controller.signal);
   });
 });
+
+function credentials(value: string) { return { get: async () => value, set: vi.fn(), delete: vi.fn() }; }

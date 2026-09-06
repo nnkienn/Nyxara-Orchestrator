@@ -514,6 +514,44 @@ describe("VS Code provider onboarding and command safety", () => {
     expect(session.core.listModels).not.toHaveBeenCalled();
   });
 
+  it("Edit Requirement creates only a clean draft and creates a fresh TaskSession on resubmit", async () => {
+    mock.settings.set("nyxara.providerConfigs", [{ ...GATEWAY, modelId: "route/model" }]); mock.settings.set("nyxara.defaultProviderConfigId", GATEWAY.id);
+    for (const role of ["planner", "executor", "reviewer"]) { mock.settings.set(`nyxara.${role}.provider`, GATEWAY.id); mock.settings.set(`nyxara.${role}.model`, "route/model"); }
+    const session = fakeSession(true);
+    let workflowNumber = 0;
+    session.generate.mockImplementation(async (task: string) => {
+      workflowNumber += 1;
+      session.prompt = task;
+      session.currentPlan = { id: `plan-${workflowNumber}`, objective: task, tasks: [], risks: [] };
+      session.snapshot = { workflowId: `workflow-${workflowNumber}`, status: "awaiting_plan_approval", updatedAt: "now", tasks: [], plan: { id: `plan-${workflowNumber}`, status: "draft" }, occurredStages: ["planning", "approval"] };
+      session.onChange?.();
+    });
+    session.rejectPlan.mockImplementation(() => {
+      session.snapshot = { ...session.snapshot, status: "failed", outcome: "rejected", error: { code: "plan_rejected", message: "Plan rejected by user" }, plan: { ...session.snapshot.plan, status: "rejected" } };
+      session.onChange?.();
+    });
+    session.resetPresentation.mockImplementation(() => { session.prompt = undefined; session.currentPlan = undefined; session.snapshot = undefined; session.result = undefined; session.onChange?.(); });
+    activateFake(session); mock.workspaceFolders.push({ name: "Project", uri: { fsPath: "/project" } });
+    const view = resolveRegisteredWebview();
+
+    view.receive({ type: "submitRequirement", task: "Original requirement" });
+    await vi.waitFor(() => expect(session.generate).toHaveBeenCalledTimes(1));
+    const original = [...view.posted].reverse().find((message) => message.state?.history?.recentTasks?.[0]?.title === "Original requirement")?.state.history.recentTasks[0];
+    view.receive({ type: "rejectPlan" });
+    await vi.waitFor(() => expect([...view.posted].reverse().find((message) => message.state?.completion?.outcome === "rejected")).toBeTruthy());
+    view.receive({ type: "editRequirement" });
+    await vi.waitFor(() => expect(view.posted.at(-1)?.state.requirementDraft).toBe("Original requirement"));
+    expect(session.generate).toHaveBeenCalledTimes(1);
+    expect(view.posted.at(-1)?.state.workflow).toBeUndefined();
+
+    view.receive({ type: "submitRequirement", task: "Original requirement, revised" });
+    await vi.waitFor(() => expect(session.generate).toHaveBeenCalledTimes(2));
+    const tasks = view.posted.at(-1).state.history.recentTasks;
+    expect(tasks.map((task: any) => task.id)).toContain(original.id);
+    expect(tasks.find((task: any) => task.title === "Original requirement, revised")?.id).not.toBe(original.id);
+    expect(tasks.find((task: any) => task.id === original.id)?.status).toBe("rejected");
+  });
+
   it("runs a deterministic multi-role workflow projection through completion, history, and reopen with identical Performance and no network", async () => {
     const providers = [
       { id: "claude", type: "anthropic", displayName: "Claude", modelId: "claude-sonnet", authStrategy: "api_key" },

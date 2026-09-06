@@ -328,4 +328,25 @@ describe("OpenAICompatibleProvider", () => {
     expect(models[0]?.capabilities?.execution).toMatchObject({ kind: "openai_reasoning", provenance: "provider_discovery", values: [{ value: "eco", label: "Eco" }, { value: "deep", label: "Deep" }] });
     expect(provider.modelCapabilities("route/exact")?.execution).toEqual(models[0]?.capabilities?.execution);
   });
+
+  it("uses official OpenAI SSE only for the official transport and exposes phases, not chunks", async () => {
+    const events = [
+      { id: "chat-1", model: "gpt-resolved", choices: [{ delta: { role: "assistant" }, finish_reason: null }] },
+      { choices: [{ delta: { content: "{\"ok\":" }, finish_reason: null }] },
+      { choices: [{ delta: { content: "true}" }, finish_reason: "stop" }] },
+      { choices: [], usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 } },
+    ];
+    let body: any;
+    const fetchMock = vi.fn(async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    const provider = new OpenAICompatibleProvider({ id: "openai-work", providerId: "openai", fetch: fetchMock });
+    const progress: any[] = [];
+    await expect(provider.generate({ model: "gpt-5.1", prompt: "x", responseFormat: "json", onProgress: (event) => progress.push(event) })).resolves.toMatchObject({ id: "chat-1", model: "gpt-resolved", text: "{\"ok\":true}", usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 } });
+    expect(body).toMatchObject({ stream: true, stream_options: { include_usage: true } });
+    expect(progress.map((event) => event.phase)).toEqual(["request_started", "response_started", "output_receiving", "request_completed"]);
+    expect(JSON.stringify(progress)).not.toContain("ok");
+    expect(new OpenAICompatibleProvider({ id: "router", providerId: "openai-compatible" }).capabilities().progressStreaming).toBe(false);
+  });
 });

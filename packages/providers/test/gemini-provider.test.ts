@@ -137,4 +137,21 @@ describe("GeminiProvider", () => {
     expect(bodies[1].contents[1].parts[0]).toEqual({ functionCall: { name: "read_file", args: { path: "x" } }, thoughtSignature: "opaque-sig" });
     expect(JSON.stringify(first)).not.toContain("opaque-sig");
   });
+
+  it("assembles Gemini SSE while excluding thought text from public output and progress", async () => {
+    const chunks = [
+      { modelVersion: "gemini-resolved", candidates: [{ content: { parts: [{ thought: true, text: "private reasoning" }, { text: "{\"ok\":" }] } }] },
+      { candidates: [{ finishReason: "STOP", content: { parts: [{ text: "true}" }] } }], usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2, totalTokenCount: 7 } },
+    ];
+    const fetch = vi.fn(async (url: string) => {
+      expect(url).toContain(":streamGenerateContent?alt=sse");
+      return new Response(chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+    });
+    const provider = new GeminiProvider({ credentialStore: credentials(), fetch: fetch as any });
+    const progress: any[] = [];
+    const response = await provider.generate({ model: "gemini-test", prompt: "x", onProgress: (event) => progress.push(event) });
+    expect(response).toMatchObject({ model: "gemini-resolved", text: "{\"ok\":true}", finishReason: "STOP", usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } });
+    expect(JSON.stringify({ response, progress })).not.toContain("private reasoning");
+    expect(progress.map((event) => event.phase)).toEqual(["request_started", "response_started", "output_receiving", "request_completed"]);
+  });
 });

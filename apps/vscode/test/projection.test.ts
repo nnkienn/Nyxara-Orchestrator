@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { friendlyErrorMessage, taskStatusGlyph, workflowStage, safeErrorMessage, usageSummary } from "../src/projection.js";
+import { friendlyErrorMessage, outcomeLabel, taskStatusGlyph, workflowStage, safeErrorMessage, usageSummary } from "../src/projection.js";
 
 describe("VS Code workflow projection", () => {
   it("maps Core task statuses without scheduling logic", () => {
@@ -13,6 +13,9 @@ describe("VS Code workflow projection", () => {
     expect(workflowStage({ status: "reviewing" } as any)).toBe("Reviewing");
     expect(workflowStage(undefined)).toBe("Idle");
   });
+  it.each([
+    ["completed", "Completed"], ["failed", "Failed"], ["rejected", "Plan Rejected"], ["aborted", "Aborted"], ["interrupted", "Interrupted"],
+  ])("renders the public %s outcome as %s", (outcome, label) => expect(outcomeLabel(outcome)).toBe(label));
   it("bounds error display", () => {
     expect(safeErrorMessage(new Error("x".repeat(500))).length).toBe(240);
     expect(safeErrorMessage("secret")).toBe("Nyxara operation failed");

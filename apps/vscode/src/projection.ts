@@ -29,13 +29,13 @@ export function workflowStage(snapshot: WorkflowSnapshot | undefined): string {
   switch (snapshot.status) {
     case "created": return "Analyzing";
     case "planning": return "Planning";
-    case "awaiting_plan_approval": return "Awaiting approval";
+    case "awaiting_plan_approval": return "Awaiting Approval";
     case "approved": return "Approved";
     case "executing": case "running": return "Executing";
     case "validating": return "Validating";
     case "reviewing": return "Reviewing";
     case "repairing": return "Repairing";
-    case "waiting_for_permission": return "Waiting for permission";
+    case "waiting_for_permission": return "Waiting for Permission";
     case "paused": return "Paused";
     case "completed": return "Completed";
     case "failed": return "Failed";
@@ -59,8 +59,8 @@ export function tokenSummaryParts(usage: {
   const compact = (value: number): string => value >= 1000 ? `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1).replace(/\.0$/, "")}K` : `${value}`;
   return [
     ...(usage.inputTokens != null ? [`${compact(usage.inputTokens)} input`] : []),
-    ...(usage.cacheWriteTokens != null && usage.cacheWriteTokens > 0 ? [`${compact(usage.cacheWriteTokens)} cache write`] : []),
     ...(usage.cacheReadTokens != null && usage.cacheReadTokens > 0 ? [`${compact(usage.cacheReadTokens)} cache read`] : []),
+    ...(usage.cacheWriteTokens != null && usage.cacheWriteTokens > 0 ? [`${compact(usage.cacheWriteTokens)} cache write`] : []),
     ...(usage.outputTokens != null ? [`${compact(usage.outputTokens)} output`] : []),
   ];
 }

@@ -83,6 +83,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   /** Composer draft used by Edit Requirement; it never resumes a workflow. */
   let requirementDraft: string | undefined;
   let providerProgressLabel: string | undefined;
+  let providerProgressStage: string | undefined;
   let settingsSection: SettingsSection | undefined;
   let selectedSettingsProviderId: string | undefined;
   let settingsProjection: SettingsProjection | undefined;
@@ -352,7 +353,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       case "abortWorkflow": session.abort(); return;
       case "pauseWorkflow": session.pause(); return;
       case "resumeWorkflow": await session.resume(); return;
-      case "newTask": performanceScreen = undefined; session.resetPresentation(); currentTaskSessionId = undefined; selectedHistoryTaskId = undefined; historyScreen = "workspace"; clarification = undefined; requirementDraft = undefined; providerProgressLabel = undefined; webview.refresh("recentTasks"); return;
+      case "newTask": performanceScreen = undefined; session.resetPresentation(); currentTaskSessionId = undefined; selectedHistoryTaskId = undefined; historyScreen = "workspace"; clarification = undefined; requirementDraft = undefined; providerProgressLabel = undefined; providerProgressStage = undefined; webview.refresh("recentTasks"); return;
       case "editRequirement": {
         // Copies the requirement into a fresh draft. The rejected workflow is not
         // resurrected and no approved-plan integrity state is reused; a new task
@@ -362,7 +363,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
         performanceScreen = undefined;
         if (session.snapshot && ["completed", "failed", "aborted"].includes(session.snapshot.status)) session.resetPresentation();
         currentTaskSessionId = undefined; selectedHistoryTaskId = undefined; historyScreen = "workspace";
-        clarification = undefined; providerProgressLabel = undefined; requirementDraft = source;
+        clarification = undefined; providerProgressLabel = undefined; providerProgressStage = undefined; requirementDraft = source;
         webview.refresh("requirementDraft"); return;
       }
       case "dismissClarification": clarification = undefined; requirementDraft = undefined; webview.refresh("recentTasks"); return;
@@ -425,9 +426,9 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   // reasoning, tool arguments, or raw provider payloads.
   (session.core as any).events?.on?.("provider.generation.progress", (event: any) => {
     const labels: Record<string, string> = {
-      request_started: "Request sent",
-      response_started: "Response started",
-      output_receiving: "Receiving response",
+      request_started: "Waiting for provider response...",
+      response_started: "Receiving response...",
+      output_receiving: "Receiving response...",
       tool_call_requested: "Tool call requested",
       tool_execution_started: "Running tool",
       tool_execution_completed: "Tool finished",
@@ -436,11 +437,19 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     const label = labels[String(event?.phase)];
     if (!label) return;
     providerProgressLabel = label;
+    providerProgressStage = session.snapshot?.status;
+    webview.refresh("providerProgress");
+  });
+  (session.core as any).events?.on?.("tool.started", (event: any) => {
+    const names: Record<string, string> = { apply_patch: "Applying patch...", write_file: "Writing file...", run_command: "Running command...", git_diff: "Checking changes...", git_status: "Checking repository...", read_file: "Reading file...", search: "Searching repository..." };
+    providerProgressLabel = names[String(event?.tool)] ?? "Running tool...";
+    providerProgressStage = session.snapshot?.status;
     webview.refresh("providerProgress");
   });
   session.onChange = () => {
     syncCurrentTask();
-    if (session.snapshot && ["completed", "failed", "aborted"].includes(session.snapshot.status)) { activeWorkflowProviderIds.clear(); providerProgressLabel = undefined; }
+    if (providerProgressStage && session.snapshot?.status !== providerProgressStage) { providerProgressLabel = undefined; providerProgressStage = undefined; }
+    if (session.snapshot && ["completed", "failed", "aborted"].includes(session.snapshot.status)) { activeWorkflowProviderIds.clear(); providerProgressLabel = undefined; providerProgressStage = undefined; }
     if (settingsSection) void refreshSettingsProjection().then(() => webview.refresh()); else webview.refresh();
   };
   context.subscriptions.push(output, vscode.window.registerWebviewViewProvider("nyxara.sidebar", webview));

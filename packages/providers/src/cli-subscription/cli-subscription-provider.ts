@@ -26,6 +26,7 @@ export interface CliRunInput {
   readonly cwd: string;
   readonly timeoutMs: number;
   readonly maxOutputBytes: number;
+  readonly signal?: AbortSignal;
   /**
    * Called with each complete stdout line while the CLI runs. Only used for
    * CLIs with a documented machine-readable event stream; the caller parses
@@ -101,8 +102,7 @@ interface CliSpec {
   responseText(stdout: string): { readonly text: string; readonly usage?: GenerateUsage };
   /**
    * Maps one line of a documented machine-readable CLI event stream to a safe
-   * progress phase. Absent when the CLI only returns a final payload, which is
-   * why `progressStreaming` stays false for those transports.
+   * progress phase. Absent when a CLI has no documented event-stream contract.
    */
   readonly progressPhase?: (line: string) => ProviderProgressEvent | undefined;
 }
@@ -186,6 +186,7 @@ export class CliSubscriptionProvider implements ModelProvider {
             if (event) progress(event);
           }
         : undefined,
+      request.signal,
     );
     progress?.({ phase: "request_completed" });
     let parsed: { readonly text: string; readonly usage?: GenerateUsage };
@@ -205,12 +206,12 @@ export class CliSubscriptionProvider implements ModelProvider {
     };
   }
 
-  private async run(args: readonly string[], stdin?: string, onOutputLine?: (line: string) => void): Promise<CliRunResult> {
+  private async run(args: readonly string[], stdin?: string, onOutputLine?: (line: string) => void, signal?: AbortSignal): Promise<CliRunResult> {
     const cwd = await mkdtemp(join(tmpdir(), "nyxara-cli-"));
     try {
       let result: CliRunResult;
       try {
-        result = await this.runner.run({ command: this.spec.command, args, ...(stdin !== undefined ? { stdin } : {}), cwd, timeoutMs: this.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES, ...(onOutputLine ? { onOutputLine } : {}) });
+        result = await this.runner.run({ command: this.spec.command, args, ...(stdin !== undefined ? { stdin } : {}), cwd, timeoutMs: this.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES, ...(onOutputLine ? { onOutputLine } : {}), ...(signal ? { signal } : {}) });
       } catch (error) {
         const code = isRecord(error) && error.code === "ENOENT" ? "provider_not_installed" : isRecord(error) && error.code === "ETIMEDOUT" ? "timeout_error" : "provider_error";
         throw new ProviderError(code === "provider_not_installed" ? `${this.spec.command} CLI is not installed` : code === "timeout_error" ? `${this.displayName} CLI timed out` : `${this.displayName} CLI could not start`, { code, providerId: this.id });
@@ -398,7 +399,11 @@ export class NodeCliProcessRunner implements CliProcessRunner {
       let stderr = "";
       let outputBytes = 0;
       let settled = false;
-      const finish = (fn: () => void): void => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
+      const finish = (fn: () => void): void => { if (!settled) { settled = true; clearTimeout(timer); input.signal?.removeEventListener("abort", abort); fn(); } };
+      const abort = (): void => {
+        child.kill("SIGTERM");
+        finish(() => reject(Object.assign(new Error("CLI generation aborted"), { name: "AbortError", code: "ABORT_ERR" })));
+      };
       const append = (current: string, chunk: Buffer): string => {
         outputBytes += chunk.byteLength;
         if (outputBytes > input.maxOutputBytes) {
@@ -423,6 +428,7 @@ export class NodeCliProcessRunner implements CliProcessRunner {
         child.kill("SIGKILL");
         finish(() => reject(Object.assign(new Error("CLI timed out"), { code: "ETIMEDOUT" })));
       }, input.timeoutMs);
+      if (input.signal?.aborted) abort(); else input.signal?.addEventListener("abort", abort, { once: true });
       child.stdin.end(input.stdin ?? "");
     });
   }
@@ -453,8 +459,9 @@ function cliSpec(kind: CliSubscriptionKind): CliSpec {
       try { status = JSON.parse(result.stdout); } catch { status = undefined; }
       if (!isRecord(status) || status.loggedIn !== true || status.authMethod !== "claude.ai") throw new ProviderError("Claude Code must be signed in with a Claude account, not an API key", { code: "authentication_error", providerId });
     },
-    generationArgs: (model, executionOptions) => ["--print", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--tools", "", "--permission-mode", "dontAsk", ...(model === DEFAULT_MODEL ? [] : ["--model", model]), ...(executionOptions.kind === "anthropic_effort" ? ["--effort", executionOptions.effort] : [])],
+    generationArgs: (model, executionOptions) => ["--print", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--safe-mode", "--tools", "", "--permission-mode", "dontAsk", ...(model === DEFAULT_MODEL ? [] : ["--model", model]), ...(executionOptions.kind === "anthropic_effort" ? ["--effort", executionOptions.effort] : [])],
     responseText: parseClaudeOutput,
+    progressPhase: claudeProgressPhase,
   };
   return {
     command: "gemini",
@@ -463,8 +470,9 @@ function cliSpec(kind: CliSubscriptionKind): CliSpec {
     modelDiscovery: false,
     models: [{ id: DEFAULT_MODEL, name: "Gemini CLI default" }],
     validateStatus: () => {},
-    generationArgs: (model) => ["--prompt", "", "--output-format", "json", "--approval-mode", "plan", "--allowed-tools", "", ...(model === DEFAULT_MODEL ? [] : ["--model", model])],
+    generationArgs: (model) => ["--prompt", "", "--output-format", "stream-json", "--approval-mode", "plan", "--allowed-tools", "", ...(model === DEFAULT_MODEL ? [] : ["--model", model])],
     responseText: parseGeminiOutput,
+    progressPhase: geminiProgressPhase,
   };
 }
 
@@ -539,16 +547,58 @@ function parseCodexOutput(stdout: string): { text: string; usage?: GenerateUsage
 }
 
 function parseClaudeOutput(stdout: string): { text: string; usage?: GenerateUsage } {
-  const payload = JSON.parse(stdout) as unknown;
+  const payload = finalJsonLine(stdout, "result");
   if (!isRecord(payload) || typeof payload.result !== "string") throw new Error("Claude Code returned no result");
-  const usage = isRecord(payload.usage) ? tokenUsage(payload.usage, "input_tokens", "output_tokens") : undefined;
+  const usage = isRecord(payload.usage) ? anthropicTokenUsage(payload.usage) : undefined;
   return { text: payload.result, ...(usage ? { usage } : {}) };
 }
 
 function parseGeminiOutput(stdout: string): { text: string; usage?: GenerateUsage } {
-  const payload = JSON.parse(stdout) as unknown;
+  const payload = finalJsonLine(stdout, "result");
   if (!isRecord(payload) || typeof payload.response !== "string") throw new Error("Gemini CLI returned no response");
   return { text: payload.response };
+}
+
+function finalJsonLine(stdout: string, eventType: string): unknown {
+  let fallback: unknown;
+  let final: unknown;
+  for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
+    let value: unknown;
+    try { value = JSON.parse(line); } catch { continue; }
+    fallback = value;
+    if (isRecord(value) && value.type === eventType) final = value;
+  }
+  return final ?? fallback;
+}
+
+function claudeProgressPhase(line: string): ProviderProgressEvent | undefined {
+  let event: unknown;
+  try { event = JSON.parse(line); } catch { return undefined; }
+  if (!isRecord(event)) return undefined;
+  if (event.type === "assistant") return { phase: "response_started" };
+  if (event.type === "stream_event" && isRecord(event.event) && event.event.type === "message_start") return { phase: "response_started" };
+  if (event.type === "stream_event" && isRecord(event.event) && event.event.type === "content_block_delta") return { phase: "output_receiving" };
+  return undefined;
+}
+
+function geminiProgressPhase(line: string): ProviderProgressEvent | undefined {
+  let event: unknown;
+  try { event = JSON.parse(line); } catch { return undefined; }
+  if (!isRecord(event)) return undefined;
+  if (event.type === "message") return event.role === "assistant" ? { phase: "output_receiving" } : undefined;
+  if (event.type === "tool_use") return { phase: "tool_call_requested", ...(typeof event.tool_name === "string" ? { toolName: safeToolName(event.tool_name) } : {}) };
+  if (event.type === "tool_result") return { phase: "tool_execution_completed" };
+  return undefined;
+}
+
+function anthropicTokenUsage(value: Record<string, unknown>): GenerateUsage | undefined {
+  const inputTokens = finiteNumber(value.input_tokens);
+  const outputTokens = finiteNumber(value.output_tokens);
+  const cacheReadTokens = finiteNumber(value.cache_read_input_tokens);
+  const cacheWriteTokens = finiteNumber(value.cache_creation_input_tokens);
+  const parts = [inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens];
+  if (parts.every((part) => part === undefined)) return undefined;
+  return { ...(inputTokens !== undefined ? { inputTokens } : {}), ...(outputTokens !== undefined ? { outputTokens } : {}), ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}), ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}), totalTokens: parts.reduce<number>((sum, part) => sum + (part ?? 0), 0) };
 }
 
 function tokenUsage(record: Record<string, unknown>, inputKey: string, outputKey: string, totalKey?: string): GenerateUsage | undefined {
@@ -568,6 +618,7 @@ function cliExitError(result: CliRunResult, providerId: string, displayName: str
 
 function finiteNumber(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined; }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
+function safeToolName(value: string): string { return /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : "tool"; }
 
 function normalizeCodexModelPage(value: unknown, providerId: string): { readonly models: readonly ModelInfo[]; readonly nextCursor?: string } {
   if (!isRecord(value) || !Array.isArray(value.data)) throw new Error("invalid model page");

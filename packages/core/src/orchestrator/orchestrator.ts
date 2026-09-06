@@ -639,6 +639,7 @@ export class NyxaraOrchestrator {
         planningProfile,
         engineeringRules: planningRules,
         maxOutputTokens: decision.plannerMaxOutputTokens,
+        ...(input.signal ? { signal: input.signal } : {}),
         ...(workflowId ? { workflowId } : {}),
       });
       const contextMetrics: PlanningContextMetrics = Object.freeze({

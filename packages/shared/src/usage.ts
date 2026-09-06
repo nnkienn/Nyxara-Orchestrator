@@ -34,8 +34,10 @@ export function normalizeUsage(value: unknown): UsageValues {
   const v = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
   const inputTokens = finite(v?.inputTokens ?? v?.prompt_tokens ?? v?.promptTokens);
   const outputTokens = finite(v?.outputTokens ?? v?.completion_tokens ?? v?.completionTokens);
-  const cacheReadTokens = finite(v?.cacheReadTokens ?? v?.cache_read_input_tokens);
-  const cacheWriteTokens = finite(v?.cacheWriteTokens ?? v?.cache_creation_input_tokens);
+  // Provider adapters own vendor field names; shared Core receives only the
+  // provider-neutral cache domain.
+  const cacheReadTokens = finite(v?.cacheReadTokens);
+  const cacheWriteTokens = finite(v?.cacheWriteTokens);
   const reportedTotal = finite(v?.totalTokens ?? v?.total_tokens);
   const parts = [inputTokens, cacheWriteTokens, cacheReadTokens, outputTokens];
   const derivedTotal = parts.some((part) => part !== null)

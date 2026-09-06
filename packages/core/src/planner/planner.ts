@@ -51,6 +51,7 @@ export class Planner {
         input.context.totalBytes,
         input.context.truncated,
         boundPlannerOutputTokens(runInput.maxOutputTokens),
+        runInput.signal,
       );
       const parsed = parseAndNormalizePlanDraft(response.text);
 
@@ -127,6 +128,7 @@ export class Planner {
     contextBytes?: number | null,
     contextTruncated?: boolean,
     maxOutputTokens?: number,
+    signal?: AbortSignal,
   ): Promise<GenerateResponse> {
     try {
       const started = performance.now();
@@ -138,6 +140,7 @@ export class Planner {
         prompt,
         ...(executionOptions ? { executionOptions } : {}),
         ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+        ...(signal ? { signal } : {}),
         ...(streaming ? {
           onProgress: (event) => this.events.emit("provider.generation.progress", {
             providerId: provider.providerId ?? provider.id,

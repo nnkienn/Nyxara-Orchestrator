@@ -12,6 +12,7 @@ import {
   type ProviderErrorCode,
 } from "@nyxara/provider-sdk";
 import { knownModelExecutionCapability } from "../execution-capabilities.js";
+import { consumeSse, parseSseJson } from "../sse.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
 /** Keeps a caller-supplied bound inside the range the Messages API accepts. */
@@ -48,7 +49,7 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   capabilities(): ProviderCapabilities {
-    return { modelDiscovery: true, textGeneration: true, toolCalling: true };
+    return { modelDiscovery: true, textGeneration: true, toolCalling: true, progressStreaming: true };
   }
 
   async listModels(): Promise<ModelInfo[]> {
@@ -86,9 +87,7 @@ export class AnthropicProvider implements ModelProvider {
     const maxTokens = executionOptions.kind === "anthropic_thinking"
       ? Math.max(requestedOutputBound ?? DEFAULT_MAX_OUTPUT_TOKENS, executionOptions.budgetTokens + 1_024)
       : requestedOutputBound ?? DEFAULT_MAX_OUTPUT_TOKENS;
-    const payload = record(await this.request("/v1/messages", {
-      method: "POST",
-      body: JSON.stringify({
+    const body = {
         model: input.model,
         max_tokens: maxTokens,
         ...(executionOptions.kind === "anthropic_thinking" ? { thinking: { type: "enabled", budget_tokens: executionOptions.budgetTokens } } : {}),
@@ -108,7 +107,12 @@ export class AnthropicProvider implements ModelProvider {
               }] }) ?? []),
         ],
         ...(input.tools?.length ? { tools: input.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema })) } : {}),
-      }),
+    };
+    if (input.onProgress) return this.generateStreaming(input, body);
+    const payload = record(await this.request("/v1/messages", {
+      method: "POST",
+      body: JSON.stringify(body),
+      ...(input.signal ? { signal: input.signal } : {}),
     }, "generate"));
     const content = Array.isArray(payload.content) ? payload.content : [];
     const text = content.filter((part) => record(part).type === "text").map((part) => record(part).text).filter((value): value is string => typeof value === "string").join("\n");
@@ -132,6 +136,76 @@ export class AnthropicProvider implements ModelProvider {
     };
   }
 
+  private async generateStreaming(input: GenerateRequest, body: Record<string, unknown>): Promise<GenerateResponse> {
+    input.onProgress?.({ phase: "request_started" });
+    const response = await this.requestResponse("/v1/messages", {
+      method: "POST",
+      headers: { Accept: "text/event-stream" },
+      body: JSON.stringify({ ...body, stream: true }),
+      ...(input.signal ? { signal: input.signal } : {}),
+    }, "generate");
+    const blocks = new Map<number, Record<string, unknown>>();
+    let id: string | undefined;
+    let model = input.model;
+    let finishReason: string | undefined;
+    let startUsage: unknown;
+    let finalUsage: unknown;
+    let receiving = false;
+    try { await consumeSse(response, this.id, (data) => {
+      const event = parseSseJson(data, this.id);
+      if (!event) return;
+      if (event.type === "error") throw new ProviderError("Provider stream failed", { code: "provider_error", providerId: this.id });
+      if (event.type === "message_start") {
+        const message = record(event.message);
+        if (typeof message.id === "string") id = message.id;
+        if (typeof message.model === "string") model = message.model;
+        startUsage = message.usage;
+        input.onProgress?.({ phase: "response_started" });
+        return;
+      }
+      if (event.type === "content_block_start" && typeof event.index === "number") {
+        const block = { ...record(event.content_block) };
+        blocks.set(event.index, block);
+        if (block.type === "tool_use" && typeof block.name === "string") input.onProgress?.({ phase: "tool_call_requested", toolName: safeToolName(block.name) });
+        return;
+      }
+      if (event.type === "content_block_delta" && typeof event.index === "number") {
+        const block = blocks.get(event.index);
+        if (!block) return;
+        const delta = record(event.delta);
+        if (delta.type === "text_delta" && typeof delta.text === "string") block.text = `${typeof block.text === "string" ? block.text : ""}${delta.text}`;
+        else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") block.__json = `${typeof block.__json === "string" ? block.__json : ""}${delta.partial_json}`;
+        else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") block.thinking = `${typeof block.thinking === "string" ? block.thinking : ""}${delta.thinking}`;
+        else if (delta.type === "signature_delta" && typeof delta.signature === "string") block.signature = `${typeof block.signature === "string" ? block.signature : ""}${delta.signature}`;
+        if (!receiving && (delta.type === "text_delta" || delta.type === "input_json_delta")) { receiving = true; input.onProgress?.({ phase: "output_receiving" }); }
+        return;
+      }
+      if (event.type === "message_delta") {
+        const delta = record(event.delta);
+        if (typeof delta.stop_reason === "string") finishReason = delta.stop_reason;
+        finalUsage = event.usage;
+      }
+    }); } catch (error) { throw streamError(error, this.id); }
+    const content: Record<string, unknown>[] = [...blocks.entries()].sort(([a], [b]) => a - b).map(([, block]): Record<string, unknown> => {
+      if (block.type === "tool_use" && typeof block.__json === "string") {
+        try { const { __json: _ignored, ...rest } = block; return { ...rest, input: JSON.parse(block.__json) }; }
+        catch { throw this.invalidResponse("Provider returned invalid tool arguments"); }
+      }
+      return block;
+    });
+    const text = content.filter((part) => part.type === "text").map((part) => part.text).filter((value): value is string => typeof value === "string").join("\n");
+    const toolCalls = content.filter((part) => part.type === "tool_use").map((part) => {
+      if (typeof part.id !== "string" || !part.id || typeof part.name !== "string" || !part.name) throw this.invalidResponse("Provider returned an invalid tool call");
+      return { id: part.id, name: part.name, arguments: part.input };
+    });
+    const thinkingBlocks = content.filter((part) => part.type === "thinking" || part.type === "redacted_thinking").map(({ __json: _ignored, ...part }) => part);
+    if (thinkingBlocks.length) for (const call of toolCalls) this.rememberThinkingBlocks(call.id, thinkingBlocks);
+    if (!text && toolCalls.length === 0) throw this.invalidResponse("Provider returned no content");
+    const usage = normalizeAnthropicUsage({ ...record(startUsage), ...record(finalUsage) });
+    input.onProgress?.({ phase: "request_completed" });
+    return { ...(id ? { id } : {}), provider: this.id, model, text, ...(toolCalls.length ? { toolCalls } : {}), ...(finishReason ? { finishReason } : {}), ...(usage ? { usage } : {}) };
+  }
+
   private thinkingBlocksFor(toolCallIds: readonly string[]): readonly Record<string, unknown>[] {
     for (const id of toolCallIds) {
       const blocks = this.thinkingBlocksByToolCallId.get(id);
@@ -150,15 +224,22 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   private async request(path: string, init: RequestInit, operation: "list_models" | "generate"): Promise<unknown> {
+    const response = await this.requestResponse(path, init, operation);
+    try { return await response.json(); } catch { throw this.invalidResponse("Provider returned invalid JSON"); }
+  }
+
+  private async requestResponse(path: string, init: RequestInit, operation: "list_models" | "generate"): Promise<Response> {
     let apiKey: string | undefined;
     try { apiKey = await this.config.credentialStore?.get(this.credentialKey); }
     catch { throw new ProviderError("Unable to load provider credentials", { code: "provider_error", providerId: this.id }); }
     if (!apiKey) throw new ProviderError("Provider credential is missing", { code: "authentication_error", providerId: this.id });
     const headers = new Headers({ Accept: "application/json", "anthropic-version": "2023-06-01", "x-api-key": apiKey });
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
     if (init.body) headers.set("Content-Type", "application/json");
     let response: Response;
     try { response = await this.fetchImplementation(`${this.baseUrl}${path}`, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(30_000) }); }
     catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error;
       if (error instanceof Error && error.name === "TimeoutError") throw new ProviderError("Provider request timed out", { code: "timeout_error", providerId: this.id });
       throw new ProviderError("Unable to reach the model provider", { code: "network_error", providerId: this.id });
     }
@@ -169,7 +250,7 @@ export class AnthropicProvider implements ModelProvider {
       else if (operation === "generate" && response.status === 404) code = "invalid_model";
       throw new ProviderError(`Provider request failed with status ${response.status}`, { code, providerId: this.id, statusCode: response.status });
     }
-    try { return await response.json(); } catch { throw this.invalidResponse("Provider returned invalid JSON"); }
+    return response;
   }
 
   private invalidResponse(message: string): ProviderError { return new ProviderError(message, { code: "invalid_response", providerId: this.id }); }
@@ -188,10 +269,10 @@ function boundedOutputTokens(value: number | undefined): number | undefined {
  */
 export function normalizeAnthropicUsage(value: unknown): GenerateUsage | undefined {
   const usage = record(value);
-  const inputTokens = number(usage.input_tokens);
-  const outputTokens = number(usage.output_tokens);
-  const cacheWriteTokens = number(usage.cache_creation_input_tokens);
-  const cacheReadTokens = number(usage.cache_read_input_tokens);
+  const inputTokens = finiteNumber(usage.input_tokens);
+  const outputTokens = finiteNumber(usage.output_tokens);
+  const cacheWriteTokens = finiteNumber(usage.cache_creation_input_tokens);
+  const cacheReadTokens = finiteNumber(usage.cache_read_input_tokens);
   const parts: readonly (number | undefined)[] = [inputTokens, cacheWriteTokens, cacheReadTokens, outputTokens];
   if (parts.every((part) => part === undefined)) return undefined;
   const totalTokens = parts.reduce<number>((total, part) => total + (part ?? 0), 0);
@@ -205,7 +286,11 @@ export function normalizeAnthropicUsage(value: unknown): GenerateUsage | undefin
 }
 
 function record(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
-function number(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
+function safeToolName(value: string): string { return /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : "tool"; }
+function streamError(error: unknown, providerId: string): unknown {
+  if (error instanceof ProviderError || error instanceof Error && error.name === "AbortError") return error;
+  return new ProviderError("Provider stream was interrupted", { code: "network_error", providerId });
+}
 function finiteNumber(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined; }
 function discoveredCapabilities(value: unknown): ModelCapabilities {
   const capabilities = record(value);

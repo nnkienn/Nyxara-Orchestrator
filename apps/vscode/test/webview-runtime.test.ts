@@ -58,6 +58,12 @@ function harness() {
   // Controllable clock so the elapsed timer can be observed without real waiting.
   const timers = new Map<number, () => void>();
   let nextTimer = 1;
+  let now = Date.now();
+  const NativeDate = Date;
+  class FakeDate extends NativeDate {
+    constructor(value?: string | number | Date) { super(value === undefined ? now : value); }
+    static now(): number { return now; }
+  }
   const document = { getElementById: (id: string) => elements.get(id), createElement: (tag: string) => new FakeElement(tag) };
   const window = {
     addEventListener: (type: string, listener: Listener) => {
@@ -71,13 +77,15 @@ function harness() {
     window,
     setInterval: (handler: () => void) => { const id = nextTimer++; timers.set(id, handler); return id; },
     clearInterval: (id: number) => { timers.delete(id); },
+    Date: FakeDate,
   });
   const emit = (state: any, type = "initialState") => receive?.({ data: { type, state } });
   const text = () => elements.get("timeline")!.allText();
   const findButton = (label: string) => elements.get("timeline")!.descendants().find((item) => item.tagName === "button" && item.allText() === label);
   const tick = () => { for (const handler of [...timers.values()]) handler(); };
+  const advance = (ms: number) => { now += ms; tick(); };
   const dispose = () => { for (const listener of unloadListeners) listener({}); };
-  return { elements, messages, emit, text, findButton, timers, tick, dispose };
+  return { elements, messages, emit, text, findButton, timers, tick, advance, dispose };
 }
 
 function baseState(overrides: Record<string, unknown> = {}) {
@@ -184,7 +192,8 @@ describe("Nyxara browser runtime", () => {
 
   it("renders permission inline and forwards the exact request ID for Allow Once and Deny", () => {
     const h = harness();
-    h.emit(baseState({ plan, workflow: { id: "w", status: "waiting_for_permission", stage: "Waiting for permission", active: true, tasks: [], permission: { id: "permission/exact", action: "write · src/a.ts", reason: "Apply approved change" } } }));
+    h.emit(baseState({ plan, workflow: { id: "w", status: "waiting_for_permission", stage: "Waiting for Permission", active: true, tasks: [], permission: { id: "permission/exact", action: "write · src/a.ts", reason: "Apply approved change" } } }));
+    expect(h.text()).toContain("Waiting for Permission");
     expect(h.text()).toContain("Permission required");
     h.findButton("Allow Once")?.dispatch("click");
     h.findButton("Deny")?.dispatch("click");
@@ -194,13 +203,14 @@ describe("Nyxara browser runtime", () => {
   it("renders compact completed, failed and aborted summaries with authoritative usage and New Task", () => {
     for (const status of ["completed", "failed", "aborted"]) {
       const h = harness();
-      h.emit(baseState({ workflow: { id: "w", status, stage: status === "completed" ? "Completed" : status === "failed" ? "Failed" : "Aborted", active: false, tasks: [], occurredStages: ["planning", "approval", "execution", "validation", "review"], ...(status === "failed" ? { error: { stage: "Reviewing", message: "Review failed" } } : {}) }, validation: [{ kind: "test", status: "passed" }], reviewStatus: "passed", repairCycles: 2, completion: { status, outcome: status, changedFiles: 3, tokens: 7073, modelCalls: 4, durationMs: 20620, repairCycles: 2, tokenParts: ["1.4K input", "126K cache read", "2K output"] } }));
+      h.emit(baseState({ workflow: { id: "w", status, stage: status === "completed" ? "Completed" : status === "failed" ? "Failed" : "Aborted", active: false, tasks: [], occurredStages: ["planning", "approval", "execution", "validation", "review"], ...(status === "failed" ? { error: { stage: "Reviewing", message: "Review failed" } } : {}) }, validation: [{ kind: "test", status: "passed" }], reviewStatus: "passed", repairCycles: 2, completion: { status, outcome: status, changedFiles: 3, tokens: 128050, modelCalls: 4, durationMs: 20620, repairCycles: 2, tokenParts: ["2 input", "126K cache read", "2K output"] } }));
       expect(h.text()).toContain(status === "completed" ? "Completed ✓" : status === "failed" ? "Failed" : "Aborted");
       // Compact truthful token line, not a full inline metrics block.
-      expect(h.text()).toContain("1.4K input · 126K cache read · 2K output");
-      expect(h.text()).toContain("20.6 s");
-      expect(h.text()).toContain("3 files changed");
+      expect(h.text()).toContain("2 input · 126K cache read · 2K output");
+      expect(h.text()).toContain("20.6s");
+      if (status !== "aborted") expect(h.text()).toContain("3 files changed");
       expect(h.text()).not.toContain("Tool Calls");
+      if (status === "aborted") expect(h.text()).toContain("Workflow stopped by user.");
       h.findButton("New Task")?.dispatch("click");
       expect(h.messages.at(-1)).toEqual({ type: "newTask" });
     }
@@ -242,6 +252,20 @@ describe("Nyxara browser runtime", () => {
     expect(h.messages.at(-1)).toEqual({ type: "openSettingsSection", section: "modelsRoles" });
   });
 
+  it("summarizes validation failures and failed tests without expanding workflow detail", () => {
+    const h = harness();
+    h.emit(baseState({
+      workflow: { id: "failed-validation", status: "failed", stage: "Failed", active: false, tasks: [{ id: "one", title: "Fix tests", status: "failed" }], occurredStages: ["planning", "approval", "execution", "validation"], error: { stage: "Validating", message: "Validation failed." } },
+      validation: [{ kind: "test:unit", status: "failed" }, { kind: "tests:e2e", status: "timed_out" }],
+      completion: { status: "failed", outcome: "failed", changedFiles: 1, tokens: 5400, modelCalls: 3, durationMs: 18300, repairCycles: 0, tokenParts: [] },
+    }));
+    expect(h.text()).toContain("Failed");
+    expect(h.text()).toContain("Validation failed · Tests: 2 failed");
+    expect(h.text()).toContain("5.4K tokens · 18.3s");
+    const details = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "summary" && item.allText() === "Details");
+    expect(details?.attributes.get("aria-expanded")).toBe("false");
+  });
+
   it("omits unavailable usage instead of implying zero", () => {
     const h = harness();
     h.emit(baseState({ workflow: { id: "w", status: "completed", stage: "Completed", active: false, tasks: [], occurredStages: ["planning"] }, completion: { status: "completed", outcome: "completed", changedFiles: null, tokens: null, modelCalls: null, durationMs: null, repairCycles: null, tokenParts: [] } }));
@@ -255,7 +279,7 @@ describe("Nyxara browser runtime", () => {
       const h = harness();
       h.emit(baseState({ workflow: { id: "w", status, stage: status, active: false, tasks: [], occurredStages: ["planning", "approval", "execution"] }, completion: { status, outcome: status, changedFiles: 1, tokens: 7073, modelCalls: 5, durationMs: 25000, repairCycles: 1, tokenParts: [] }, performance: { ...performanceProjection, overview: { ...performanceProjection.overview, terminalStatus: status } } }));
       // Detailed metrics belong on the Performance screen, not inline.
-      expect(h.text()).toContain("7.1K tokens · 25.0 s");
+      expect(h.text()).toContain("7.1K tokens · 25s");
       expect(h.text()).not.toContain("Tool Calls14");
       h.findButton("View Performance")?.dispatch("click");
       expect(h.messages.at(-1)).toEqual({ type: "openPerformance" });
@@ -328,7 +352,7 @@ describe("Nyxara browser runtime", () => {
     h.emit(baseState({ history: { screen: "workspace", recentTasks: [historicalTask], tasks: [], query: "", filter: "all", scope: "current", currentWorkspaceId: "workspace" } }));
     expect(h.text()).toContain("Recent Tasks");
     expect(h.text()).toContain("Add <filters>");
-    expect(h.text()).toContain("Completed · 7.1K tokens · 20.6 s");
+    expect(h.text()).toContain("Completed · 7.1K tokens · 21s");
     h.findButton("View all")?.dispatch("click");
     expect(h.messages.at(-1)).toEqual({ type: "openHistory" });
     const empty = harness(); empty.emit(baseState());
@@ -353,12 +377,13 @@ describe("Nyxara browser runtime", () => {
     h.elements.get("timeline")!.scrollTop = 200;
     h.emit(baseState({ history: { screen: "historical", recentTasks: [historicalTask], tasks: [historicalTask], query: "", filter: "all", scope: "current", currentWorkspaceId: "workspace", selectedTask: historicalTask } }), "historicalTaskLoaded");
     // The outcome leads; stage detail is present but collapsed behind sections.
-    for (const label of ["Completed ✓", "7.1K tokens · 20.6 s", "Requirement", "Implementation Plan1 task", "Execution1 / 1", "ValidationPassed", "ReviewPassed", "Repair1 cycle"]) expect(h.text()).toContain(label);
+    for (const label of ["Completed ✓", "7.1K tokens · 20.6s", "Requirement", "Plan1 task", "Execution1 / 1", "ValidationPassed", "ReviewPassed", "Repair1 cycle"]) expect(h.text()).toContain(label);
     expect(h.text()).toContain("Gate<way> · model<x>");
     const sections = h.elements.get("timeline")!.descendants().filter((item) => item.className.includes("section-disclosure") && item.tagName === "details");
     expect(sections.length).toBeGreaterThan(3);
     // Every historical section is collapsed by default.
     expect(sections.every((section) => !section.attributes.has("open"))).toBe(true);
+    expect(sections.every((section) => section.children[0]?.attributes.get("aria-expanded") === "false")).toBe(true);
     expect(h.elements.get("timeline")!.descendants().some((item) => item.tagName === "script")).toBe(false);
     // A historical task opens at the top of its compact summary.
     expect(h.elements.get("timeline")!.scrollTop).toBe(0);
@@ -373,7 +398,9 @@ describe("Nyxara browser runtime", () => {
     const text = h.text();
     expect(text).toContain("Plan Rejected");
     expect(text).toContain("No repository changes were made.");
-    expect(text).toContain("Implementation Plan1 task");
+    expect(text).toContain("Plan1 task");
+    expect(text).not.toContain("120 tokens");
+    expect(h.findButton("View Performance")).toBeUndefined();
     for (const absent of ["Execution", "Validation", "Review", "Repair"]) expect(text).not.toContain(absent);
     h.findButton("Edit Requirement")?.dispatch("click");
     expect(h.messages.at(-1)).toEqual({ type: "editRequirement", taskId: "history-rejected" });
@@ -381,22 +408,48 @@ describe("Nyxara browser runtime", () => {
 
   it("keeps one bounded UI elapsed clock that never asks the extension for state", () => {
     const h = harness();
-    const startedAt = new Date(Date.now() - 12_000).toISOString();
+    const startedAt = new Date(Date.now() - 12_500).toISOString();
     h.emit(baseState({ prompt: "Add pagination", workflow: { id: "w", status: "planning", stage: "Planning", active: true, tasks: [], occurredStages: ["planning"], stageStartedAt: startedAt, providerLabel: "Claude · Opus" } }), "planningStarted");
     expect(h.text()).toContain("Planning · 12s");
     expect(h.text()).toContain("Claude · Opus");
     expect(h.timers.size).toBe(1);
     // The clock only re-renders locally; it issues no messages to the extension.
     const before = h.messages.length;
-    h.tick();
+    h.advance(1_000);
     expect(h.messages.length).toBe(before);
-    expect(h.text()).toContain("Planning · 1");
+    expect(h.text()).toContain("Planning · 13s");
     // A stage transition replaces the clock rather than accumulating timers.
     h.emit(baseState({ prompt: "Add pagination", workflow: { id: "w", status: "executing", stage: "Executing", active: true, tasks: [], occurredStages: ["planning", "approval", "execution"], stageStartedAt: new Date().toISOString() } }), "workflowSnapshot");
     expect(h.timers.size).toBe(1);
     // A terminal outcome stops it.
     h.emit(baseState({ workflow: { id: "w", status: "completed", stage: "Completed", active: false, tasks: [], occurredStages: ["planning", "approval", "execution"] }, completion: { status: "completed", outcome: "completed", changedFiles: 1, tokens: 10, modelCalls: 1, durationMs: 10, repairCycles: null, tokenParts: [] } }), "workflowCompleted");
     expect(h.timers.size).toBe(0);
+  });
+
+  it.each(["failed", "aborted"])("stops the elapsed clock on %s", (status) => {
+    const h = harness();
+    h.emit(baseState({ workflow: { id: "w", status: "planning", stage: "Planning", active: true, tasks: [], occurredStages: ["planning"], stageStartedAt: new Date().toISOString() } }));
+    expect(h.timers.size).toBe(1);
+    h.emit(baseState({ workflow: { id: "w", status, stage: status === "failed" ? "Failed" : "Aborted", active: false, tasks: [], occurredStages: ["planning"] }, completion: { status, outcome: status, changedFiles: 0, tokens: null, modelCalls: null, durationMs: 1, repairCycles: null, tokenParts: [] } }));
+    expect(h.timers.size).toBe(0);
+  });
+
+  it("stops the elapsed clock when the Webview is disposed", () => {
+    const h = harness();
+    h.emit(baseState({ workflow: { id: "w", status: "planning", stage: "Planning", active: true, tasks: [], occurredStages: ["planning"], stageStartedAt: new Date().toISOString() } }));
+    expect(h.timers.size).toBe(1);
+    h.dispose();
+    expect(h.timers.size).toBe(0);
+  });
+
+  it("shows honest provider waiting and response-start states without raw payloads or percentages", () => {
+    const h = harness();
+    const workflow = { id: "w", status: "planning", stage: "Planning", active: true, tasks: [], occurredStages: ["planning"], stageStartedAt: new Date().toISOString(), providerLabel: "Claude · Opus" };
+    h.emit(baseState({ workflow }));
+    expect(h.text()).toContain("Waiting for provider response...");
+    h.emit(baseState({ workflow: { ...workflow, progressLabel: "Receiving response..." }, providerEvent: { raw: "SECRET", percent: 47 } }), "providerProgress");
+    expect(h.text()).toContain("Receiving response...");
+    expect(h.text()).not.toMatch(/SECRET|47%/);
   });
 
   it("shows a local clarification instead of planning a trivial request", () => {
@@ -418,6 +471,48 @@ describe("Nyxara browser runtime", () => {
     expect(h.elements.get("requirement")!.value).toBe("Fix pagination in src/api/notifications.ts");
     expect(h.text()).not.toContain("Implementation Plan");
     expect(h.text()).not.toContain("Approve & Run");
+  });
+
+  it("keeps approval plans expanded, then defaults terminal plans and details to accessible collapsed disclosures", () => {
+    const awaitingApproval = harness();
+    awaitingApproval.emit(baseState({ prompt: "Add pagination", plan, workflow: awaiting }));
+    expect(awaitingApproval.elements.get("timeline")!.descendants().some((item) => item.className.includes("plan-card") && item.tagName === "section")).toBe(true);
+    expect(awaitingApproval.elements.get("timeline")!.descendants().some((item) => item.tagName === "details" && item.allText().startsWith("Implementation Plan"))).toBe(false);
+
+    const completed = harness();
+    completed.emit(baseState({ prompt: "Add pagination", plan, workflow: { id: "terminal", status: "completed", stage: "Completed", active: false, tasks: [{ id: "task-1", title: "Update query", status: "completed" }], occurredStages: ["planning", "approval", "execution"], progress: { completed: 1, total: 1 } }, completion: { status: "completed", outcome: "completed", changedFiles: 1, tokens: 10, modelCalls: 1, durationMs: 1000, repairCycles: 0, tokenParts: [] } }));
+    const summaries = completed.elements.get("timeline")!.descendants().filter((item) => item.tagName === "summary");
+    const planSummary = summaries.find((item) => item.allText().startsWith("Implementation Plan"));
+    const detailSummary = summaries.find((item) => item.allText() === "Details");
+    expect(planSummary?.attributes.get("aria-expanded")).toBe("false");
+    expect(detailSummary?.attributes.get("aria-expanded")).toBe("false");
+    expect(planSummary?.tagName).toBe("summary");
+  });
+
+  it("updates aria-expanded when View Plan opens a rejected task disclosure", () => {
+    const h = harness();
+    h.emit(baseState({ prompt: "Reject me", plan, workflow: { id: "rejected", status: "failed", stage: "Plan Rejected", active: false, tasks: [], outcome: "rejected", occurredStages: ["planning", "approval"] }, completion: { status: "rejected", outcome: "rejected", changedFiles: 0, tokens: null, modelCalls: null, durationMs: null, repairCycles: null, tokenParts: [] } }));
+    const findPlanSummary = () => h.elements.get("timeline")!.descendants().find((item) => item.tagName === "summary" && item.allText().startsWith("Implementation Plan"));
+    expect(findPlanSummary()?.attributes.get("aria-expanded")).toBe("false");
+    h.findButton("View Plan")?.dispatch("click");
+    expect(findPlanSummary()?.attributes.get("aria-expanded")).toBe("true");
+  });
+
+  it("keeps rejected history rows distinct, compact, and free of usage details", () => {
+    const rejected = { ...historicalTask, id: "row-rejected", title: "Greeting test", status: "rejected", usageSummary: { ...historicalTask.usageSummary, totalTokens: 120, workflowDurationMs: 900 } };
+    const h = harness();
+    h.emit(baseState({ history: { screen: "workspace", recentTasks: [rejected], tasks: [], query: "", filter: "all", scope: "current" } }));
+    const meta = h.elements.get("timeline")!.descendants().find((item) => item.className.includes("history-meta"));
+    expect(meta?.allText()).toBe("Rejected");
+    expect(meta?.className).toContain("status-rejected");
+    expect(meta?.className).not.toContain("status-failed");
+  });
+
+  it("does not render an Execution section before execution actually starts", () => {
+    const h = harness();
+    h.emit(baseState({ prompt: "Approved task", plan, workflow: { id: "approved", status: "approved", stage: "Approved", active: true, tasks: [{ id: "task-1", title: "Update query", status: "pending" }], occurredStages: ["planning", "approval"] } }));
+    expect(h.text()).not.toContain("Task progress");
+    expect(h.text()).not.toContain("Execution");
   });
 
   it("opens persisted historical Performance without a provider action", () => {
