@@ -12,7 +12,7 @@ import {
   type TaskSessionStatus,
 } from "./task-session.js";
 
-export interface TaskHistoryFilter { readonly status?: "active" | "completed" | "failed" | "interrupted"; readonly workspaceId?: string; readonly allWorkspaces?: boolean; readonly query?: string }
+export interface TaskHistoryFilter { readonly status?: "active" | "completed" | "failed" | "rejected" | "interrupted"; readonly workspaceId?: string; readonly allWorkspaces?: boolean; readonly query?: string }
 export const HISTORY_RETENTION_CHOICES = Object.freeze([20, 50, 100] as const);
 export type HistoryRetention = typeof HISTORY_RETENTION_CHOICES[number];
 interface TaskHistoryFile { readonly schemaVersion: 1; readonly sessions: readonly TaskSession[] }
@@ -64,7 +64,9 @@ export class TaskHistoryStore {
       if (!filter.status) return true;
       if (filter.status === "active") return !TERMINAL_TASK_SESSION_STATUSES.has(status);
       if (filter.status === "completed") return status === "completed";
+      // Rejected is its own filter: a user rejection is not a failure.
       if (filter.status === "failed") return status === "failed" || status === "aborted";
+      if (filter.status === "rejected") return status === "rejected";
       return status === "interrupted";
     };
     return [...this.sessions]

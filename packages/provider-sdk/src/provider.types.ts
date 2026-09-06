@@ -18,6 +18,13 @@ export type ModelExecutionCapability =
       readonly provenance: ExecutionCapabilityProvenance;
     }
   | {
+      readonly kind: "anthropic_effort";
+      readonly label: "Effort";
+      readonly control: "select";
+      readonly values: readonly ExecutionOptionValue[];
+      readonly provenance: ExecutionCapabilityProvenance;
+    }
+  | {
       readonly kind: "anthropic_thinking";
       readonly label: "Thinking";
       readonly control: "toggle_number";
@@ -51,6 +58,7 @@ export type ModelExecutionCapability =
 export type ExecutionOptions =
   | { readonly kind: "provider_default" }
   | { readonly kind: "openai_reasoning"; readonly effort: string }
+  | { readonly kind: "anthropic_effort"; readonly effort: string }
   | { readonly kind: "anthropic_thinking"; readonly enabled: true; readonly budgetTokens: number }
   | { readonly kind: "gemini_thinking_budget"; readonly budgetTokens: number }
   | { readonly kind: "gemini_thinking_level"; readonly level: string };
@@ -58,6 +66,7 @@ export type ExecutionOptions =
 export type ExecutionProfileSummary =
   | { readonly kind: "provider_default" }
   | { readonly kind: "openai_reasoning"; readonly value: string }
+  | { readonly kind: "anthropic_effort"; readonly value: string }
   | { readonly kind: "anthropic_thinking"; readonly enabled: true; readonly budgetTokens: number }
   | { readonly kind: "gemini_thinking_budget"; readonly budgetTokens: number }
   | { readonly kind: "gemini_thinking_level"; readonly value: string };
@@ -100,6 +109,37 @@ export interface GenerateRequest {
   readonly tools?: readonly ModelToolDefinition[];
   readonly conversation?: readonly ModelConversationMessage[];
   readonly executionOptions?: ExecutionOptions;
+  /**
+   * Optional upper bound on generated output tokens. Adapters apply it only when
+   * the transport exposes an equivalent control; it never changes role routing.
+   */
+  readonly maxOutputTokens?: number;
+  /**
+   * Safe structured progress sink. Adapters call it only when the transport
+   * genuinely exposes machine-readable progress, and only with the enumerated
+   * phases below. Model text, reasoning, and tool arguments are never passed.
+   */
+  readonly onProgress?: (event: ProviderProgressEvent) => void;
+}
+
+/**
+ * Enumerated provider progress phases. This contract deliberately carries no
+ * model output: hidden reasoning, structured-output fragments, and tool
+ * arguments must never be surfaced through it.
+ */
+export type ProviderProgressPhase =
+  | "request_started"
+  | "response_started"
+  | "output_receiving"
+  | "tool_call_requested"
+  | "tool_execution_started"
+  | "tool_execution_completed"
+  | "request_completed";
+
+export interface ProviderProgressEvent {
+  readonly phase: ProviderProgressPhase;
+  /** Bounded non-secret tool name, present only for tool phases. */
+  readonly toolName?: string;
 }
 
 export interface ModelToolDefinition {
@@ -139,6 +179,14 @@ export interface GenerateUsage {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly totalTokens?: number;
+  /**
+   * Provider-neutral cached-input accounting. `cacheReadTokens` counts cached
+   * input the provider reused; `cacheWriteTokens` counts input the provider
+   * wrote into its cache. Both stay absent when the provider does not report
+   * them, so a missing value is never rendered as an authoritative zero.
+   */
+  readonly cacheReadTokens?: number;
+  readonly cacheWriteTokens?: number;
   /** Provider-reported authoritative cost, when supplied by the provider. */
   readonly cost?: number;
   readonly currency?: string;
@@ -159,10 +207,17 @@ export interface ProviderCapabilities {
   readonly textGeneration: boolean;
   readonly structuredOutput?: boolean;
   readonly toolCalling?: boolean;
+  /**
+   * True only when the adapter consumes a documented machine-readable progress
+   * stream and can emit ProviderProgressEvent during generation. Adapters that
+   * return one final payload leave this false so clients fall back to stage and
+   * elapsed time instead of implying streaming support.
+   */
+  readonly progressStreaming?: boolean;
 }
 
 export type ProviderCategory = "official" | "compatible" | "local" | "community";
-export type ProviderAuthMethod = "api_key" | "oauth" | "device_code" | "local" | "none";
+export type ProviderAuthMethod = "api_key" | "oauth" | "device_code" | "subscription_cli" | "local" | "none";
 
 /** Provider-owned onboarding facts. Clients render only the capabilities declared here. */
 export interface ProviderOnboardingCapabilities {

@@ -46,7 +46,7 @@ export function projectProviderCatalog(
       ...(definition.onboarding.apiKeyHelpUrl ? { apiKeyHelpUrl: definition.onboarding.apiKeyHelpUrl } : {}),
       iconKey: definition.iconKey,
       configured: matches.length > 0,
-      connected: matches.length > 0,
+      connected: matches.some((config) => !config.signedOut),
       configurations: matches.map((config) => ({ id: config.id, displayName: config.displayName, isDefault: config.id === defaultProviderId })),
     };
   }).sort((a, b) => Number(b.popular) - Number(a.popular) || a.displayName.localeCompare(b.displayName));

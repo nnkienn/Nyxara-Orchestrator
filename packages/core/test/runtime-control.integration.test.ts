@@ -71,7 +71,7 @@ describe("runtime control integration", () => {
     nyxara.events.on("context.started", () => { contextBuilds += 1; });
     nyxara.events.on("workflow.permission_requested", () => { workflowPermissionRequests += 1; });
     nyxara.events.on("workflow.task_started", ({ taskId }) => startedTasks.push(taskId));
-    const workflow = nyxara.startWorkflow({ workspace, prompt: "Run three tasks" });
+    const workflow = nyxara.startWorkflow({ workspace, prompt: "Implement three repository tasks across the whole project" });
     const planned = await nyxara.createPlan({ workflowId: workflow.id, workspaceRoot: workspace, prompt: workflow.prompt });
     nyxara.approvePlan(workflow.id, planned.plan.id);
     const unsubscribe = nyxara.events.on("workflow.task_completed", ({ taskId }) => { if (taskId === "T1") nyxara.pauseWorkflow(workflow.id); });

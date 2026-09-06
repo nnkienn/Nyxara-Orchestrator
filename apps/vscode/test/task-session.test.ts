@@ -38,6 +38,51 @@ describe("TaskSession projection", () => {
     expect(projected.usageSummary).toEqual({ totalTokens: null, providerCalls: null, toolCalls: null, workflowDurationMs: null, repairCycles: null });
   });
 
+  it("records a rejected task without stages that never ran", () => {
+    const projected = projectTaskSession(base, state({
+      plan: { id: "p", objective: "Objective", tasks: [{ id: "one", title: "Task", description: "detail", acceptanceCriteria: ["Pass"], dependencies: [] }], risks: [] },
+      workflow: { id: "w", status: "failed", stage: "Plan Rejected", active: false, approvalStatus: "rejected", outcome: "rejected", occurredStages: ["planning", "approval"], tasks: [] },
+      completion: { status: "rejected", outcome: "rejected", changedFiles: 0, tokens: 120, modelCalls: 1, durationMs: 900, repairCycles: null, tokenParts: [] },
+    }), "2026-09-03T00:01:00.000Z");
+    expect(projected.status).toBe("rejected");
+    expect(projected.planSummary?.approvalStatus).toBe("rejected");
+    expect(projected.occurredStages).toEqual(["planning", "approval"]);
+    // Nothing executed, so no stage summaries and no failure message are stored.
+    expect(projected.executionSummary).toBeUndefined();
+    expect(projected.validationSummary).toBeUndefined();
+    expect(projected.reviewSummary).toBeUndefined();
+    expect(projected.repairSummary).toBeUndefined();
+    expect(projected.failureSummary).toBeUndefined();
+  });
+
+  it("maps a legacy rejection record to the Rejected outcome", () => {
+    const legacy = sanitizeTaskSession({
+      ...base,
+      status: "failed",
+      planSummary: { objective: "Objective", approvalStatus: "rejected", tasks: [], risks: [] },
+      failureSummary: { stage: "Failed", message: "Plan rejected by user" },
+    });
+    expect(legacy?.status).toBe("rejected");
+    expect(legacy?.failureSummary).toBeUndefined();
+  });
+
+  it("keeps a genuine failure classified as failed", () => {
+    const failed = sanitizeTaskSession({
+      ...base,
+      status: "failed",
+      planSummary: { objective: "Objective", approvalStatus: "approved", tasks: [], risks: [] },
+      executionSummary: { completed: 0, total: 1, tasks: [] },
+      failureSummary: { stage: "Validating", message: "Validation failed" },
+    });
+    expect(failed?.status).toBe("failed");
+    expect(failed?.failureSummary).toEqual({ stage: "Validating", message: "Validation failed" });
+  });
+
+  it("maps a rejected completion status to the rejected history outcome", () => {
+    expect(taskSessionStatus("failed", "rejected")).toBe("rejected");
+    expect(taskSessionStatus("failed", "failed")).toBe("failed");
+  });
+
   it("sanitizes provider/model HTML and rejects invalid task records", () => {
     const sanitized = sanitizeTaskSession({ ...base, providerSummary: { provider: "<provider>", model: "<model>" } });
     expect(sanitized?.providerSummary).toEqual({ provider: "<provider>", model: "<model>" });

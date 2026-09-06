@@ -29,6 +29,11 @@ import type {
   ContextBundle,
   ContextFile,
 } from "../context/context.types.js";
+import {
+  boundPlannerOutputTokens,
+  decidePlanningContext,
+  type PlanningContextDecision,
+} from "../context/planning-context-policy.js";
 import { ApproximateTokenEstimator } from "../context/token-estimator.js";
 import {
   selectTaskContext,
@@ -48,6 +53,7 @@ import type {
 } from "../executor/executor.types.js";
 import { ProviderRegistry } from "../providers/provider-registry.js";
 import { Planner } from "../planner/planner.js";
+import { PlannerError } from "../planner/planner-error.js";
 import { PlanningProfileRegistry } from "../planner/planning-profile-registry.js";
 import { planningProfileMetadata, type PlanningProfile } from "../planner/planning-profile.js";
 import { PlanValidator } from "../planner/plan-validator.js";
@@ -57,8 +63,10 @@ import { TaskGraph } from "../planner/task-graph.js";
 import type {
   CreatePlanInput,
   ExecutionPlan,
+  PlanClarificationResult,
   PlanResult,
   PlannedTask,
+  PlanningContextMetrics,
 } from "../planner/planner.types.js";
 import { WorkflowEngine } from "../workflow/workflow-engine.js";
 import { WorkflowStateError } from "../workflow/workflow.errors.js";
@@ -186,7 +194,7 @@ export class NyxaraOrchestrator {
     this.events.on("provider.generation.completed", (event) => {
       if (!event.workflowId || !event.role) return;
       const records = this.usageRecords.get(event.workflowId) ?? [];
-      records.push({ role: event.role, ...(event.providerConfigId ? { providerConfigId: event.providerConfigId } : {}), providerId: event.providerId, resolvedModelId: event.modelId, ...(event.requestedModelId ? { requestedModelId: event.requestedModelId } : {}), ...(event.executionProfileSummary ? { executionProfileSummary: event.executionProfileSummary } : {}), ...(event.taskId ? { taskId: event.taskId } : {}), ...(event.usage?.inputTokens !== undefined ? { inputTokens: event.usage.inputTokens } : {}), ...(event.usage?.outputTokens !== undefined ? { outputTokens: event.usage.outputTokens } : {}), ...(event.usage?.totalTokens !== undefined ? { totalTokens: event.usage.totalTokens } : {}), ...(event.usage?.cost !== undefined ? { providerReportedCost: event.usage.cost } : {}), ...(event.usage?.currency ? { currency: event.usage.currency } : {}), ...(event.providerDurationMs !== undefined ? { providerDurationMs: event.providerDurationMs } : {}), ...(event.contextBytes !== undefined ? { contextBytes: event.contextBytes } : {}), ...(event.contextFiles !== undefined ? { contextFiles: event.contextFiles } : {}), ...(event.contextTruncated !== undefined ? { contextTruncated: event.contextTruncated } : {}), toolCalls: event.toolCallCount });
+      records.push({ role: event.role, ...(event.providerConfigId ? { providerConfigId: event.providerConfigId } : {}), providerId: event.providerId, resolvedModelId: event.modelId, ...(event.requestedModelId ? { requestedModelId: event.requestedModelId } : {}), ...(event.executionProfileSummary ? { executionProfileSummary: event.executionProfileSummary } : {}), ...(event.taskId ? { taskId: event.taskId } : {}), ...(event.usage?.inputTokens !== undefined ? { inputTokens: event.usage.inputTokens } : {}), ...(event.usage?.outputTokens !== undefined ? { outputTokens: event.usage.outputTokens } : {}), ...(event.usage?.cacheReadTokens !== undefined ? { cacheReadTokens: event.usage.cacheReadTokens } : {}), ...(event.usage?.cacheWriteTokens !== undefined ? { cacheWriteTokens: event.usage.cacheWriteTokens } : {}), ...(event.usage?.totalTokens !== undefined ? { totalTokens: event.usage.totalTokens } : {}), ...(event.usage?.cost !== undefined ? { providerReportedCost: event.usage.cost } : {}), ...(event.usage?.currency ? { currency: event.usage.currency } : {}), ...(event.providerDurationMs !== undefined ? { providerDurationMs: event.providerDurationMs } : {}), ...(event.contextBytes !== undefined ? { contextBytes: event.contextBytes } : {}), ...(event.contextFiles !== undefined ? { contextFiles: event.contextFiles } : {}), ...(event.contextTruncated !== undefined ? { contextTruncated: event.contextTruncated } : {}), toolCalls: event.toolCallCount });
       if (records.length > 10000) records.splice(0, records.length - 10000);
       this.usageRecords.set(event.workflowId, records);
       this.refreshWorkflowUsage(event.workflowId);
@@ -499,8 +507,78 @@ export class NyxaraOrchestrator {
   getEngineeringRule(id: string): EngineeringRule { return this.engineeringRules.get(id); }
   listEngineeringRules(): EngineeringRule[] { return this.engineeringRules.list(); }
 
+  /**
+   * Deterministic, local pre-planning decision. It never calls a provider: a
+   * greeting must not cost a model call, and deciding whether to call a model
+   * must not itself require one.
+   */
+  planningContextDecision(input: {
+    readonly prompt: string;
+    readonly requestSignals?: CreatePlanInput["requestSignals"];
+    readonly plannerMaxOutputTokens?: number;
+  }): PlanningContextDecision {
+    return decidePlanningContext({
+      prompt: input.prompt,
+      ...(input.requestSignals ? { signals: input.requestSignals } : {}),
+      ...(input.plannerMaxOutputTokens !== undefined
+        ? { plannerMaxOutputTokens: input.plannerMaxOutputTokens }
+        : {}),
+    });
+  }
+
+  /**
+   * Returns a local clarification result for a request that cannot produce a
+   * meaningful plan, so no repository context is collected and no Planner call
+   * is made. Callers that already resolved the decision pass it through.
+   */
+  requestPlanClarification(input: {
+    readonly prompt: string;
+    readonly decision: PlanningContextDecision;
+  }): PlanClarificationResult {
+    const result = Object.freeze({
+      kind: "clarification_required" as const,
+      reason: input.decision.clarificationReason ?? "underspecified",
+      planningContextMode: input.decision.mode,
+      prompt: input.prompt,
+      contextMetrics: Object.freeze({
+        planningContextMode: input.decision.mode,
+        files: 0,
+        bytes: 0,
+        truncated: false,
+        plannerMaxOutputTokens: null,
+      }),
+    });
+    this.events.emit("context.policy_resolved", {
+      classification: input.decision.classification,
+      planningContextMode: input.decision.mode,
+      repositoryRetrieval: false,
+      clarificationRequired: true,
+      files: 0,
+      bytes: 0,
+      truncated: false,
+      plannerMaxOutputTokens: null,
+    });
+    return result;
+  }
+
   async createPlan(input: CreatePlanInput): Promise<PlanResult> {
     const workflowId = input.workflowId;
+    const decision = this.planningContextDecision({
+      prompt: input.prompt,
+      ...(input.requestSignals ? { requestSignals: input.requestSignals } : {}),
+      ...(input.plannerMaxOutputTokens !== undefined
+        ? { plannerMaxOutputTokens: input.plannerMaxOutputTokens }
+        : {}),
+    });
+    if (decision.clarificationRequired) {
+      const local = this.requestPlanClarification({ prompt: input.prompt, decision });
+      throw new PlannerError(
+        "clarification_required",
+        local.reason === "trivial"
+          ? "Tell Nyxara what you want to build, fix, review, or change."
+          : "Need more detail. Tell Nyxara what you want changed, and where.",
+      );
+    }
     // Resolve and snapshot once before repository or provider work. Registry
     // mutations cannot produce mixed instructions within this operation.
     const planningProfile = this.planningProfiles.resolve(input.planningProfileId);
@@ -521,11 +599,34 @@ export class NyxaraOrchestrator {
     if (!replacingDraft) this.enterWorkflowStatus(workflowId, "planning");
 
     try {
-      const context = await this.contextEngine.build({
-        workspaceRoot: input.workspaceRoot,
-        prompt: input.prompt,
-        ...(input.contextBudget ? { budget: input.contextBudget } : {}),
-        ...(input.signal ? { signal: input.signal } : {}),
+      // The deterministic gate decides whether, and how much, repository context
+      // this request deserves. ContextEngine still owns retrieval and bounding.
+      const budget = input.contextBudget ?? decision.contextBudget;
+      const focus = decision.focusOnly || decision.focusPaths.length || decision.focusSymbols.length
+        ? {
+            ...(decision.focusPaths.length ? { paths: decision.focusPaths } : {}),
+            ...(decision.focusSymbols.length ? { symbols: decision.focusSymbols } : {}),
+            ...(decision.focusOnly ? { exclusive: true } : {}),
+          }
+        : undefined;
+      const context = decision.repositoryRetrieval
+        ? await this.contextEngine.build({
+            workspaceRoot: input.workspaceRoot,
+            prompt: input.prompt,
+            ...(budget ? { budget } : {}),
+            ...(focus ? { focus } : {}),
+            ...(input.signal ? { signal: input.signal } : {}),
+          })
+        : emptyPlanningContext(input.workspaceRoot, input.prompt);
+      this.events.emit("context.policy_resolved", {
+        classification: decision.classification,
+        planningContextMode: decision.mode,
+        repositoryRetrieval: decision.repositoryRetrieval,
+        clarificationRequired: decision.clarificationRequired,
+        files: context.files.length,
+        bytes: context.totalBytes,
+        truncated: context.truncated,
+        plannerMaxOutputTokens: decision.plannerMaxOutputTokens,
       });
       const plan = await this.planner.run({
         input: {
@@ -537,7 +638,15 @@ export class NyxaraOrchestrator {
         model,
         planningProfile,
         engineeringRules: planningRules,
+        maxOutputTokens: decision.plannerMaxOutputTokens,
         ...(workflowId ? { workflowId } : {}),
+      });
+      const contextMetrics: PlanningContextMetrics = Object.freeze({
+        planningContextMode: decision.mode,
+        files: context.files.length,
+        bytes: context.totalBytes,
+        truncated: context.truncated,
+        plannerMaxOutputTokens: decision.plannerMaxOutputTokens,
       });
 
       const taskRuleSets = new Map<string, ResolvedRuleSet>();
@@ -578,6 +687,8 @@ export class NyxaraOrchestrator {
         planningProfileId: profileMetadata.id,
         ruleSetFingerprint: planningRules.fingerprint,
         effectiveRuleIds: Object.freeze(planningRules.rules.map((rule) => rule.id)),
+        planningContextMode: decision.mode,
+        contextMetrics,
       };
     } catch (error: unknown) {
       // Failed regeneration leaves the prior draft available for approval.
@@ -1521,4 +1632,23 @@ function errorCode(error: unknown): string {
 function canonicalChangedPath(workspaceRoot: string, file: string): string {
   const relative = path.isAbsolute(file) ? path.relative(workspaceRoot, file) : file;
   return path.posix.normalize(relative.replaceAll("\\", "/")).replace(/^\.\//, "");
+}
+
+/**
+ * Metadata-only context for a request the gate decided must not read the
+ * repository. It carries no files, no diff, and zero bytes.
+ */
+function emptyPlanningContext(workspaceRoot: string, prompt: string): ContextBundle {
+  return Object.freeze({
+    workspaceRoot,
+    prompt,
+    files: Object.freeze([]),
+    git: {
+      status: { isRepository: false, branch: null, files: [], truncated: false },
+      diff: { isRepository: false, diff: "", files: [], truncated: false },
+    },
+    totalBytes: 0,
+    estimatedTokens: 0,
+    truncated: false,
+  });
 }

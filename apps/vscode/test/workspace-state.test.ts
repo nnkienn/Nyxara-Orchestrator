@@ -48,7 +48,7 @@ describe("workspace Webview state projection", () => {
     const state = build({ plan, snapshot: { workflowId: "w", status: "completed", updatedAt: "now", tasks: [], usage }, result: { workflowId: "w", planId: "plan-1", status: "completed", changedFiles: ["a.ts", "b.ts"], durationMs: 20620, repairCycles: 1, usage } });
     expect(state.validation).toEqual([{ kind: "typecheck", status: "passed", durationMs: 1 }, { kind: "lint", status: "skipped", durationMs: 0 }]);
     expect(state.reviewStatus).toBe("needs_more_context");
-    expect(state.completion).toEqual({ status: "completed", changedFiles: 2, tokens: 7073, modelCalls: 4, durationMs: 20620, repairCycles: 1 });
+    expect(state.completion).toEqual({ status: "completed", outcome: "completed", changedFiles: 2, tokens: 7073, modelCalls: 4, durationMs: 20620, repairCycles: 1, tokenParts: [] });
     expect(state.performance?.overview).toMatchObject({ totalTokens: 7073, providerCalls: 4, workflowDurationMs: 20620, repairCycles: 1, validationStatus: "passed", reviewStatus: "needs_more_context" });
   });
 

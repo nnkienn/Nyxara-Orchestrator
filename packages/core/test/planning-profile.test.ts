@@ -122,8 +122,9 @@ describe("Planner profile resolution", () => {
   it("uses default when omitted and passes only the selected preset into the provider prompt", async () => {
     const generate = vi.fn(async (request: GenerateRequest) => ({ provider: "fake", model: request.model, text: JSON.stringify(validDraft) }));
     const core = orchestrator(generate);
-    const defaultResult = await core.createPlan({ workspaceRoot: process.cwd(), prompt: "Plan" });
-    const detailedResult = await core.createPlan({ workspaceRoot: process.cwd(), prompt: "Plan", planningProfileId: "detailed" });
+    const prompt = "Review packages/core/src/context/token-estimator.ts for profile behavior";
+    const defaultResult = await core.createPlan({ workspaceRoot: process.cwd(), prompt });
+    const detailedResult = await core.createPlan({ workspaceRoot: process.cwd(), prompt, planningProfileId: "detailed" });
     expect(defaultResult.planningProfile.id).toBe("default");
     expect(detailedResult.planningProfile.id).toBe("detailed");
     expect(generate.mock.calls[1]![0].prompt).toContain("Plan style (detailed)");
@@ -133,7 +134,7 @@ describe("Planner profile resolution", () => {
   it("rejects an unknown explicit profile before repository/provider work", async () => {
     const generate = vi.fn(async (request: GenerateRequest) => ({ provider: "fake", model: request.model, text: JSON.stringify(validDraft) }));
     const core = orchestrator(generate);
-    await expect(core.createPlan({ workspaceRoot: process.cwd(), prompt: "Plan", planningProfileId: "missing" }))
+    await expect(core.createPlan({ workspaceRoot: process.cwd(), prompt: "Review packages/core/src/context/token-estimator.ts for profile behavior", planningProfileId: "missing" }))
       .rejects.toMatchObject({ code: "unknown_planning_profile" });
     expect(generate).not.toHaveBeenCalled();
   });
@@ -143,7 +144,7 @@ describe("Planner profile resolution", () => {
     const core = orchestrator(undefined, [profile({ customInstructions: [secretInstruction] })]);
     const captured: unknown[] = [];
     core.events.on("planner.profile_resolved", (event) => captured.push(event));
-    await core.createPlan({ workspaceRoot: process.cwd(), prompt: "Plan", planningProfileId: "team-a" });
+    await core.createPlan({ workspaceRoot: process.cwd(), prompt: "Review packages/core/src/context/token-estimator.ts for profile behavior", planningProfileId: "team-a" });
     expect(captured).toEqual([expect.objectContaining({ profileId: "team-a", outputLanguage: "Vietnamese", planStyle: "detailed" })]);
     expect(JSON.stringify(captured)).not.toContain(secretInstruction);
   });
@@ -169,9 +170,10 @@ describe("profile regeneration and approval compatibility", () => {
   it("regenerates an unapproved draft with new metadata and no execution", async () => {
     const generate = vi.fn(async (request: GenerateRequest) => ({ provider: "fake", model: request.model, text: JSON.stringify(validDraft) }));
     const core = orchestrator(generate);
-    const workflow = core.startWorkflow({ workspace: process.cwd(), prompt: "Plan" });
-    const first = await core.createPlan({ workflowId: workflow.id, workspaceRoot: process.cwd(), prompt: "Plan" });
-    const second = await core.createPlan({ workflowId: workflow.id, workspaceRoot: process.cwd(), prompt: "Plan", planningProfileId: "detailed" });
+    const prompt = "Review packages/core/src/context/token-estimator.ts for profile behavior";
+    const workflow = core.startWorkflow({ workspace: process.cwd(), prompt });
+    const first = await core.createPlan({ workflowId: workflow.id, workspaceRoot: process.cwd(), prompt });
+    const second = await core.createPlan({ workflowId: workflow.id, workspaceRoot: process.cwd(), prompt, planningProfileId: "detailed" });
     expect(first.planningProfile.id).toBe("default");
     expect(second.planningProfile.id).toBe("detailed");
     expect(second.plan.id).not.toBe(first.plan.id);
@@ -183,8 +185,9 @@ describe("profile regeneration and approval compatibility", () => {
   it("keeps an approved plan and fingerprint unchanged after other profile registrations", async () => {
     const generate = vi.fn(async (request: GenerateRequest) => ({ provider: "fake", model: request.model, text: JSON.stringify(validDraft) }));
     const core = orchestrator(generate);
-    const workflow = core.startWorkflow({ workspace: process.cwd(), prompt: "Plan" });
-    const result = await core.createPlan({ workflowId: workflow.id, workspaceRoot: process.cwd(), prompt: "Plan" });
+    const prompt = "Review packages/core/src/context/token-estimator.ts for profile behavior";
+    const workflow = core.startWorkflow({ workspace: process.cwd(), prompt });
+    const result = await core.createPlan({ workflowId: workflow.id, workspaceRoot: process.cwd(), prompt });
     core.approvePlan(workflow.id, result.plan.id);
     const approvedPlan: ExecutionPlan = core.getPlan(result.plan.id);
     const calls = generate.mock.calls.length;

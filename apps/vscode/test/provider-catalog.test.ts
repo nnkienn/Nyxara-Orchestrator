@@ -17,4 +17,12 @@ describe("provider catalog projection", () => {
     expect(searchProviderCatalog(entries, "claude").map((entry) => entry.id)).toEqual(expect.arrayContaining(["anthropic", "claude-code-cli"]));
     expect(entries).toHaveLength(14);
   });
+
+  it("reports actual authentication and discovery modes instead of fake OAuth", () => {
+    const entries = projectProviderCatalog([]); const codex = entries.find((entry) => entry.id === "codex-cli")!; const claude = entries.find((entry) => entry.id === "claude-code-cli")!; const openai = entries.find((entry) => entry.id === "openai")!;
+    expect(codex.authMethods).toEqual(["subscription_cli"]); expect(codex.supportsModelDiscovery).toBe(true); expect(codex.supportsManualModelId).toBe(true);
+    expect(claude.authMethods).toEqual(["subscription_cli"]); expect(claude.supportsModelDiscovery).toBe(true);
+    expect(openai.authMethods).toEqual(["api_key"]); expect(openai.supportsModelDiscovery).toBe(true);
+    for (const id of ["kimi", "glm"]) expect(entries.find((entry) => entry.id === id)).toMatchObject({ category: "official", authMethods: ["api_key"], supportsModelDiscovery: true });
+  });
 });

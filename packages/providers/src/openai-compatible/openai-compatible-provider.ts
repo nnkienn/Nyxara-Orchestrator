@@ -102,6 +102,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const executionOptions = assertExecutionOptionsSupported(request.executionOptions, this.modelCapabilities(request.model)?.execution);
+    const maxOutputTokens = boundedOutputTokens(request.maxOutputTokens);
     const payload = await this.request(
       "/chat/completions",
       {
@@ -115,6 +116,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
             ) ?? []),
           ],
           stream: false,
+          ...(maxOutputTokens !== undefined ? { max_tokens: maxOutputTokens } : {}),
           ...(request.tools && request.tools.length > 0
             ? {
                 tools: request.tools.map((tool) => ({
@@ -447,4 +449,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
       });
     }
   }
+}
+
+function boundedOutputTokens(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
 }

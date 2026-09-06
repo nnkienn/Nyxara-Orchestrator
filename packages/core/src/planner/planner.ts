@@ -4,9 +4,11 @@ import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
 import { errorCodeOr } from "../internal/error-code.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
+import { boundPlannerOutputTokens } from "../context/planning-context-policy.js";
 import { PlanValidator } from "./plan-validator.js";
 import { PlannerError } from "./planner-error.js";
 import { PlannerPromptBuilder } from "./planner-prompt-builder.js";
+import { parseAndNormalizePlanDraft } from "./plan-draft-normalizer.js";
 import {
   ExecutionPlanDraftSchema,
   normalizePlannerInput,
@@ -48,8 +50,9 @@ export class Planner {
         input.context.files.length,
         input.context.totalBytes,
         input.context.truncated,
+        boundPlannerOutputTokens(runInput.maxOutputTokens),
       );
-      const parsed = this.parseResponse(response.text);
+      const parsed = parseAndNormalizePlanDraft(response.text);
 
       this.events.emit("plan.validation_started", {
         providerId: model.providerId,
@@ -60,9 +63,11 @@ export class Planner {
       try {
         const draftResult = ExecutionPlanDraftSchema.safeParse(parsed);
         if (!draftResult.success) {
+          const issue = draftResult.error.issues[0];
+          const location = issue?.path.length ? issue.path.join(".") : "plan";
           throw new PlannerError(
             "invalid_plan",
-            "Planner returned a plan that does not match the required schema",
+            `Planner plan field ${location} is invalid${issue?.message ? `: ${issue.message}` : ""}`,
           );
         }
         plan = this.validator.validate({
@@ -121,13 +126,30 @@ export class Planner {
     contextFiles?: number,
     contextBytes?: number | null,
     contextTruncated?: boolean,
+    maxOutputTokens?: number,
   ): Promise<GenerateResponse> {
     try {
       const started = performance.now();
+      // Progress is forwarded only when the transport declares real streaming.
+      // Non-streaming transports rely on stage plus elapsed time instead.
+      const streaming = provider.capabilities().progressStreaming === true;
       const response = await provider.generate({
         model: model.id,
         prompt,
         ...(executionOptions ? { executionOptions } : {}),
+        ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+        ...(streaming ? {
+          onProgress: (event) => this.events.emit("provider.generation.progress", {
+            providerId: provider.providerId ?? provider.id,
+            providerConfigId,
+            modelId: model.id,
+            role: "planner",
+            ...(workflowId ? { workflowId } : {}),
+            phase: event.phase,
+            ...(event.toolName ? { toolName: event.toolName } : {}),
+            timestamp: new Date().toISOString(),
+          }),
+        } : {}),
         ...(model.capabilities?.structuredOutput ||
         provider.capabilities().structuredOutput
           ? { responseFormat: "json" as const }
@@ -164,17 +186,6 @@ export class Planner {
     }
   }
 
-  private parseResponse(text: string): unknown {
-    const normalized = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-    try {
-      return JSON.parse(normalized);
-    } catch {
-      throw new PlannerError(
-        "plan_parse_error",
-        "Planner returned a response that is not valid JSON",
-      );
-    }
-  }
 }
 
 function plannerErrorCode(error: unknown): string {

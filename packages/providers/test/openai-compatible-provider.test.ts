@@ -57,6 +57,17 @@ describe("OpenAICompatibleProvider", () => {
     );
   });
 
+  it.each([
+    ["kimi", "https://api.moonshot.ai/v1", "kimi-k3/exact"],
+    ["glm", "https://open.bigmodel.cn/api/paas/v4", "glm-5.2/exact"],
+  ])("loads %s models from the provider-owned /models endpoint and preserves new IDs", async (providerId, baseUrl, modelId) => {
+    const fetchMock = vi.fn(async () => jsonResponse({ object: "list", data: [{ id: modelId, owned_by: providerId }] })) as unknown as typeof fetch;
+    const provider = new OpenAICompatibleProvider({ id: `${providerId}-work`, providerId, baseUrl, apiKey: "safe-test-key", credentialRequired: true, fetch: fetchMock });
+    await expect(provider.listModels()).resolves.toEqual([{ id: modelId, name: modelId, provider: `${providerId}-work` }]);
+    expect(fetchMock).toHaveBeenCalledWith(`${baseUrl}/models`, expect.objectContaining({ method: "GET" }));
+    expect(provider.modelCapabilities(modelId)).toBeUndefined();
+  });
+
   it("sends a chat prompt and normalizes generated output", async () => {
     let requestInit: RequestInit | undefined;
     const fetchMock = vi.fn(async (_url, init) => {
@@ -108,6 +119,19 @@ describe("OpenAICompatibleProvider", () => {
     expect(new Headers(requestInit?.headers).get("Authorization")).toBe(
       "Bearer test-key",
     );
+  });
+
+  it("forwards an optional caller output bound without adding one by default", async () => {
+    const bodies: any[] = [];
+    const fetchMock = vi.fn(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return jsonResponse({ choices: [{ message: { content: "{}" } }] });
+    }) as unknown as typeof fetch;
+    const provider = new OpenAICompatibleProvider({ baseUrl: "http://localhost:8080/v1", fetch: fetchMock });
+    await provider.generate({ model: "model-1", prompt: "bounded", maxOutputTokens: 2_560 });
+    await provider.generate({ model: "model-1", prompt: "default" });
+    expect(bodies[0].max_tokens).toBe(2_560);
+    expect(bodies[1]).not.toHaveProperty("max_tokens");
   });
 
   it("uses the credential abstraction without exposing secrets", async () => {

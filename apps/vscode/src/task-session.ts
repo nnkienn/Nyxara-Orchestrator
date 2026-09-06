@@ -25,6 +25,8 @@ export type TaskSessionStatus =
   | "completed"
   | "failed"
   | "aborted"
+  /** The user rejected the plan. Terminal, but not a system failure. */
+  | "rejected"
   | "interrupted";
 
 export interface TaskWorkspaceIdentity { readonly id: string; readonly label: string }
@@ -59,6 +61,8 @@ export interface TaskSession {
   readonly usageSummary?: TaskUsageSummary;
   readonly performanceSummary?: TaskPerformanceProjection;
   readonly failureSummary?: { readonly stage: string; readonly message: string };
+  /** Stages with recorded evidence. Unexecuted stages are never rendered. */
+  readonly occurredStages?: readonly string[];
   readonly interrupted?: true;
 }
 
@@ -75,8 +79,10 @@ const privacySafe = (value: unknown, max: number): string => typeof value === "s
 // Preserve authoritative Core totals verbatim. The history projection validates
 // numbers but never derives, rounds, or otherwise recalculates usage.
 const count = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
-const statusSet = new Set<TaskSessionStatus>(["draft", "planning", "awaiting_approval", "executing", "validating", "reviewing", "repairing", "waiting_for_permission", "paused", "completed", "failed", "aborted", "interrupted"]);
-export const TERMINAL_TASK_SESSION_STATUSES = new Set<TaskSessionStatus>(["completed", "failed", "aborted", "interrupted"]);
+const statusSet = new Set<TaskSessionStatus>(["draft", "planning", "awaiting_approval", "executing", "validating", "reviewing", "repairing", "waiting_for_permission", "paused", "completed", "failed", "aborted", "rejected", "interrupted"]);
+export const TERMINAL_TASK_SESSION_STATUSES = new Set<TaskSessionStatus>(["completed", "failed", "aborted", "rejected", "interrupted"]);
+/** Legacy terminal reason that identifies a user rejection in older records. */
+export const LEGACY_PLAN_REJECTED_MESSAGE = "Plan rejected by user";
 
 /** Redacts common credential shapes before any user/provider-controlled text is persisted. */
 export function redactSensitiveText(value: string): string {
@@ -118,8 +124,15 @@ export function projectTaskSession(existing: TaskSession, state: WorkspaceViewSt
   const usage = state.usage ?? state.completion;
   const status = taskSessionStatus(workflow?.status, state.completion?.status, existing.status);
   const currentTask = workflow?.tasks.find((task) => task.id === workflow.currentTaskId);
-  const planApproval = workflow?.approvalStatus === "approved" || (workflow && !["created", "planning", "awaiting_plan_approval"].includes(workflow.status)) ? "approved" : workflow?.approvalStatus === "rejected" ? "rejected" : "draft";
+  // Authoritative plan approval wins over the status heuristic, so a rejected plan
+  // is never recorded as approved just because the workflow reached a terminal state.
+  const planApproval = workflow?.approvalStatus === "rejected" ? "rejected"
+    : workflow?.approvalStatus === "approved" || (workflow && !["created", "planning", "awaiting_plan_approval"].includes(workflow.status)) ? "approved"
+    : "draft";
   const validationStatus = state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) ? "failed" : state.validation.length ? "passed" : ["validating", "reviewing", "repairing", "completed"].includes(workflow?.status ?? "") ? "unavailable" : "pending";
+  const occurredStages = workflow?.occurredStages ?? [];
+  const executionOccurred = Boolean(workflow) && (occurredStages.includes("execution") || workflow!.tasks.some((task) => task.status !== "pending"));
+  const validationOccurred = state.validation.length > 0 || occurredStages.includes("validation");
   const projected = {
     ...existing,
     updatedAt: now,
@@ -131,18 +144,22 @@ export function projectTaskSession(existing: TaskSession, state: WorkspaceViewSt
       tasks: state.plan.tasks.map((task) => ({ id: task.id, title: task.title, acceptanceCriteria: task.acceptanceCriteria, dependencies: task.dependencies, ...(task.risk ? { risk: task.risk } : {}) })),
       risks: state.plan.risks,
     } } : {}),
-    ...(workflow ? { executionSummary: { completed: workflow.progress?.completed ?? 0, total: workflow.progress?.total ?? workflow.tasks.length, ...(currentTask ? { currentTaskTitle: currentTask.title } : {}), tasks: workflow.tasks.map((task) => ({ title: task.title, status: task.status })) } } : {}),
-    ...(state.validation.length || workflow ? { validationSummary: { status: validationStatus, steps: state.validation.map((step) => ({ name: step.kind, status: step.status, durationMs: step.durationMs ?? null })) } } : {}),
+    // Stage summaries are recorded only for stages that actually occurred, so a
+    // rejected or early-terminated task never persists Execution 0/0 and friends.
+    ...(executionOccurred ? { executionSummary: { completed: workflow!.progress?.completed ?? 0, total: workflow!.progress?.total ?? workflow!.tasks.length, ...(currentTask ? { currentTaskTitle: currentTask.title } : {}), tasks: workflow!.tasks.map((task) => ({ title: task.title, status: task.status })) } } : {}),
+    ...(validationOccurred ? { validationSummary: { status: validationStatus, steps: state.validation.map((step) => ({ name: step.kind, status: step.status, durationMs: step.durationMs ?? null })) } } : {}),
     ...(state.reviewStatus ? { reviewSummary: { status: state.reviewStatus, findingCount: state.reviewFindingCount ?? null, ruleViolationCount: null } } : {}),
-    ...(state.repairCycles !== null || state.repairUsage ? { repairSummary: { cycles: state.repairCycles, outcome: status === "completed" ? "completed" : status === "failed" ? "failed" : status === "aborted" ? "aborted" : status === "repairing" ? "repairing" : null, durationMs: state.repairUsage?.durationMs ?? null, tokens: state.repairUsage?.tokens ?? null } } : {}),
+    ...((state.repairCycles ?? 0) > 0 || state.repairUsage ? { repairSummary: { cycles: state.repairCycles, outcome: status === "completed" ? "completed" : status === "failed" ? "failed" : status === "aborted" ? "aborted" : status === "repairing" ? "repairing" : null, durationMs: state.repairUsage?.durationMs ?? null, tokens: state.repairUsage?.tokens ?? null } } : {}),
     ...(usage ? { usageSummary: { totalTokens: usage.tokens, providerCalls: usage.modelCalls, toolCalls: state.usage?.toolCalls ?? null, workflowDurationMs: usage.durationMs, repairCycles: usage.repairCycles } } : {}),
     ...(state.performance ? { performanceSummary: state.performance } : {}),
-    ...(workflow?.error ? { failureSummary: { stage: workflow.error.stage, message: workflow.error.message } } : {}),
+    ...(occurredStages.length ? { occurredStages: [...occurredStages] } : {}),
+    ...(workflow?.error && status !== "rejected" ? { failureSummary: { stage: workflow.error.stage, message: workflow.error.message } } : {}),
   };
   return sanitizeTaskSession(projected)!;
 }
 
 export function taskSessionStatus(coreStatus: string | undefined, completionStatus: string | undefined, fallback: TaskSessionStatus = "draft"): TaskSessionStatus {
+  if (completionStatus === "rejected") return "rejected";
   if (completionStatus === "completed" || completionStatus === "failed" || completionStatus === "aborted") return completionStatus;
   switch (coreStatus) {
     case "created": case "planning": case "planned": return "planning";
@@ -163,7 +180,10 @@ export function sanitizeTaskSession(value: unknown): TaskSession | undefined {
   const id = bounded(value.id, 200); const createdAt = date(value.createdAt); const updatedAt = date(value.updatedAt);
   const workspace = record(value.workspaceIdentity) ? { id: bounded(value.workspaceIdentity.id, 64), label: privacySafe(value.workspaceIdentity.label, 100) } : undefined;
   const title = privacySafe(value.title, MAX_HISTORY_TITLE); const requirement = privacySafe(value.requirement, MAX_HISTORY_REQUIREMENT);
-  const status = typeof value.status === "string" && statusSet.has(value.status as TaskSessionStatus) ? value.status as TaskSessionStatus : undefined;
+  const declaredStatus = typeof value.status === "string" && statusSet.has(value.status as TaskSessionStatus) ? value.status as TaskSessionStatus : undefined;
+  // Records written before Rejected existed stored user rejection as a generic
+  // failure. The legacy terminal reason identifies them deterministically.
+  const status = declaredStatus === "failed" && isLegacyRejection(value) ? "rejected" as const : declaredStatus;
   if (!id || !createdAt || !updatedAt || !workspace?.id || !workspace.label || !title || !requirement || !status) return undefined;
   const session: TaskSession = { id, schemaVersion: TASK_SESSION_SCHEMA_VERSION, createdAt, updatedAt, workspaceIdentity: workspace, title, requirement, status };
   const workflowId = bounded(value.workflowId, 200); if (workflowId) Object.assign(session, { workflowId });
@@ -175,9 +195,23 @@ export function sanitizeTaskSession(value: unknown): TaskSession | undefined {
   if (record(value.repairSummary)) Object.assign(session, { repairSummary: { cycles: count(value.repairSummary.cycles), outcome: privacySafe(value.repairSummary.outcome, 80) || null, durationMs: count(value.repairSummary.durationMs), tokens: count(value.repairSummary.tokens) } });
   if (record(value.usageSummary)) Object.assign(session, { usageSummary: { totalTokens: count(value.usageSummary.totalTokens), providerCalls: count(value.usageSummary.providerCalls), toolCalls: count(value.usageSummary.toolCalls), workflowDurationMs: count(value.usageSummary.workflowDurationMs), repairCycles: count(value.usageSummary.repairCycles) } });
   const performanceSummary = sanitizePerformanceProjection(value.performanceSummary); if (performanceSummary) Object.assign(session, { performanceSummary });
-  if (record(value.failureSummary)) { const stage = privacySafe(value.failureSummary.stage, 80); const message = privacySafe(value.failureSummary.message, 240); if (stage && message) Object.assign(session, { failureSummary: { stage, message } }); }
+  // A rejected task has no failure to report; the outcome itself is the message.
+  if (status !== "rejected" && record(value.failureSummary)) { const stage = privacySafe(value.failureSummary.stage, 80); const message = privacySafe(value.failureSummary.message, 240); if (stage && message) Object.assign(session, { failureSummary: { stage, message } }); }
+  const occurredStages = Array.isArray(value.occurredStages)
+    ? value.occurredStages.slice(0, 8).map((entry) => bounded(entry, 40)).filter((entry) => KNOWN_STAGES.has(entry))
+    : undefined;
+  if (occurredStages) Object.assign(session, { occurredStages });
   if (status === "interrupted" || value.interrupted === true) Object.assign(session, { interrupted: true });
   return session;
+}
+
+const KNOWN_STAGES = new Set(["planning", "approval", "execution", "validation", "review", "repair"]);
+
+/** Deterministically identifies a pre-Rejected history record for a user rejection. */
+function isLegacyRejection(value: Record<string, any>): boolean {
+  const message = record(value.failureSummary) ? String(value.failureSummary.message ?? "") : "";
+  const planStatus = record(value.planSummary) ? value.planSummary.approvalStatus : undefined;
+  return message.includes(LEGACY_PLAN_REJECTED_MESSAGE) || (planStatus === "rejected" && !record(value.executionSummary));
 }
 
 function sanitizePlan(value: unknown): TaskPlanSummary | undefined {

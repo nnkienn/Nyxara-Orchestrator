@@ -25,6 +25,7 @@ export function parseExecutionOptions(value: unknown): ExecutionOptions | undefi
     case "provider_default":
       return Object.keys(value).every((key) => key === "kind") ? PROVIDER_DEFAULT_EXECUTION : undefined;
     case "openai_reasoning":
+    case "anthropic_effort":
       return typeof value.effort === "string" && value.effort.trim() && Object.keys(value).every((key) => key === "kind" || key === "effort")
         ? { kind: value.kind, effort: value.effort.trim() }
         : undefined;
@@ -63,7 +64,7 @@ export function validateExecutionOptions(
   if (options.kind === "provider_default") return capability ? "valid" : "unknown";
   if (!capability || capability.kind !== options.kind) return "stale";
   if (capability.control === "select") {
-    const value = options.kind === "openai_reasoning" ? options.effort : options.kind === "gemini_thinking_level" ? options.level : undefined;
+    const value = options.kind === "openai_reasoning" || options.kind === "anthropic_effort" ? options.effort : options.kind === "gemini_thinking_level" ? options.level : undefined;
     return value !== undefined && capability.values.some((choice) => choice.value === value) ? "valid" : "stale";
   }
   const budget = options.kind === "anthropic_thinking" || options.kind === "gemini_thinking_budget" ? options.budgetTokens : Number.NaN;
@@ -89,6 +90,7 @@ export function executionProfileSummary(options: ExecutionOptions | undefined): 
   switch (normalized.kind) {
     case "provider_default": return { kind: normalized.kind };
     case "openai_reasoning": return { kind: normalized.kind, value: normalized.effort };
+    case "anthropic_effort": return { kind: normalized.kind, value: normalized.effort };
     case "anthropic_thinking": return { kind: normalized.kind, enabled: true, budgetTokens: normalized.budgetTokens };
     case "gemini_thinking_budget": return { kind: normalized.kind, budgetTokens: normalized.budgetTokens };
     case "gemini_thinking_level": return { kind: normalized.kind, value: normalized.level };

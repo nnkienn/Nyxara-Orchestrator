@@ -38,7 +38,7 @@ describe("local provider configuration", () => {
 
   it("reads a subscription CLI config without an endpoint or secret", async () => {
     const configs = readProviderConfigs((key, fallback) => key === "nyxara.providerConfigs" ? [{ id: "codex-cli", type: "codex-cli", displayName: "OpenAI Codex (ChatGPT)", authStrategy: "subscription" }] as any : fallback);
-    expect(configs).toEqual([{ id: "codex-cli", type: "codex-cli", displayName: "OpenAI Codex (ChatGPT)", authStrategy: "subscription" }]);
+    expect(configs).toEqual([{ id: "codex-cli", type: "codex-cli", displayName: "OpenAI Codex (ChatGPT)", authStrategy: "subscription_cli" }]);
     const provider = createProvider(configs[0]!, { get: vi.fn(), store: vi.fn(), delete: vi.fn() });
     expect(provider).toMatchObject({ id: "codex-cli", displayName: "OpenAI Codex (ChatGPT)" });
     expect(provider.capabilities()).toMatchObject({ toolCalling: true, structuredOutput: true });

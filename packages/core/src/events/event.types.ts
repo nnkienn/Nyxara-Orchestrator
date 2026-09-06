@@ -154,6 +154,51 @@ export interface ContextFailedEvent {
   readonly code: string;
 }
 
+/**
+ * Deterministic pre-planning context decision. Metadata only: it records how
+ * much context was allowed and collected, never any source content or prompt.
+ */
+export interface ContextPolicyResolvedEvent {
+  readonly classification: "trivial" | "underspecified" | "targeted" | "normal_repository_task";
+  readonly planningContextMode: "none" | "minimal" | "targeted" | "normal";
+  readonly repositoryRetrieval: boolean;
+  readonly clarificationRequired: boolean;
+  readonly files: number;
+  readonly bytes: number;
+  readonly truncated: boolean;
+  readonly plannerMaxOutputTokens: number | null;
+}
+
+/**
+ * Authoritative stage-entry timestamp. Clients format elapsed time locally from
+ * it instead of polling Core or the provider.
+ */
+export interface WorkflowStageChangedEvent {
+  readonly workflowId: string;
+  readonly stage: WorkflowStatus;
+  readonly stageStartedAt: string;
+}
+
+/** Safe structured provider progress. It never carries model text or reasoning. */
+export interface ProviderProgressEventPayload {
+  readonly providerId: string;
+  readonly providerConfigId?: string;
+  readonly modelId: string;
+  readonly role?: "planner" | "executor" | "reviewer" | "repair";
+  readonly workflowId?: string;
+  readonly taskId?: string;
+  readonly phase:
+    | "request_started"
+    | "response_started"
+    | "output_receiving"
+    | "tool_call_requested"
+    | "tool_execution_started"
+    | "tool_execution_completed"
+    | "request_completed";
+  readonly toolName?: string;
+  readonly timestamp: string;
+}
+
 export interface PlannerStartedEvent {
   readonly providerId: string;
   readonly modelId: string;
@@ -385,6 +430,9 @@ export interface NyxaraEventMap {
   readonly "context.completed": ContextCompletedEvent;
   readonly "context.truncated": ContextTruncatedEvent;
   readonly "context.failed": ContextFailedEvent;
+  readonly "context.policy_resolved": ContextPolicyResolvedEvent;
+  readonly "workflow.stage_changed": WorkflowStageChangedEvent;
+  readonly "provider.generation.progress": ProviderProgressEventPayload;
   readonly "planner.started": PlannerStartedEvent;
   readonly "planner.profile_resolved": PlannerProfileResolvedEvent;
   readonly "rules.resolved": RulesResolvedEvent;

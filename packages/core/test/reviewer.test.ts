@@ -44,6 +44,7 @@ describe("Reviewer", () => {
     expect(request.responseFormat).toBe("json");
     expect(request.tools).toBeUndefined();
     expect(request.conversation).toBeUndefined();
+    expect(request.maxOutputTokens).toBeUndefined();
     expect(request.prompt).toContain("Review only the bounded evidence provided");
     expect(request.prompt).toContain("1. User requirement:");
     expect(request.prompt).toContain("5. Git diff");

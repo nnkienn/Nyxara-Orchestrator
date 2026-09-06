@@ -3,7 +3,7 @@ type WorkflowUsage = NonNullable<WorkflowSnapshot["usage"]>;
 import type { ProviderConfig } from "./provider-config.js";
 import type { TaskSession } from "./task-session.js";
 import { buildLegacyPerformanceProjection, buildPerformanceProjection, type TaskPerformanceProjection } from "./performance-projection.js";
-import { friendlyErrorMessage, workflowStage } from "./projection.js";
+import { friendlyErrorMessage, tokenSummaryParts, workflowStage } from "./projection.js";
 import type { SettingsProjection, SettingsSection } from "./settings-projection.js";
 
 const MAX_TEXT = 2_000;
@@ -23,12 +23,21 @@ export interface TaskHistoryViewState {
   readonly recentTasks: readonly TaskSession[];
   readonly tasks: readonly TaskSession[];
   readonly query: string;
-  readonly filter: "all" | "active" | "completed" | "failed" | "interrupted";
+  readonly filter: "all" | "active" | "completed" | "failed" | "rejected" | "interrupted";
   readonly scope: "current" | "all";
   readonly currentWorkspaceId?: string;
   readonly activeTaskId?: string;
   readonly selectedTask?: TaskSession;
 }
+/** Local clarification prompt shown instead of planning an unclear request. */
+export interface WorkspaceClarificationState {
+  readonly reason: "trivial" | "underspecified";
+  readonly requirement?: string;
+  readonly title: string;
+  readonly message: string;
+  readonly examples: readonly string[];
+}
+
 export interface WorkspaceViewState {
   readonly version: string;
   readonly configured: boolean;
@@ -39,11 +48,24 @@ export interface WorkspaceViewState {
   readonly history: TaskHistoryViewState;
   readonly prompt?: string;
   readonly plan?: WorkspacePlanState;
+  readonly clarification?: WorkspaceClarificationState;
+  /** Prefilled composer text after Edit Requirement; not a workflow resume. */
+  readonly requirementDraft?: string;
   readonly workflow?: {
     readonly id: string;
     readonly status: string;
     readonly stage: string;
     readonly active: boolean;
+    /** Authoritative stage entry time; the Webview formats elapsed locally. */
+    readonly stageStartedAt?: string;
+    /** Public terminal outcome; absent while the workflow is active. */
+    readonly outcome?: "completed" | "failed" | "aborted" | "rejected" | "interrupted";
+    /** Stages that actually occurred, so unexecuted stages are never rendered. */
+    readonly occurredStages: readonly string[];
+    /** Provider/model label for the active provider wait. */
+    readonly providerLabel?: string;
+    /** Safe structured provider progress label, when the transport streams it. */
+    readonly progressLabel?: string;
     readonly approvalStatus?: "draft" | "approved" | "rejected";
     readonly progress?: { readonly completed: number; readonly total: number };
     readonly currentTaskId?: string;
@@ -57,7 +79,7 @@ export interface WorkspaceViewState {
   readonly repairCycles: number | null;
   readonly repairUsage?: { readonly durationMs: number | null; readonly tokens: number | null };
   readonly usage?: { readonly tokens: number | null; readonly modelCalls: number | null; readonly toolCalls: number | null; readonly durationMs: number | null; readonly repairCycles: number | null };
-  readonly completion?: { readonly status: "completed" | "failed" | "aborted"; readonly changedFiles: number | null; readonly tokens: number | null; readonly modelCalls: number | null; readonly durationMs: number | null; readonly repairCycles: number | null };
+  readonly completion?: { readonly status: "completed" | "failed" | "aborted" | "rejected"; readonly outcome: "completed" | "failed" | "aborted" | "rejected" | "interrupted"; readonly changedFiles: number | null; readonly tokens: number | null; readonly modelCalls: number | null; readonly durationMs: number | null; readonly repairCycles: number | null; readonly tokenParts: readonly string[] };
   readonly performance?: TaskPerformanceProjection;
   readonly performanceView?: {
     readonly source: "live" | "history";
@@ -84,6 +106,10 @@ export interface BuildWorkspaceStateInput {
   readonly repairCycle?: number;
   readonly validationDurations?: ReadonlyMap<string, number>;
   readonly result?: { readonly status: "completed" | "failed" | "aborted"; readonly changedFiles: readonly string[]; readonly durationMs: number; readonly repairCycles: number; readonly usage?: WorkflowUsage };
+  readonly clarification?: WorkspaceClarificationState;
+  readonly requirementDraft?: string;
+  readonly providerLabel?: string;
+  readonly progressLabel?: string;
   readonly history?: TaskHistoryViewState;
   readonly settings?: WorkspaceViewState["settings"];
   readonly performanceTarget?: { readonly source: "live" } | { readonly source: "history"; readonly task: TaskSession };
@@ -105,25 +131,33 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
   const validation = usage?.validation?.steps?.slice(0, MAX_ITEMS).map((step) => ({ kind: bounded(step.name, 120), status: bounded(step.status, 40), durationMs: step.durationMs }))
     ?? [...input.validation.entries()].slice(0, MAX_ITEMS).map(([kind, status]) => ({ kind: bounded(kind, 120), status: bounded(status, 40), ...(input.validationDurations?.has(kind) ? { durationMs: input.validationDurations.get(kind)! } : {}) }));
   const reviewStatus = bounded(usage?.review?.status ?? input.reviewStatus, 80) || undefined;
+  const outcome = snapshot?.outcome;
   const workflow = snapshot ? {
     id: bounded(snapshot.workflowId, 200),
     status: snapshot.status,
     stage: workflowStage(snapshot),
     active: !terminal.has(snapshot.status),
+    occurredStages: [...(snapshot.occurredStages ?? [])],
+    ...(snapshot.stageStartedAt ? { stageStartedAt: bounded(snapshot.stageStartedAt, 40) } : {}),
+    ...(outcome ? { outcome } : {}),
+    ...(input.providerLabel && !terminal.has(snapshot.status) ? { providerLabel: bounded(input.providerLabel, 200) } : {}),
+    ...(input.progressLabel && !terminal.has(snapshot.status) ? { progressLabel: bounded(input.progressLabel, 120) } : {}),
     ...(snapshot.plan?.status ? { approvalStatus: snapshot.plan.status } : {}),
     ...(snapshot.progress ? { progress: { completed: snapshot.progress.completed, total: snapshot.progress.total } } : {}),
     ...(snapshot.currentTaskId ? { currentTaskId: bounded(snapshot.currentTaskId, 200) } : {}),
     tasks: snapshot.tasks.slice(0, MAX_ITEMS).map((task) => ({ id: bounded(task.taskId, 200), title: plan?.tasks.find((item) => item.id === task.taskId)?.title ?? bounded(task.taskId, 200), status: task.executionStatus ?? "pending" })),
     ...(snapshot.pendingPermission ? { permission: { id: bounded(snapshot.pendingPermission.id, 300), action: bounded([snapshot.pendingPermission.capability, snapshot.pendingPermission.resource].filter(Boolean).join(" · "), 300), reason: bounded(snapshot.pendingPermission.reason || "Nyxara needs permission to continue.", 500) } } : {}),
-    ...(snapshot.error ? { error: { stage: workflowStage(snapshot), message: friendlyErrorMessage(snapshot.error) } } : {}),
+    ...(snapshot.error && outcome !== "rejected" ? { error: { stage: workflowStage(snapshot), message: friendlyErrorMessage(snapshot.error) } } : {}),
   } : undefined;
   const completion = completionStatus ? {
-    status: completionStatus,
-    changedFiles: input.result?.changedFiles.length ?? null,
+    status: outcome === "rejected" ? "rejected" as const : completionStatus,
+    outcome: outcome ?? completionStatus,
+    changedFiles: outcome === "rejected" ? 0 : input.result?.changedFiles.length ?? null,
     tokens: performance?.overview.totalTokens ?? null,
     modelCalls: performance?.overview.providerCalls ?? null,
     durationMs: input.result?.durationMs ?? performance?.overview.workflowDurationMs ?? null,
     repairCycles: input.result?.repairCycles ?? performance?.overview.repairCycles ?? null,
+    tokenParts: tokenSummaryParts(performance?.overview),
   } : undefined;
   const projectedUsage = performance ? { tokens: performance.overview.totalTokens, modelCalls: performance.overview.providerCalls, toolCalls: performance.overview.toolCalls, durationMs: performance.overview.workflowDurationMs, repairCycles: performance.overview.repairCycles } : undefined;
   const performanceView = input.performanceTarget?.source === "live"
@@ -141,6 +175,8 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
       return { id: bounded(provider.id, 200), displayName: bounded(provider.displayName, 100), ...(modelId ? { modelId: bounded(modelId, 200) } : {}), isDefault: provider.id === input.defaultProviderId };
     }),
     history: input.history ?? { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "current" },
+    ...(input.clarification ? { clarification: input.clarification } : {}),
+    ...(input.requirementDraft ? { requirementDraft: bounded(input.requirementDraft, 20_000) } : {}),
     ...(input.prompt ? { prompt: bounded(input.prompt, 20_000) } : {}), ...(plan ? { plan } : {}), ...(workflow ? { workflow } : {}), validation,
     ...(reviewStatus ? { reviewStatus } : {}), ...(input.reviewFindingCount !== undefined ? { reviewFindingCount: input.reviewFindingCount } : {}), repairCycles: input.result?.repairCycles ?? usage?.repairCycles ?? input.repairCycle ?? null,
     ...(usage?.repairSummary ? { repairUsage: { durationMs: usage.repairSummary.totalDurationMs, tokens: usage.repairSummary.tokens } } : {}),

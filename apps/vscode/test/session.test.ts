@@ -96,6 +96,15 @@ describe("NyxaraSession Core boundary", () => {
     expect(session.currentPlan).toBe(result.plan);
   });
 
+  it("forwards cheap editor request signals to Core planning", async () => {
+    const { session, core } = createSession();
+    const result = { plan: { id: "plan-1", objective: "tiny", tasks: [] }, model: { modelId: "m" } };
+    core.createPlan.mockResolvedValue(result);
+    const requestSignals = { activeFilePath: "src/current.ts", selection: { path: "src/current.ts", lineCount: 3 } };
+    await session.generate("fix this", "/workspace", "default", requestSignals);
+    expect(core.createPlan).toHaveBeenCalledWith(expect.objectContaining({ requestSignals }));
+  });
+
   it("Approve & Run delegates to existing Core approval and run APIs", async () => {
     const { session, core } = createSession();
     session.workflowId = "workflow-1";

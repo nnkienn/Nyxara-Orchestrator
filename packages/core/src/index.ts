@@ -7,6 +7,7 @@ export type {
 export type {
   ContextCompletedEvent,
   ContextFailedEvent,
+  ContextPolicyResolvedEvent,
   ContextStartedEvent,
   ContextTruncatedEvent,
   ExecutorCompletedEvent,
@@ -28,6 +29,7 @@ export type {
   PatchEvent,
   PatchFailedEvent,
   ProviderGenerationCompletedEvent,
+  ProviderProgressEventPayload,
   ProviderModelsCompletedEvent,
   ProviderOperationFailedEvent,
   ProviderRegisteredEvent,
@@ -54,6 +56,7 @@ export type {
   UsageEvent,
   WorkflowCompletedEvent,
   WorkflowFailedEvent,
+  WorkflowStageChangedEvent,
   WorkflowStartedEvent,
   WorkflowTaskBlockedEvent,
   WorkflowTaskSelectedEvent,
@@ -149,9 +152,28 @@ export type {
   ContextBudget,
   ContextBundle,
   ContextFile,
+  ContextFocus,
   ExpandedContext,
   ExpandContextInput,
 } from "./context/context.types.js";
+export {
+  boundPlannerOutputTokens,
+  decidePlanningContext,
+  DEFAULT_PLANNER_OUTPUT_TOKENS,
+  MAX_PLANNER_OUTPUT_TOKENS,
+  MIN_PLANNER_OUTPUT_TOKENS,
+  MINIMAL_CONTEXT_BUDGET,
+  MINIMAL_PLANNER_OUTPUT_TOKENS,
+  TARGETED_CONTEXT_BUDGET,
+  TARGETED_PLANNER_OUTPUT_TOKENS,
+} from "./context/planning-context-policy.js";
+export type {
+  PlanningClarificationReason,
+  PlanningContextDecision,
+  PlanningContextMode,
+  PlanningRequestClassification,
+  PlanningRequestSignals,
+} from "./context/planning-context-policy.js";
 export {
   ApproximateTokenEstimator,
 } from "./context/token-estimator.js";
@@ -179,7 +201,11 @@ export type {
 } from "./planner/planning-profile.js";
 export { PlanningProfileRegistry } from "./planner/planning-profile-registry.js";
 export { compilePlanningProfile } from "./planner/planning-profile-compiler.js";
-export { PlanValidator } from "./planner/plan-validator.js";
+export {
+  DEFAULT_PLAN_STRUCTURE_BOUNDS,
+  PlanValidator,
+} from "./planner/plan-validator.js";
+export type { PlanStructureBounds } from "./planner/plan-validator.js";
 export {
   ExecutionPlanDraftSchema,
   ExecutionPlanSchema,
@@ -191,9 +217,11 @@ export type {
   CreatePlanInput,
   ExecutionPlan,
   ExecutionPlanDraft,
+  PlanClarificationResult,
   PlannedTask,
   PlannerInput,
   PlannerRunInput,
+  PlanningContextMetrics,
   PlanResult,
   PlanRisk,
 } from "./planner/planner.types.js";
@@ -330,15 +358,19 @@ export type {
   PendingWorkflowPermission,
   WorkflowError,
   WorkflowFailure,
+  WorkflowOutcome,
   WorkflowSnapshot,
+  WorkflowStage,
   WorkflowState,
   WorkflowStatus,
   WorkflowTaskSnapshot,
 } from "@nyxara/shared";
 export {
   isTerminalWorkflowStatus,
+  PLAN_REJECTED_ERROR_CODE,
   TERMINAL_WORKFLOW_STATUSES,
   WORKFLOW_STATUSES,
+  workflowOutcome,
 } from "@nyxara/shared";
 export { WorkflowEngine } from "./workflow/workflow-engine.js";
 export { WorkflowStateError } from "./workflow/workflow.errors.js";

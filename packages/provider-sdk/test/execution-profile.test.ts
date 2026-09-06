@@ -16,6 +16,14 @@ const reasoning: ModelExecutionCapability = {
 };
 
 describe("execution profile domain", () => {
+  it("validates provider-discovered Claude CLI effort without treating it as OpenAI reasoning", () => {
+    const effort: ModelExecutionCapability = { kind: "anthropic_effort", label: "Effort", control: "select", values: [{ value: "high", label: "High" }, { value: "max", label: "Max" }], provenance: "provider_discovery" };
+    expect(parseExecutionOptions({ kind: "anthropic_effort", effort: "max" })).toEqual({ kind: "anthropic_effort", effort: "max" });
+    expect(validateExecutionOptions({ kind: "anthropic_effort", effort: "max" }, effort)).toBe("valid");
+    expect(validateExecutionOptions({ kind: "openai_reasoning", effort: "max" }, effort)).toBe("stale");
+    expect(executionProfileSummary({ kind: "anthropic_effort", effort: "high" })).toEqual({ kind: "anthropic_effort", value: "high" });
+  });
+
   it("makes Provider Default first-class and serializable", () => {
     expect(parseExecutionOptions(JSON.parse(JSON.stringify(PROVIDER_DEFAULT_EXECUTION)))).toEqual({ kind: "provider_default" });
     expect(executionProfileSummary(undefined)).toEqual({ kind: "provider_default" });

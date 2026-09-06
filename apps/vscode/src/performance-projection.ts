@@ -20,6 +20,9 @@ export interface PerformanceRoleProjection {
   readonly calls: number | null;
   readonly inputTokens: number | null;
   readonly outputTokens: number | null;
+  /** Cached-input provenance; null when the provider does not report it. */
+  readonly cacheReadTokens: number | null;
+  readonly cacheWriteTokens: number | null;
   readonly totalTokens: number | null;
   readonly providerDurationMs: number | null;
   readonly usageSource: string | null;
@@ -32,6 +35,8 @@ export interface TaskPerformanceProjection {
     readonly terminalStatus: PerformanceTerminalStatus | null;
     readonly inputTokens: number | null;
     readonly outputTokens: number | null;
+    readonly cacheReadTokens: number | null;
+    readonly cacheWriteTokens: number | null;
     readonly totalTokens: number | null;
     readonly workflowDurationMs: number | null;
     readonly providerCalls: number | null;
@@ -166,7 +171,7 @@ export function buildPerformanceProjection(input: BuildPerformanceProjectionInpu
     detailLevel: "detailed",
     overview: {
       terminalStatus: input.terminalStatus ?? null,
-      inputTokens: metric(usage.totalInputTokens), outputTokens: metric(usage.totalOutputTokens), totalTokens: metric(usage.totalTokens),
+      inputTokens: metric(usage.totalInputTokens), outputTokens: metric(usage.totalOutputTokens), cacheReadTokens: metric(usage.totalCacheReadTokens), cacheWriteTokens: metric(usage.totalCacheWriteTokens), totalTokens: metric(usage.totalTokens),
       workflowDurationMs: metric(usage.totalDurationMs), providerCalls: metric(usage.totalProviderCalls), toolCalls: metric(usage.totalToolCalls),
       repairCycles: metric(usage.repairCycles), usageSource: text(usage.usageSource, 40), validationStatus, reviewStatus,
       cost: cost.amount, currency: cost.currency, costSource: cost.source,
@@ -207,7 +212,7 @@ export function buildLegacyPerformanceProjection(summary: LegacyPerformanceSumma
   const roles = (["planner", "executor", "reviewer", "repair"] as const).map(emptyRoleProjection);
   const overview = {
     terminalStatus: terminalStatus ?? null,
-    inputTokens: null, outputTokens: null, totalTokens: metric(summary.totalTokens), workflowDurationMs: metric(summary.workflowDurationMs),
+    inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: metric(summary.totalTokens), workflowDurationMs: metric(summary.workflowDurationMs),
     providerCalls: metric(summary.providerCalls), toolCalls: metric(summary.toolCalls), repairCycles: metric(summary.repairCycles),
     usageSource: null, validationStatus: null, reviewStatus: null, cost: null, currency: null, costSource: null,
   };
@@ -231,13 +236,13 @@ function roleProjection(role: PerformanceRole, source: WorkflowUsage[Performance
     role, providerConfigId, providerId: text(value.providerId, 120), providerName: providerConfigId ? providerNames.get(providerConfigId) ?? null : null,
     requestedModelId: text(value.requestedModelId, 300), resolvedModelId: text(value.resolvedModelId, 300),
     executionProfileSummary: summary, executionProfileLabel: summary ? executionProfileLabel(summary) : null,
-    calls: metric(value.calls), inputTokens: metric(value.inputTokens), outputTokens: metric(value.outputTokens), totalTokens: metric(value.totalTokens),
+    calls: metric(value.calls), inputTokens: metric(value.inputTokens), outputTokens: metric(value.outputTokens), cacheReadTokens: metric(value.cacheReadTokens), cacheWriteTokens: metric(value.cacheWriteTokens), totalTokens: metric(value.totalTokens),
     providerDurationMs: metric(value.providerDurationMs), usageSource: text(value.usageSource, 40),
   };
 }
 
 function emptyRoleProjection(role: PerformanceRole): PerformanceRoleProjection {
-  return { role, providerConfigId: null, providerId: null, providerName: null, requestedModelId: null, resolvedModelId: null, executionProfileSummary: null, executionProfileLabel: null, calls: null, inputTokens: null, outputTokens: null, totalTokens: null, providerDurationMs: null, usageSource: null };
+  return { role, providerConfigId: null, providerId: null, providerName: null, requestedModelId: null, resolvedModelId: null, executionProfileSummary: null, executionProfileLabel: null, calls: null, inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: null, providerDurationMs: null, usageSource: null };
 }
 
 function projectedCost(usage: WorkflowUsage): TaskPerformanceProjection["cost"] {
@@ -250,6 +255,7 @@ export function executionProfileLabel(summary: ExecutionProfileSummary): string 
   switch (summary.kind) {
     case "provider_default": return "Provider Default";
     case "openai_reasoning": return `Reasoning · ${friendly(summary.value)}`;
+    case "anthropic_effort": return `Effort · ${friendly(summary.value)}`;
     case "anthropic_thinking": return `Thinking · Enabled · Budget ${summary.budgetTokens.toLocaleString("en-US")}`;
     case "gemini_thinking_budget": return `Thinking Budget · ${summary.budgetTokens.toLocaleString("en-US")}`;
     case "gemini_thinking_level": return `Thinking Level · ${friendly(summary.value)}`;
@@ -270,7 +276,7 @@ export function sanitizePerformanceProjection(value: unknown): TaskPerformancePr
   if (roles.length !== 4 || roles.some((role, index) => role.role !== (["planner", "executor", "reviewer", "repair"] as const)[index])) return undefined;
   const terminalStatus = ["completed", "failed", "aborted", "interrupted"].includes(String(value.overview.terminalStatus)) ? value.overview.terminalStatus as PerformanceTerminalStatus : null;
   const overview = {
-    terminalStatus, inputTokens: metric(value.overview.inputTokens), outputTokens: metric(value.overview.outputTokens), totalTokens: metric(value.overview.totalTokens),
+    terminalStatus, inputTokens: metric(value.overview.inputTokens), outputTokens: metric(value.overview.outputTokens), cacheReadTokens: metric(value.overview.cacheReadTokens), cacheWriteTokens: metric(value.overview.cacheWriteTokens), totalTokens: metric(value.overview.totalTokens),
     workflowDurationMs: metric(value.overview.workflowDurationMs), providerCalls: metric(value.overview.providerCalls), toolCalls: metric(value.overview.toolCalls), repairCycles: metric(value.overview.repairCycles),
     usageSource: text(value.overview.usageSource, 40), validationStatus: text(value.overview.validationStatus, 80), reviewStatus: text(value.overview.reviewStatus, 80),
     cost: metric(value.overview.cost), currency: text(value.overview.currency, 12), costSource: text(value.overview.costSource, 40),
@@ -299,7 +305,7 @@ export function sanitizePerformanceProjection(value: unknown): TaskPerformancePr
 function sanitizeRole(value: unknown): PerformanceRoleProjection[] {
   if (!record(value) || !["planner", "executor", "reviewer", "repair"].includes(String(value.role))) return [];
   const summary = sanitizeExecutionProfileSummary(value.executionProfileSummary);
-  return [{ role: value.role as PerformanceRole, providerConfigId: text(value.providerConfigId, 200), providerId: text(value.providerId, 120), providerName: text(value.providerName, 100), requestedModelId: text(value.requestedModelId, 300), resolvedModelId: text(value.resolvedModelId, 300), executionProfileSummary: summary, executionProfileLabel: summary ? executionProfileLabel(summary) : null, calls: metric(value.calls), inputTokens: metric(value.inputTokens), outputTokens: metric(value.outputTokens), totalTokens: metric(value.totalTokens), providerDurationMs: metric(value.providerDurationMs), usageSource: text(value.usageSource, 40) }];
+  return [{ role: value.role as PerformanceRole, providerConfigId: text(value.providerConfigId, 200), providerId: text(value.providerId, 120), providerName: text(value.providerName, 100), requestedModelId: text(value.requestedModelId, 300), resolvedModelId: text(value.resolvedModelId, 300), executionProfileSummary: summary, executionProfileLabel: summary ? executionProfileLabel(summary) : null, calls: metric(value.calls), inputTokens: metric(value.inputTokens), outputTokens: metric(value.outputTokens), cacheReadTokens: metric(value.cacheReadTokens), cacheWriteTokens: metric(value.cacheWriteTokens), totalTokens: metric(value.totalTokens), providerDurationMs: metric(value.providerDurationMs), usageSource: text(value.usageSource, 40) }];
 }
 
 function sanitizeExecutionProfileSummary(value: unknown): ExecutionProfileSummary | null {
@@ -307,6 +313,7 @@ function sanitizeExecutionProfileSummary(value: unknown): ExecutionProfileSummar
   switch (value.kind) {
     case "provider_default": return { kind: value.kind };
     case "openai_reasoning": return text(value.value, 80) ? { kind: value.kind, value: text(value.value, 80)! } : null;
+    case "anthropic_effort": return text(value.value, 80) ? { kind: value.kind, value: text(value.value, 80)! } : null;
     case "anthropic_thinking": return value.enabled === true && metric(value.budgetTokens) !== null ? { kind: value.kind, enabled: true, budgetTokens: metric(value.budgetTokens)! } : null;
     case "gemini_thinking_budget": return metric(value.budgetTokens) !== null ? { kind: value.kind, budgetTokens: metric(value.budgetTokens)! } : null;
     case "gemini_thinking_level": return text(value.value, 80) ? { kind: value.kind, value: text(value.value, 80)! } : null;

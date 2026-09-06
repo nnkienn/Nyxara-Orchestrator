@@ -52,6 +52,7 @@ async function planned() {
     workflowId: workflow.id,
     workspaceRoot: process.cwd(),
     prompt: draft.objective,
+    requestSignals: { activeFilePath: "src/index.ts" },
     contextBudget: { maxFiles: 1, maxBytes: 1024, maxBytesPerFile: 1024 },
   });
   return { nyxara, workflow, result, generate };
@@ -90,6 +91,34 @@ describe("Phase 8A plan approval", () => {
     expect(() => nyxara.assertPlanExecutable(result.plan)).toThrow(expect.objectContaining({ code: "plan_rejected" }));
     expect(() => nyxara.approvePlan(workflow.id, result.plan.id)).toThrow(expect.objectContaining({ code: "plan_rejected" }));
     expect(rejectedEvent).toHaveBeenCalledWith(expect.not.objectContaining({ objective: expect.anything(), tasks: expect.anything() }));
+  });
+
+  it("projects user rejection as a rejected outcome that hides stages that never ran", async () => {
+    const { nyxara, workflow, result } = await planned();
+    nyxara.rejectPlan(workflow.id, result.plan.id);
+    const snapshot = nyxara.getWorkflowSnapshot(workflow.id);
+    // Core keeps its terminal failed-like status; the public outcome is rejected.
+    expect(snapshot.status).toBe("failed");
+    expect(snapshot.outcome).toBe("rejected");
+    expect(snapshot.occurredStages).toEqual(["planning", "approval"]);
+    expect(snapshot.occurredStages).not.toContain("execution");
+    expect(snapshot.occurredStages).not.toContain("validation");
+    expect(snapshot.occurredStages).not.toContain("review");
+    expect(snapshot.occurredStages).not.toContain("repair");
+  });
+
+  it("supplies an authoritative stage timestamp for client-side elapsed formatting", async () => {
+    const { nyxara, workflow, result } = await planned();
+    const stageEvents: any[] = [];
+    nyxara.events.on("workflow.stage_changed", (event) => stageEvents.push(event));
+    const before = nyxara.getWorkflowSnapshot(workflow.id);
+    expect(before.stageStartedAt).toBeTruthy();
+    expect(Number.isFinite(Date.parse(before.stageStartedAt!))).toBe(true);
+    nyxara.approvePlan(workflow.id, result.plan.id);
+    const after = nyxara.getWorkflowSnapshot(workflow.id);
+    expect(after.stageStartedAt).toBeTruthy();
+    expect(stageEvents.at(-1)).toMatchObject({ workflowId: workflow.id, stage: "approved" });
+    expect(Date.parse(after.stageStartedAt!)).toBeGreaterThanOrEqual(Date.parse(before.stageStartedAt!));
   });
 
   it("replaces only drafts and makes the old draft non-executable", async () => {

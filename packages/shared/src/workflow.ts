@@ -52,6 +52,44 @@ export interface WorkflowError {
   readonly message: string;
 }
 
+/**
+ * Public terminal outcome. It exists because a user rejecting a plan is an
+ * intentional product action, not a system failure, even though Core records
+ * rejection with a terminal failed-like workflow status. Presentation layers
+ * render this projection instead of inferring an outcome from `status`.
+ */
+export type WorkflowOutcome =
+  | "completed"
+  | "failed"
+  | "aborted"
+  | "rejected"
+  | "interrupted";
+
+/** Terminal reason code Core records when the user rejects a plan. */
+export const PLAN_REJECTED_ERROR_CODE = "plan_rejected";
+
+/**
+ * Derives the public outcome from the authoritative terminal status and reason.
+ * Non-terminal workflows have no outcome.
+ */
+export function workflowOutcome(input: {
+  readonly status: WorkflowStatus;
+  readonly error?: WorkflowError;
+  readonly interrupted?: boolean;
+}): WorkflowOutcome | undefined {
+  if (input.interrupted) return "interrupted";
+  switch (input.status) {
+    case "completed":
+      return "completed";
+    case "aborted":
+      return "aborted";
+    case "failed":
+      return input.error?.code === PLAN_REJECTED_ERROR_CODE ? "rejected" : "failed";
+    default:
+      return undefined;
+  }
+}
+
 /** Retained for existing consumers; new code should use WorkflowError. */
 export interface WorkflowFailure {
   readonly message: string;
@@ -95,7 +133,22 @@ export interface WorkflowSnapshot {
   readonly pauseRequested?: boolean;
   readonly pendingPermission?: PendingWorkflowPermission;
   readonly usage?: import("./usage.js").WorkflowUsage;
+  /** Authoritative time the current stage was entered; clients format elapsed locally. */
+  readonly stageStartedAt?: string;
+  /** Public terminal outcome; absent while the workflow is still active. */
+  readonly outcome?: WorkflowOutcome;
+  /** Stages with recorded evidence, so clients never render a stage that never ran. */
+  readonly occurredStages?: readonly WorkflowStage[];
 }
+
+/** Workflow stages a client may render, gated on actual occurrence. */
+export type WorkflowStage =
+  | "planning"
+  | "approval"
+  | "execution"
+  | "validation"
+  | "review"
+  | "repair";
 
 export interface PendingWorkflowPermission {
   readonly id: string;
@@ -123,6 +176,8 @@ export interface WorkflowState {
   readonly blockedTaskIds?: readonly string[];
   readonly pauseRequested?: boolean;
   readonly pendingPermission?: PendingWorkflowPermission;
+  /** Authoritative timestamp of the most recent status change. */
+  readonly stageStartedAt?: string;
 }
 
 export function isTerminalWorkflowStatus(status: WorkflowStatus): boolean {

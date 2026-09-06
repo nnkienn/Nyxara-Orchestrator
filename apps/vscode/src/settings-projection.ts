@@ -1,6 +1,5 @@
 import { DEFAULT_REPAIR_LIMITS, DEFAULT_REVIEW_EVIDENCE_BUDGET, DEFAULT_TASK_CONTEXT_BUDGET } from "@nyxara/core";
-import { providerDefinition } from "@nyxara/providers";
-import { modelExecutionCapabilityRules } from "@nyxara/providers";
+import { knownModelExecutionCapability, providerDefinition } from "@nyxara/providers";
 import {
   PROVIDER_DEFAULT_EXECUTION,
   executionProfileSummary,
@@ -9,10 +8,12 @@ import {
   type ExecutionProfileStatus,
   type ModelCapabilities,
   type ModelExecutionCapability,
-  type ModelExecutionCapabilityRule,
+  type ProviderAuthMethod,
   type ProviderCapabilities,
 } from "@nyxara/provider-sdk";
 import type { ProviderConfig } from "./provider-config.js";
+import type { ProviderModelState, SafeModelInfo } from "./model-discovery.js";
+import type { PendingAuthSession } from "./auth-session.js";
 
 export type SettingsSection = "home" | "aiProviders" | "modelsRoles" | "workflow" | "planning" | "engineeringRules" | "permissions" | "context" | "validation" | "review" | "repair" | "usage" | "taskHistory" | "workspace" | "privacy" | "advanced" | "about";
 export type ProviderConnectionStatus = "Connected" | "Signed out" | "Credential missing" | "Unavailable" | "Local available" | "Connection unknown";
@@ -20,9 +21,10 @@ export interface SettingsRoleAssignment { readonly role: "planner" | "executor" 
 export interface ProviderConfigProjection {
   readonly id: string; readonly adapterId: string; readonly displayName: string; readonly providerName: string; readonly category: string; readonly authStrategy: ProviderConfig["authStrategy"];
   readonly endpoint: string; readonly defaultModel?: string; readonly credentialStored: boolean; readonly status: ProviderConnectionStatus; readonly isDefault: boolean;
+  readonly authMethods: readonly ProviderAuthMethod[]; readonly supportsBrowserAuth: boolean;
   readonly supportsModelDiscovery: boolean; readonly supportsManualModelId: boolean; readonly lifecycleAction: "Sign Out" | "Disconnect" | "Remove Provider"; readonly createdAt?: string;
   readonly lifecycleBlocked: boolean;
-  readonly executionCapabilityRules: readonly ModelExecutionCapabilityRule[];
+  readonly models: readonly SafeModelInfo[]; readonly modelsStatus: ProviderModelState["status"]; readonly modelsMessage?: string; readonly modelsLastRefreshedAt?: string;
 }
 export interface SettingsProjection {
   readonly version: string;
@@ -31,6 +33,7 @@ export interface SettingsProjection {
   readonly defaultModel?: string;
   readonly modelMode: "simple" | "advanced";
   readonly roles: readonly SettingsRoleAssignment[];
+  readonly pendingAuth?: Pick<PendingAuthSession, "providerConfigId" | "sessionId" | "authMethod" | "expiresAt">;
   readonly workflow: { readonly planApproval: "Required"; readonly afterApproval: "Automatic"; readonly pauseResume: "Supported"; readonly automaticRepair: "Enabled" };
   readonly planning: { readonly selectedProfileId: string; readonly profiles: readonly { readonly id: string; readonly name: string; readonly locale?: string; readonly outputLanguage: string; readonly planStyle: string; readonly riskMode: string }[] };
   readonly rules: readonly { readonly id: string; readonly name: string; readonly description: string; readonly scope: string; readonly severity: string; readonly enabled: boolean }[];
@@ -59,6 +62,7 @@ export interface SettingsProjectionInput {
   readonly roles: readonly { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId?: string; readonly modelId?: string; readonly executionOptions?: ExecutionOptions; readonly executionMalformed?: boolean }[];
   readonly providerCapabilities?: ReadonlyMap<string, ProviderCapabilities>; readonly modelMode: "simple" | "advanced"; readonly selectedPlanningProfile: string;
   readonly modelCapabilities?: ReadonlyMap<string, ModelCapabilities>;
+  readonly modelStates?: ReadonlyMap<string, ProviderModelState>; readonly pendingAuth?: PendingAuthSession;
   readonly planningProfiles: readonly any[]; readonly engineeringRules: readonly any[]; readonly historyRetention: number; readonly historyCount: number;
   readonly workspaceFolders: readonly { readonly id: string; readonly label: string }[]; readonly selectedWorkspaceRootId?: string; readonly testedProviderIds?: ReadonlySet<string>; readonly activeProviderIds?: ReadonlySet<string>;
 }
@@ -75,14 +79,23 @@ export function buildSettingsProjection(input: SettingsProjectionInput): Setting
     const definition = providerDefinition(config.catalogId ?? config.type);
     const credentialStored = input.credentialStored.get(config.id) === true;
     const registered = !input.providerCapabilities || input.providerCapabilities.has(config.id);
+    const modelState = input.modelStates?.get(config.id);
+    const providerManagedModel = config.authStrategy === "subscription_cli" && !definition.onboarding.modelDiscovery;
     return {
       id: config.id, adapterId: config.type, displayName: config.displayName, providerName: definition.displayName, category: categoryLabel(definition.onboarding.category),
       authStrategy: config.authStrategy, endpoint: definition.onboarding.category === "official" ? "Official" : config.baseUrl ?? "Managed by official CLI",
       ...(config.modelId ? { defaultModel: config.modelId } : {}), credentialStored, status: config.signedOut ? "Signed out" : registered ? providerStatus(config, credentialStored, input.testedProviderIds?.has(config.id)) : "Unavailable", isDefault: config.id === input.defaultProviderId,
+      authMethods: [...definition.onboarding.authMethods], supportsBrowserAuth: definition.onboarding.authMethods.includes("subscription_cli"),
       supportsModelDiscovery: definition.onboarding.modelDiscovery, supportsManualModelId: definition.onboarding.manualModelId,
-      lifecycleAction: config.authStrategy === "subscription" ? "Sign Out" : config.authStrategy === "api_key" ? "Disconnect" : "Remove Provider", ...(config.createdAt ? { createdAt: config.createdAt } : {}),
+      lifecycleAction: config.authStrategy === "subscription_cli" ? "Sign Out" : config.authStrategy === "api_key" ? "Disconnect" : "Remove Provider", ...(config.createdAt ? { createdAt: config.createdAt } : {}),
       lifecycleBlocked: input.activeProviderIds?.has(config.id) === true,
-      executionCapabilityRules: modelExecutionCapabilityRules(config.catalogId ?? config.type),
+      models: modelState?.models ?? [], modelsStatus: modelState?.status ?? "unknown",
+      ...(modelState?.message
+        ? { modelsMessage: modelState.message }
+        : providerManagedModel
+          ? { modelsMessage: "This official CLI does not expose a machine-readable account model catalog. Its provider-managed default alias follows the CLI's current model; connect the provider API to browse exact account model IDs." }
+          : {}),
+      ...(modelState?.lastRefreshedAt ? { modelsLastRefreshedAt: modelState.lastRefreshedAt } : {}),
     };
   });
   const projectedRoles = input.roles.map((assignment): SettingsRoleAssignment => {
@@ -91,7 +104,8 @@ export function buildSettingsProjection(input: SettingsProjectionInput): Setting
     const unavailableStatus = provider?.status === "Signed out" || provider?.status === "Credential missing" || provider?.status === "Unavailable" ? provider.status : "Unavailable";
     const executionOptions = assignment.executionOptions ?? PROVIDER_DEFAULT_EXECUTION;
     const cachedCapability = assignment.providerConfigId && assignment.modelId ? input.modelCapabilities?.get(`${assignment.providerConfigId}\0${assignment.modelId}`)?.execution : undefined;
-    const capability = cachedCapability ?? (provider && assignment.modelId ? provider.executionCapabilityRules.find((rule) => rule.match === "exact" ? assignment.modelId!.toLocaleLowerCase() === rule.modelId.toLocaleLowerCase() : assignment.modelId!.toLocaleLowerCase().startsWith(rule.modelId.toLocaleLowerCase()))?.capability : undefined);
+    const config = input.providers.find((candidate) => candidate.id === assignment.providerConfigId);
+    const capability = cachedCapability ?? (config && assignment.modelId ? knownModelExecutionCapability(config.catalogId ?? config.type, assignment.modelId) : undefined);
     const executionProfileStatus = assignment.executionMalformed ? "stale" : validateExecutionOptions(executionOptions, capability);
     return { role: assignment.role, ...(assignment.providerConfigId ? { providerConfigId: assignment.providerConfigId } : {}), ...(provider ? { providerName: provider.displayName } : {}), ...(assignment.modelId ? { modelId: assignment.modelId } : {}), available, status: !assignment.providerConfigId || !assignment.modelId ? "Unconfigured" : available ? "Configured" : unavailableStatus, executionOptions, ...(capability ? { executionCapability: capability } : {}), executionProfileStatus };
   });
@@ -103,6 +117,7 @@ export function buildSettingsProjection(input: SettingsProjectionInput): Setting
   const reviewer = projectedRoles.find((role) => role.role === "reviewer") ?? { role: "reviewer" as const, available: false, status: "Unconfigured" as const, executionOptions: PROVIDER_DEFAULT_EXECUTION, executionProfileStatus: "unknown" as const };
   return {
     version: input.version, providers, ...(selected ? { defaultProviderConfigId: selected.id } : {}), ...(selected?.defaultModel ? { defaultModel: selected.defaultModel } : {}), modelMode: input.modelMode, roles: projectedRoles,
+    ...(input.pendingAuth ? { pendingAuth: { providerConfigId: input.pendingAuth.providerConfigId, sessionId: input.pendingAuth.sessionId, authMethod: input.pendingAuth.authMethod, expiresAt: input.pendingAuth.expiresAt } } : {}),
     workflow: { planApproval: "Required", afterApproval: "Automatic", pauseResume: "Supported", automaticRepair: "Enabled" },
     planning: { selectedProfileId: input.selectedPlanningProfile, profiles: planningProfiles }, rules,
     permissions: { automaticallyAllowed: ["Read workspace", "List and search repository", "Git status and diff", "Approved workspace edits", "Validation commands"], askFirst: ["Safe or unknown non-validation commands", "Large file writes", "Environment file writes"], denied: ["Outside workspace", "Credential file writes", "Delete workspace files", "Git push/reset/clean", "sudo", "Production deployment"] },

@@ -95,6 +95,8 @@ describe("Executor", () => {
       workspaceRoot: workspace,
     });
 
+    expect(generate.mock.calls.every(([request]) => request.maxOutputTokens === undefined)).toBe(true);
+
     expect(executed.result).toMatchObject({
       taskId: "T1",
       status: "completed",

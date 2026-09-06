@@ -1,6 +1,11 @@
 import { z } from "zod";
 import type { AgentModelConfig } from "../agents/agent.types.js";
 import type { ContextBudget, ContextBundle } from "../context/context.types.js";
+import type {
+  PlanningClarificationReason,
+  PlanningContextMode,
+  PlanningRequestSignals,
+} from "../context/planning-context-policy.js";
 import type { TaskGraph } from "./task-graph.js";
 import type { PlanningProfile, PlanningProfileMetadata } from "./planning-profile.js";
 import type { ResolvedRuleSet } from "../rules/engineering-rule.js";
@@ -52,6 +57,13 @@ export interface PlannerInput {
 export interface CreatePlanInput {
   readonly workspaceRoot: string;
   readonly prompt: string;
+  /**
+   * Cheap client-known signals for the deterministic pre-planning context gate.
+   * They only anchor minimal or targeted retrieval; no model call is involved.
+   */
+  readonly requestSignals?: PlanningRequestSignals;
+  /** Optional Planner-specific output bound. It is validated to a safe range. */
+  readonly plannerMaxOutputTokens?: number;
   /** Links the plan to Core workflow state so planning transitions are recorded. */
   readonly workflowId?: string;
   readonly constraints?: readonly string[];
@@ -71,6 +83,28 @@ export interface PlannerRunInput {
   readonly planningProfile?: PlanningProfile;
   readonly engineeringRules?: ResolvedRuleSet;
   readonly workflowId?: string;
+  /**
+   * Planner-specific output bound. It is role-scoped: Executor, Reviewer, and
+   * Repair generation is unaffected.
+   */
+  readonly maxOutputTokens?: number;
+}
+
+export interface PlanClarificationResult {
+  readonly kind: "clarification_required";
+  readonly reason: PlanningClarificationReason;
+  readonly planningContextMode: PlanningContextMode;
+  readonly prompt: string;
+  /** Metadata-only record of the context Nyxara deliberately did not collect. */
+  readonly contextMetrics: PlanningContextMetrics;
+}
+
+export interface PlanningContextMetrics {
+  readonly planningContextMode: PlanningContextMode;
+  readonly files: number;
+  readonly bytes: number;
+  readonly truncated: boolean;
+  readonly plannerMaxOutputTokens: number | null;
 }
 
 export interface PlanResult {
@@ -83,6 +117,9 @@ export interface PlanResult {
   readonly planningProfileId: string;
   readonly ruleSetFingerprint?: string;
   readonly effectiveRuleIds?: readonly string[];
+  /** Deterministic pre-planning context decision applied to this run. */
+  readonly planningContextMode: PlanningContextMode;
+  readonly contextMetrics: PlanningContextMetrics;
 }
 
 export function normalizePlannerInput(input: PlannerInput): PlannerInput {

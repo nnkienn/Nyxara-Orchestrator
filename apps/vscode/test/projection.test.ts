@@ -24,12 +24,16 @@ describe("VS Code workflow projection", () => {
     ["authentication_error", "Provider authentication failed. Check the configured credential."],
     ["invalid_model", "Configured model unavailable. Choose another model."],
     ["network_error", "Network error. Check the provider endpoint and connection."],
-    ["invalid_plan", "Structured plan invalid. Try generating the plan again."],
+    ["invalid_plan", "The model returned an invalid plan. Try again or choose another model."],
+    ["plan_parse_error", "The model response did not contain valid plan JSON. Try again or choose another model."],
     ["permission_denied", "Permission denied."],
     ["validation_failed", "Validation failed."],
     ["review_failed", "Review failed."],
     ["aborted", "Workflow aborted."],
   ])("maps known %s errors for inline display", (code, expected) => {
     expect(friendlyErrorMessage({ code, message: "raw provider body" })).toBe(expected);
+  });
+  it("shows a bounded safe plan field without exposing a raw provider body", () => {
+    expect(friendlyErrorMessage({ code: "invalid_plan", message: "Planner plan field tasks.0.description is invalid: Required" })).toBe("Planner plan field tasks.0.description is invalid: Required. The model returned an invalid plan. Try again or choose another model.");
   });
 });

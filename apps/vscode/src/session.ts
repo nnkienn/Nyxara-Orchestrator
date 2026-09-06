@@ -3,6 +3,7 @@ import {
   type AutonomousWorkflowResult,
   type ExecutionPlan,
   type PlanResult,
+  type PlanningRequestSignals,
   type WorkflowRunOutcome,
   type WorkflowSnapshot,
 } from "@nyxara/core";
@@ -72,12 +73,12 @@ export class NyxaraSession {
     this.configured = configuredRoles === roles.length;
   }
 
-  async generate(prompt: string, workspaceRoot: string, profileId: string): Promise<PlanResult> {
+  async generate(prompt: string, workspaceRoot: string, profileId: string, requestSignals?: PlanningRequestSignals): Promise<PlanResult> {
     const workflow = this.core.startWorkflow({ workspace: workspaceRoot, prompt });
     this.workflowId = workflow.id;
     this.prompt = prompt;
     this.onChange?.();
-    this.plan = await this.core.createPlan({ workspaceRoot, prompt, workflowId: workflow.id, ...(profileId ? { planningProfileId: profileId } : {}) });
+    this.plan = await this.core.createPlan({ workspaceRoot, prompt, workflowId: workflow.id, ...(profileId ? { planningProfileId: profileId } : {}), ...(requestSignals ? { requestSignals } : {}) });
     this.refresh();
     return this.plan;
   }

@@ -17,6 +17,9 @@ export type WebviewToExtensionMessage =
   | { readonly type: "searchSettings"; readonly query: string }
   | { readonly type: "connectProvider" }
   | { readonly type: "testProvider"; readonly providerConfigId: string }
+  | { readonly type: "startBrowserAuth"; readonly providerConfigId: string }
+  | { readonly type: "cancelBrowserAuth"; readonly providerConfigId: string; readonly sessionId: string }
+  | { readonly type: "refreshModels"; readonly providerConfigId: string }
   | { readonly type: "updateCredential"; readonly providerConfigId: string }
   | { readonly type: "updateProviderMetadata"; readonly providerConfigId: string; readonly displayName: string; readonly endpoint: string }
   | { readonly type: "signOutProvider"; readonly providerConfigId: string }
@@ -37,12 +40,16 @@ export type WebviewToExtensionMessage =
   | { readonly type: "pauseWorkflow" }
   | { readonly type: "resumeWorkflow" }
   | { readonly type: "newTask" }
+  | { readonly type: "editRequirement"; readonly taskId?: string }
+  | { readonly type: "dismissClarification" }
+  | { readonly type: "toggleDisclosure"; readonly key: string; readonly expanded: boolean }
+  | { readonly type: "retryPlanning" }
   | { readonly type: "openPerformance"; readonly taskId?: string }
   | { readonly type: "closePerformance" }
   | { readonly type: "openHistory" }
   | { readonly type: "listTasks"; readonly scope: "current" | "all" }
   | { readonly type: "searchTasks"; readonly query: string }
-  | { readonly type: "filterTasks"; readonly filter: "all" | "active" | "completed" | "failed" | "interrupted" }
+  | { readonly type: "filterTasks"; readonly filter: "all" | "active" | "completed" | "failed" | "rejected" | "interrupted" }
   | { readonly type: "openTask"; readonly taskId: string }
   | { readonly type: "deleteTask"; readonly taskId: string }
   | { readonly type: "clearHistory" }
@@ -61,6 +68,10 @@ export type StateMessageType =
   | "repairUpdated"
   | "workflowCompleted"
   | "workflowFailed"
+  | "workflowRejected"
+  | "clarificationRequired"
+  | "requirementDraft"
+  | "providerProgress"
   | "performanceProjection"
   | "recentTasks"
   | "taskHistory"
@@ -71,6 +82,13 @@ export type StateMessageType =
   | "settingsProjection"
   | "providerConfigs"
   | "providerStatusChanged"
+  | "authPending"
+  | "authCompleted"
+  | "authFailed"
+  | "modelsLoading"
+  | "modelsLoaded"
+  | "modelsFailed"
+  | "capabilitiesUpdated"
   | "roleAssignmentsChanged"
   | "planningProfiles"
   | "rulesProjection"
@@ -89,7 +107,9 @@ export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage |
   if (!record(value) || typeof value.type !== "string") return undefined;
   const text = (key: string, max = MAX_FIELD_INPUT): string | undefined => typeof value[key] === "string" && value[key].length <= max ? value[key] as string : undefined;
   switch (value.type) {
-    case "ready": case "approvePlan": case "rejectPlan": case "abortWorkflow": case "pauseWorkflow": case "resumeWorkflow": case "newTask": case "openProviderSetup": case "openSettings": case "closeSettings": case "closePerformance": case "connectProvider": case "openHistory": case "clearHistory": case "returnToActiveTask": case "requestDiagnostics": case "copyDiagnostics": return { type: value.type };
+    case "ready": case "approvePlan": case "rejectPlan": case "abortWorkflow": case "pauseWorkflow": case "resumeWorkflow": case "newTask": case "retryPlanning": case "openProviderSetup": case "openSettings": case "closeSettings": case "closePerformance": case "connectProvider": case "openHistory": case "clearHistory": case "returnToActiveTask": case "requestDiagnostics": case "copyDiagnostics": case "dismissClarification": return { type: value.type };
+    case "editRequirement": { const taskId = text("taskId", 200)?.trim(); return value.taskId === undefined ? { type: value.type } : taskId ? { type: value.type, taskId } : undefined; }
+    case "toggleDisclosure": { const key = text("key", 60)?.trim(); return key && typeof value.expanded === "boolean" ? { type: value.type, key, expanded: value.expanded } : undefined; }
     case "openPerformance": { const taskId = text("taskId", 200)?.trim(); return value.taskId === undefined ? { type: value.type } : taskId ? { type: value.type, taskId } : undefined; }
     case "openSettingsSection": {
       const section = text("section", 40) as SettingsSection | undefined;
@@ -98,9 +118,10 @@ export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage |
       return section && sections.includes(section) ? { type: value.type, section, ...(providerConfigId ? { providerConfigId } : {}) } : undefined;
     }
     case "searchSettings": { const query = text("query", MAX_HISTORY_SEARCH); return query !== undefined ? { type: value.type, query: query.trim() } : undefined; }
-    case "testProvider": case "updateCredential": case "signOutProvider": case "removeProvider": case "setDefaultProvider": {
+    case "testProvider": case "startBrowserAuth": case "refreshModels": case "updateCredential": case "signOutProvider": case "removeProvider": case "setDefaultProvider": {
       const providerConfigId = text("providerConfigId", 200)?.trim(); return providerConfigId ? { type: value.type, providerConfigId } : undefined;
     }
+    case "cancelBrowserAuth": { const providerConfigId = text("providerConfigId", 200)?.trim(); const sessionId = text("sessionId", 200)?.trim(); return providerConfigId && sessionId ? { type: value.type, providerConfigId, sessionId } : undefined; }
     case "setDefaultModel": { const providerConfigId = text("providerConfigId", 200)?.trim(); const modelId = text("modelId")?.trim(); const executionOptions = value.executionOptions === undefined ? PROVIDER_DEFAULT_EXECUTION : parseExecutionOptions(value.executionOptions); return providerConfigId && modelId && executionOptions ? { type: value.type, providerConfigId, modelId, executionOptions } : undefined; }
     case "updateProviderMetadata": { const providerConfigId = text("providerConfigId", 200)?.trim(); const displayName = text("displayName", 100)?.trim(); const endpoint = text("endpoint")?.trim(); return providerConfigId && displayName && endpoint ? { type: value.type, providerConfigId, displayName, endpoint } : undefined; }
     case "updatePlanningProfile": { const profileId = text("profileId", 100)?.trim(); return profileId ? { type: value.type, profileId } : undefined; }
@@ -122,7 +143,7 @@ export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage |
     case "allowPermission": case "denyPermission": { const requestId = text("requestId"); return requestId ? { type: value.type, requestId } : undefined; }
     case "listTasks": return value.scope === "current" || value.scope === "all" ? { type: value.type, scope: value.scope } : undefined;
     case "searchTasks": { const query = text("query", MAX_HISTORY_SEARCH); return query !== undefined ? { type: value.type, query: query.trim() } : undefined; }
-    case "filterTasks": return ["all", "active", "completed", "failed", "interrupted"].includes(String(value.filter)) ? { type: value.type, filter: value.filter as "all" | "active" | "completed" | "failed" | "interrupted" } : undefined;
+    case "filterTasks": return ["all", "active", "completed", "failed", "rejected", "interrupted"].includes(String(value.filter)) ? { type: value.type, filter: value.filter as "all" | "active" | "completed" | "failed" | "rejected" | "interrupted" } : undefined;
     case "openTask": case "deleteTask": { const taskId = text("taskId", 200); return taskId?.trim() ? { type: value.type, taskId: taskId.trim() } : undefined; }
     default: return undefined;
   }

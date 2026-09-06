@@ -1,14 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mock = vi.hoisted(() => ({
-  commands: new Map<string, (...args: any[]) => any>(), settings: new Map<string, any>(), updates: [] as Array<[string, unknown, unknown]>, failNextUpdateKey: undefined as string | undefined, inputs: [] as Array<string | undefined>, inputOptions: [] as any[], pickIndexes: [] as Array<number | undefined>, pickCalls: [] as any[][], errors: [] as string[], info: [] as string[], infoResults: [] as Array<string | undefined>, externalUrls: [] as string[], clipboard: [] as string[], terminals: [] as Array<{ name: string; commands: string[]; shown: boolean }>, providers: [] as any[], workspaceFolders: [] as any[], warnings: [] as string[], warningResult: "Disconnect" as string | undefined, output: { appendLine: vi.fn(), dispose: vi.fn() },
+  commands: new Map<string, (...args: any[]) => any>(), settings: new Map<string, any>(), updates: [] as Array<[string, unknown, unknown]>, failNextUpdateKey: undefined as string | undefined, inputs: [] as Array<string | undefined>, inputOptions: [] as any[], pickIndexes: [] as Array<number | undefined>, pickCalls: [] as any[][], errors: [] as string[], info: [] as string[], infoResults: [] as Array<string | undefined>, externalUrls: [] as string[], clipboard: [] as string[], terminals: [] as Array<{ name: string; commands: string[]; shown: boolean }>, taskExecutions: [] as any[], taskEndListeners: [] as Array<(event: any) => void>, providers: [] as any[], workspaceFolders: [] as any[], warnings: [] as string[], warningResult: "Disconnect" as string | undefined, output: { appendLine: vi.fn(), dispose: vi.fn() },
 }));
 
 vi.mock("vscode", () => {
   class TreeItem { label: string; description?: string; command?: any; constructor(label: string) { this.label = label; } }
   class EventEmitter { event = vi.fn(); fire = vi.fn(); }
+  class ShellExecution { constructor(readonly command: string, readonly args: readonly string[]) {} }
+  class Task { presentationOptions?: unknown; constructor(readonly definition: unknown, readonly scope: unknown, readonly name: string, readonly source: string, readonly execution: ShellExecution) {} }
   return {
-    TreeItem, EventEmitter, TreeItemCollapsibleState: { None: 0 }, ProgressLocation: { Notification: 15 }, Uri: { parse: (value: string) => ({ value }), joinPath: (base: any, ...parts: string[]) => ({ value: [base?.value ?? "extension", ...parts].join("/"), toString() { return this.value; } }) }, env: { openExternal: vi.fn(async (uri: { value: string }) => { mock.externalUrls.push(uri.value); return true; }), clipboard: { writeText: vi.fn(async (value: string) => { mock.clipboard.push(value); }) } },
+    TreeItem, EventEmitter, Task, ShellExecution, TaskScope: { Global: 1 }, TreeItemCollapsibleState: { None: 0 }, ProgressLocation: { Notification: 15 }, Uri: { parse: (value: string) => ({ value }), joinPath: (base: any, ...parts: string[]) => ({ value: [base?.value ?? "extension", ...parts].join("/"), toString() { return this.value; } }) }, env: { openExternal: vi.fn(async (uri: { value: string }) => { mock.externalUrls.push(uri.value); return true; }), clipboard: { writeText: vi.fn(async (value: string) => { mock.clipboard.push(value); }) } },
+    tasks: { executeTask: vi.fn(async (task: any) => { const execution = { task, terminate: vi.fn() }; mock.taskExecutions.push(execution); return execution; }), onDidEndTaskProcess: vi.fn((listener: (event: any) => void) => { mock.taskEndListeners.push(listener); return { dispose: vi.fn(() => { const index = mock.taskEndListeners.indexOf(listener); if (index >= 0) mock.taskEndListeners.splice(index, 1); }) }; }) },
     commands: { registerCommand: vi.fn((name: string, handler: (...args: any[]) => any) => { mock.commands.set(name, handler); return { dispose: vi.fn() }; }), executeCommand: vi.fn() },
     workspace: {
       get workspaceFolders() { return mock.workspaceFolders; },
@@ -25,20 +28,21 @@ vi.mock("vscode", () => {
   };
 }, { virtual: true });
 
+import { decidePlanningContext } from "@nyxara/core";
 import { activate, providerConnectionMessage, workspaceRoot } from "../src/extension.js";
 import { readFileSync } from "node:fs";
 
 const EXTENSION_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 function fakeSession(configured = false) {
-  const core = { listModels: vi.fn(async () => [{ id: "ha-op/gpt-5.6-sol", name: "Routed" }]), listProviders: vi.fn(() => []), getModelCapabilities: vi.fn(() => undefined), listPlanningProfiles: vi.fn(() => [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }]), listEngineeringRules: vi.fn(() => []), configureAgent: vi.fn(), createPlan: vi.fn(), runApprovedPlan: vi.fn(), startWorkflow: vi.fn() };
+  const core = { listModels: vi.fn(async () => [{ id: "ha-op/gpt-5.6-sol", name: "Routed" }]), listProviders: vi.fn(() => []), getModelCapabilities: vi.fn(() => undefined), listPlanningProfiles: vi.fn(() => [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }]), listEngineeringRules: vi.fn(() => []), planningContextDecision: undefined as any, requestPlanClarification: undefined as any, configureAgent: vi.fn(), createPlan: vi.fn(), runApprovedPlan: vi.fn(), startWorkflow: vi.fn() };
   return { core, configured, validation: new Map(), validationDurations: new Map(), currentPlan: undefined as any, snapshot: undefined as any, result: undefined as any, prompt: undefined as string | undefined, reviewStatus: undefined as string | undefined, reviewFindingCount: undefined as number | undefined, repairCycle: undefined as number | undefined, onChange: undefined as (() => void) | undefined, upsertProvider: vi.fn(), removeProvider: vi.fn(), configureAgents: vi.fn(), generate: vi.fn(), regenerate: vi.fn(), approveAndRun: vi.fn(async () => ({ status: "paused" })), rejectPlan: vi.fn(), pause: vi.fn(), resume: vi.fn(), abort: vi.fn(), resolvePermission: vi.fn(), resetPresentation: vi.fn() };
 }
 
 function activateFake(session = fakeSession()) {
   const secretValues = new Map<string, string>();
   const secrets = { get: vi.fn(async (key: string) => secretValues.get(key)), store: vi.fn(async (key: string, value: string) => { secretValues.set(key, value); }), delete: vi.fn(async (key: string) => { secretValues.delete(key); }) };
-  const globalState = { update: vi.fn() }; const workspaceState = { update: vi.fn() };
+  const globalState = { get: vi.fn((_key: string, fallback: unknown) => fallback), update: vi.fn(async () => {}) }; const workspaceState = { update: vi.fn() };
   const context = { subscriptions: [] as any[], secrets, globalState, workspaceState, extensionUri: { value: "extension", toString: () => "extension" }, extension: { packageJSON: { version: EXTENSION_VERSION } } };
   activate(context as any, session as any);
   return { session, context, secrets, secretValues, globalState, workspaceState };
@@ -61,12 +65,13 @@ function resolveRegisteredWebview() {
 
 const OPENAI = { id: "openai", type: "openai", displayName: "OpenAI", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" };
 const GATEWAY = { id: "openai-compatible", type: "openai-compatible", displayName: "Work Gateway", baseUrl: "https://router.example/v1", authStrategy: "api_key" };
-const CODEX_CLI = { id: "codex-cli", type: "codex-cli", displayName: "OpenAI Codex (ChatGPT)", authStrategy: "subscription" };
+const CODEX_CLI = { id: "codex-cli", type: "codex-cli", displayName: "OpenAI Codex (ChatGPT)", authStrategy: "subscription_cli" };
+const CLAUDE_CLI = { id: "claude-code-cli", type: "claude-code-cli", displayName: "Claude Code (Claude account)", authStrategy: "subscription_cli" };
 const terminalUsage = { workflowId: "terminal", planner: { role: "planner", providerConfigId: "openai", providerId: "openai", requestedModelId: "route/gpt", resolvedModelId: "gpt", executionProfileSummary: { kind: "provider_default" }, calls: 1, inputTokens: 8, outputTokens: 2, totalTokens: 10, usageSource: "provider_reported", providerDurationMs: 50 }, executor: { role: "executor", calls: 0 }, reviewer: { role: "reviewer", calls: 0 }, repair: { role: "repair", calls: 0 }, tasks: [], totalProviderCalls: 1, totalInputTokens: 8, totalOutputTokens: 2, totalTokens: 10, totalProviderDurationMs: 50, totalToolCalls: 0, usageSource: "provider_reported", providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable", totalDurationMs: 80, repairCycles: 0 };
 
 describe("VS Code provider onboarding and command safety", () => {
   beforeEach(() => {
-    mock.commands.clear(); mock.settings.clear(); mock.updates.length = 0; mock.failNextUpdateKey = undefined; mock.inputs.length = 0; mock.inputOptions.length = 0; mock.pickIndexes.length = 0; mock.pickCalls.length = 0; mock.errors.length = 0; mock.info.length = 0; mock.infoResults.length = 0; mock.externalUrls.length = 0; mock.clipboard.length = 0; mock.terminals.length = 0; mock.providers.length = 0; mock.workspaceFolders.length = 0; mock.warnings.length = 0; mock.warningResult = "Disconnect"; vi.clearAllMocks();
+    mock.commands.clear(); mock.settings.clear(); mock.updates.length = 0; mock.failNextUpdateKey = undefined; mock.inputs.length = 0; mock.inputOptions.length = 0; mock.pickIndexes.length = 0; mock.pickCalls.length = 0; mock.errors.length = 0; mock.info.length = 0; mock.infoResults.length = 0; mock.externalUrls.length = 0; mock.clipboard.length = 0; mock.terminals.length = 0; mock.taskExecutions.length = 0; mock.taskEndListeners.length = 0; mock.providers.length = 0; mock.workspaceFolders.length = 0; mock.warnings.length = 0; mock.warningResult = "Disconnect"; vi.clearAllMocks();
   });
 
   it("activation only registers UI and performs no provider, credential, repository, workflow, or timer work", () => {
@@ -111,6 +116,16 @@ describe("VS Code provider onboarding and command safety", () => {
     expect(session.core.listModels).not.toHaveBeenCalled(); expect(session.core.createPlan).not.toHaveBeenCalled(); expect(session.core.startWorkflow).not.toHaveBeenCalled();
   });
 
+  it("retries a failed planning request in place without asking the user to retype it", async () => {
+    mock.workspaceFolders.push({ name: "Project", uri: { fsPath: "/workspace" } });
+    const session = fakeSession(true); session.prompt = "Retry this plan"; session.snapshot = { workflowId: "failed", status: "failed", tasks: [] }; session.result = { status: "failed", changedFiles: [], durationMs: 10, repairCycles: 0 };
+    activateFake(session); const view = resolveRegisteredWebview();
+    view.receive({ type: "retryPlanning" });
+    await vi.waitFor(() => expect(session.generate).toHaveBeenCalledWith("Retry this plan", "/workspace", "default"));
+    expect(session.resetPresentation).toHaveBeenCalledOnce();
+    expect(session.regenerate).not.toHaveBeenCalled();
+  });
+
   it("opens a native provider chooser with official, compatible, and local labels", async () => {
     activateFake(); mock.pickIndexes.push(undefined); await mock.commands.get("nyxara.connectProvider")?.();
     expect(mock.pickCalls[0].map((item: any) => [item.label, item.description])).toEqual(expect.arrayContaining([["OpenAI", "Official Provider"], ["Anthropic / Claude", "Official Provider"], ["Custom OpenAI-compatible", "Compatible Gateway"], ["Ollama", "Local Provider"]]));
@@ -123,13 +138,14 @@ describe("VS Code provider onboarding and command safety", () => {
     [1, "Use existing CLI login", "claude-code-cli"],
     [2, "Use existing CLI login", "gemini-cli"],
   ])("connects subscription CLI provider %s without asking for or storing an API key", async (providerIndex, action, type) => {
-    const { session, secrets } = activateFake(); mock.pickIndexes.push(providerIndex, 0); mock.infoResults.push(action);
+    const { session, secrets } = activateFake(); mock.pickIndexes.push(providerIndex); mock.infoResults.push(action);
     await mock.commands.get("nyxara.connectProvider")?.();
-    expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining({ id: type, type, authStrategy: "subscription" }));
+    expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining({ id: type, type, authStrategy: "subscription_cli" }));
     expect(session.upsertProvider.mock.calls[0]?.[0]).not.toHaveProperty("baseUrl");
     expect(secrets.store).not.toHaveBeenCalled();
     expect(mock.inputOptions).toHaveLength(0);
-    for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.provider`)).toBe(type);
+    for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.provider`)).toBeUndefined();
+    expect(session.core.listModels).toHaveBeenCalledWith(type);
   });
 
   it.each([
@@ -137,10 +153,71 @@ describe("VS Code provider onboarding and command safety", () => {
     [1, "Claude", "claude auth login"],
     [2, "Google", "gemini"],
   ])("starts only the official login command for subscription provider %s", async (providerIndex, account, command) => {
-    const { session } = activateFake(); mock.pickIndexes.push(providerIndex); mock.infoResults.push(`Sign in with ${account}`);
+    const { session } = activateFake(); mock.pickIndexes.push(providerIndex); mock.infoResults.push("Sign In with Browser");
     await mock.commands.get("nyxara.connectProvider")?.();
-    expect(mock.terminals).toEqual([{ name: `Nyxara: Sign in with ${account}`, commands: [command], shown: true }]);
+    expect(mock.taskExecutions).toHaveLength(1); expect(mock.taskExecutions[0].task.name).toBe(`Sign in with ${account}`); expect([mock.taskExecutions[0].task.execution.command, ...mock.taskExecutions[0].task.execution.args].join(" ")).toBe(command);
+    expect(mock.taskExecutions[0].task.definition).toMatchObject({ type: "shell" });
     expect(session.upsertProvider).not.toHaveBeenCalled();
+  });
+
+  it("completes provider-owned browser login into the running Webview without reload", async () => {
+    mock.settings.set("nyxara.providerConfigs", [{ ...CODEX_CLI, signedOut: true }]);
+    const session = fakeSession(); session.core.listProviders.mockReturnValue([{ id: CODEX_CLI.id, displayName: CODEX_CLI.displayName, capabilities: { modelDiscovery: true, textGeneration: true, toolCalling: true } }]);
+    activateFake(session); const view = resolveRegisteredWebview(); view.receive({ type: "openSettings" }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("settingsProjection"));
+    view.receive({ type: "startBrowserAuth", providerConfigId: CODEX_CLI.id });
+    await vi.waitFor(() => expect(view.posted.some((message) => message.type === "authPending" && message.state.settings?.projection.pendingAuth?.providerConfigId === CODEX_CLI.id)).toBe(true));
+    const execution = mock.taskExecutions[0]; expect(execution).toBeDefined();
+    for (const listener of [...mock.taskEndListeners]) listener({ execution, exitCode: 0 });
+    await vi.waitFor(() => expect(view.posted.some((message) => message.type === "authCompleted")).toBe(true));
+    const completed = view.posted.filter((message) => message.type === "authCompleted").at(-1);
+    expect(completed.state.settings.section).toBe("modelsRoles");
+    expect(completed.state.settings.projection.providers[0]).toMatchObject({ status: "Connected", authStrategy: "subscription_cli" });
+    expect(completed.state.settings.projection.pendingAuth).toBeUndefined(); expect(JSON.stringify(completed)).not.toMatch(/access_token|refresh_token|api.?key|authorization/i);
+    expect(session.core.listModels).toHaveBeenCalledTimes(1); expect(mock.settings.get("nyxara.providerConfigs")[0].signedOut).toBe(false); expect((await import("vscode")).commands.executeCommand).not.toHaveBeenCalledWith("workbench.action.reloadWindow");
+  });
+
+  it("discovers Claude supported models once after browser login and projects them live", async () => {
+    mock.settings.set("nyxara.providerConfigs", [{ ...CLAUDE_CLI, signedOut: true }]);
+    const session = fakeSession();
+    session.core.listProviders.mockReturnValue([{ id: CLAUDE_CLI.id, displayName: CLAUDE_CLI.displayName, capabilities: { modelDiscovery: true, textGeneration: true, toolCalling: true } }]);
+    session.core.listModels.mockResolvedValue([{ id: "opus", name: "Opus", provider: CLAUDE_CLI.id, capabilities: { reasoning: true, execution: { kind: "anthropic_effort", label: "Effort", control: "select", values: [{ value: "high", label: "High" }], provenance: "provider_discovery" } } }]);
+    activateFake(session); const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettings" }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("settingsProjection"));
+    view.receive({ type: "startBrowserAuth", providerConfigId: CLAUDE_CLI.id });
+    await vi.waitFor(() => expect(view.posted.some((message) => message.type === "authPending")).toBe(true));
+    const execution = mock.taskExecutions[0];
+    for (const listener of [...mock.taskEndListeners]) listener({ execution, exitCode: 0 });
+    await vi.waitFor(() => expect(view.posted.some((message) => message.type === "authCompleted")).toBe(true));
+    const completed = view.posted.filter((message) => message.type === "authCompleted").at(-1);
+    expect(completed.state.settings.section).toBe("modelsRoles");
+    expect(completed.state.settings.projection.providers[0]).toMatchObject({ status: "Connected", modelsStatus: "loaded", models: [{ id: "opus", capabilities: { execution: { kind: "anthropic_effort", provenance: "provider_discovery" } } }] });
+    expect(session.core.listModels).toHaveBeenCalledTimes(1);
+    expect((await import("vscode")).commands.executeCommand).not.toHaveBeenCalledWith("workbench.action.reloadWindow");
+    expect(mock.pickCalls).toHaveLength(0);
+    view.receive({ type: "setDefaultModel", providerConfigId: CLAUDE_CLI.id, modelId: "opus", executionOptions: { kind: "anthropic_effort", effort: "high" } });
+    await vi.waitFor(() => expect(mock.settings.get("nyxara.reviewer.model")).toBe("opus"));
+    for (const role of ["planner", "executor", "reviewer"]) {
+      expect(mock.settings.get(`nyxara.${role}.provider`)).toBe(CLAUDE_CLI.id);
+      expect(mock.settings.get(`nyxara.${role}.execution`)).toEqual({ kind: "anthropic_effort", effort: "high" });
+    }
+  });
+
+  it("cancels pending browser login and preserves existing provider state", async () => {
+    mock.settings.set("nyxara.providerConfigs", [{ ...CODEX_CLI, signedOut: true }]); activateFake(fakeSession()); const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettings" }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("settingsProjection")); view.receive({ type: "startBrowserAuth", providerConfigId: CODEX_CLI.id });
+    await vi.waitFor(() => expect(view.posted.at(-1)?.state.settings?.projection.pendingAuth).toBeDefined()); const pending = view.posted.at(-1).state.settings.projection.pendingAuth;
+    view.receive({ type: "cancelBrowserAuth", providerConfigId: CODEX_CLI.id, sessionId: pending.sessionId });
+    await vi.waitFor(() => { expect(mock.taskExecutions[0].terminate).toHaveBeenCalledOnce(); expect(view.posted.at(-1).state.settings.projection.pendingAuth).toBeUndefined(); });
+    expect(mock.settings.get("nyxara.providerConfigs")).toEqual([{ ...CODEX_CLI, signedOut: true }]);
+  });
+
+  it("Refresh Models updates account-scoped models and capabilities live", async () => {
+    mock.settings.set("nyxara.providerConfigs", [OPENAI]); const session = fakeSession(); session.core.listProviders.mockReturnValue([{ id: OPENAI.id, displayName: OPENAI.displayName, capabilities: { modelDiscovery: true, textGeneration: true, toolCalling: true } }]); session.core.listModels.mockResolvedValue([{ id: "new/exact-model", name: "New Exact", provider: OPENAI.id, capabilities: { execution: { kind: "openai_reasoning", label: "Reasoning", control: "select", values: [{ value: "deep", label: "Deep" }], provenance: "provider_discovery" } } }]);
+    const { secretValues, globalState } = activateFake(session); secretValues.set("provider/openai/api-key", "hidden"); const view = resolveRegisteredWebview(); view.receive({ type: "openSettings" }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("settingsProjection"));
+    view.receive({ type: "refreshModels", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(view.posted.some((message) => message.type === "capabilitiesUpdated")).toBe(true));
+    const loaded = view.posted.filter((message) => message.type === "capabilitiesUpdated").at(-1).state.settings.projection.providers[0];
+    expect(loaded).toMatchObject({ modelsStatus: "loaded", models: [{ id: "new/exact-model", capabilities: { execution: { provenance: "provider_discovery" } } }] });
+    expect(globalState.update).toHaveBeenCalledWith("nyxara.providerModelCache.v1", expect.any(Array)); expect(session.core.listModels).toHaveBeenCalledTimes(1);
   });
 
   it("opens only official CLI installation help when requested", async () => {
@@ -149,13 +226,13 @@ describe("VS Code provider onboarding and command safety", () => {
     expect(mock.externalUrls).toEqual(["https://www.geminicli.com/docs/get-started/installation"]);
   });
 
-  it("OpenAI asks only for an API key, stores it in SecretStorage, and applies one exact model to all roles", async () => {
-    const { session, secrets, globalState, workspaceState } = activateFake(); mock.pickIndexes.push(3, 0); mock.inputs.push("sk-fake-openai-test");
+  it("OpenAI stores only the API key, discovers models, then waits for the in-Webview model choice", async () => {
+    const { session, secrets, globalState, workspaceState } = activateFake(); mock.pickIndexes.push(3); mock.inputs.push("sk-fake-openai-test");
     await mock.commands.get("nyxara.connectProvider")?.();
     expect(mock.inputOptions.map((option) => option.prompt)).toEqual(["OpenAI API key (stored securely)"]); expect(secrets.store).toHaveBeenCalledWith("provider/openai/api-key", "sk-fake-openai-test");
-    expect(JSON.stringify(mock.updates)).not.toContain("sk-fake-openai-test"); expect(globalState.update).not.toHaveBeenCalled(); expect(workspaceState.update).not.toHaveBeenCalled();
-    for (const role of ["planner", "executor", "reviewer"]) { expect(mock.updates).toContainEqual([`nyxara.${role}.provider`, "openai", true]); expect(mock.updates).toContainEqual([`nyxara.${role}.model`, "ha-op/gpt-5.6-sol", true]); }
-    expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining(OPENAI)); expect(session.configureAgents).toHaveBeenCalledTimes(2); expect(mock.info.join(" ")).toContain("Provider connected ✓");
+    expect(JSON.stringify(mock.updates)).not.toContain("sk-fake-openai-test"); expect(globalState.update).toHaveBeenCalledWith("nyxara.providerModelCache.v1", expect.any(Array)); expect(workspaceState.update).not.toHaveBeenCalled();
+    for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.model`)).toBeUndefined();
+    expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining(OPENAI)); expect(session.configureAgents).toHaveBeenCalledTimes(1); expect(mock.info.join(" ")).toContain("Provider connected ✓ Choose a model");
   });
 
   it.each([
@@ -163,7 +240,7 @@ describe("VS Code provider onboarding and command safety", () => {
     [4, "Anthropic / Claude", "https://console.anthropic.com/settings/keys", "anthropic-key"],
     [5, "Google Gemini", "https://aistudio.google.com/app/apikey", "gemini-key"],
   ])("offers the official API key page during %s onboarding without reading the browser session", async (providerIndex, displayName, url, key) => {
-    activateFake(); mock.pickIndexes.push(providerIndex, 0); mock.infoResults.push("Open official API key page"); mock.inputs.push(key);
+    activateFake(); mock.pickIndexes.push(providerIndex); mock.infoResults.push("Open official API key page"); mock.inputs.push(key);
     await mock.commands.get("nyxara.connectProvider")?.();
     expect(mock.info[0]).toContain(`official ${displayName} developer console`);
     expect(mock.info[0]).toContain("does not access your browser session");
@@ -171,18 +248,18 @@ describe("VS Code provider onboarding and command safety", () => {
   });
 
   it("Anthropic official onboarding never asks for Base URL or offers browser auth", async () => {
-    const { session, secrets } = activateFake(); mock.pickIndexes.push(4, 0); mock.inputs.push("anthropic-fake-key");
+    const { session, secrets } = activateFake(); mock.pickIndexes.push(4); mock.inputs.push("anthropic-fake-key");
     await mock.commands.get("nyxara.connectProvider")?.();
     expect(mock.inputOptions.map((option) => option.prompt)).toEqual(["Anthropic / Claude API key (stored securely)"]); expect(secrets.store).toHaveBeenCalledWith("provider/anthropic/api-key", "anthropic-fake-key");
     expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining({ type: "anthropic", baseUrl: "https://api.anthropic.com" })); expect(mock.terminals).toHaveLength(0); expect(mock.externalUrls).toHaveLength(0);
   });
 
-  it("compatible setup requests name and Base URL, permits no key, and preserves routed manual IDs", async () => {
-    const { session, secrets } = activateFake(); mock.pickIndexes.push(10, 1); mock.inputs.push("Work Gateway", "https://router.example/v1", "", "ha-op/gpt-5.6-sol");
+  it("compatible setup requests connection fields once and leaves exact model entry to Models & Roles", async () => {
+    const { session, secrets } = activateFake(); mock.pickIndexes.push(10); mock.inputs.push("Work Gateway", "https://router.example/v1", "");
     await mock.commands.get("nyxara.connectProvider")?.();
-    expect(mock.inputOptions.map((option) => option.prompt)).toEqual(["Display name (optional)", "OpenAI-compatible Base URL", "API key (optional; stored securely)", "Model ID"]); expect(secrets.store).not.toHaveBeenCalled();
+    expect(mock.inputOptions.map((option) => option.prompt)).toEqual(["Display name (optional)", "OpenAI-compatible Base URL", "API key (optional; stored securely)"]); expect(secrets.store).not.toHaveBeenCalled();
     expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining({ displayName: "Work Gateway", type: "openai-compatible", authStrategy: "none" }));
-    for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.model`)).toBe("ha-op/gpt-5.6-sol");
+    for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.model`)).toBeUndefined();
   });
 
   it("falls back to exact manual model entry when model discovery is unsupported", async () => {
@@ -190,26 +267,41 @@ describe("VS Code provider onboarding and command safety", () => {
     session.core.listModels.mockRejectedValueOnce(Object.assign(new Error("Not found"), { statusCode: 404 }));
     activateFake(session);
     mock.pickIndexes.push(10);
-    mock.inputs.push("Gateway", "https://router.example/v1", "", "route/manual-exact");
+    mock.inputs.push("Gateway", "https://router.example/v1", "");
     await mock.commands.get("nyxara.connectProvider")?.();
-    for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.model`)).toBe("route/manual-exact");
-    expect(mock.info.join(" ")).toContain("Model discovery is unsupported");
+    for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.model`)).toBeUndefined();
+    expect(mock.warnings.join(" ")).toContain("Use Refresh Models or enter a model ID");
   });
 
   it("local preset requires no cloud credential and only contacts the runtime after user action", async () => {
-    const { session, secrets } = activateFake(); mock.pickIndexes.push(11, 0); await mock.commands.get("nyxara.connectProvider")?.();
+    const { session, secrets } = activateFake(); mock.pickIndexes.push(11); await mock.commands.get("nyxara.connectProvider")?.();
     expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining({ type: "ollama", baseUrl: "http://localhost:11434/v1", authStrategy: "local" })); expect(secrets.store).not.toHaveBeenCalled(); expect(mock.inputOptions).toHaveLength(0); expect(session.core.listModels).toHaveBeenCalledOnce();
   });
 
-  it("preserves a compatible preset identity independently from its shared adapter type", async () => {
+  it("preserves the official Kimi identity independently from its shared compatible transport", async () => {
     const { session } = activateFake();
-    mock.pickIndexes.push(6, 0);
-    mock.inputs.push("Kimi", "kimi-test-key");
+    session.core.listModels.mockResolvedValueOnce([{ id: "kimi-new/exact", name: "Kimi New", provider: "kimi" }]);
+    mock.pickIndexes.push(6);
+    mock.inputs.push("kimi-test-key");
     await mock.commands.get("nyxara.connectProvider")?.();
     expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining({
       id: "kimi", catalogId: "kimi", type: "openai-compatible", baseUrl: "https://api.moonshot.ai/v1",
     }));
     expect(mock.settings.get("nyxara.providerConfigs")).toEqual([expect.objectContaining({ id: "kimi", catalogId: "kimi" })]);
+    expect(session.core.listModels).toHaveBeenCalledWith("kimi");
+    for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.model`)).toBeUndefined();
+  });
+
+  it("connects GLM through its provider-owned models endpoint without manual model entry", async () => {
+    const { session, secrets } = activateFake();
+    session.core.listModels.mockResolvedValueOnce([{ id: "glm-new/exact", name: "GLM New", provider: "glm" }]);
+    mock.pickIndexes.push(8);
+    mock.inputs.push("glm-test-key");
+    await mock.commands.get("nyxara.connectProvider")?.();
+    expect(secrets.store).toHaveBeenCalledWith("provider/glm/api-key", "glm-test-key");
+    expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining({ id: "glm", catalogId: "glm", type: "openai-compatible", baseUrl: "https://open.bigmodel.cn/api/paas/v4", authStrategy: "api_key" }));
+    expect(mock.inputOptions.map((option) => option.prompt)).toEqual(["GLM / Zhipu API key (stored securely)"]);
+    for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.model`)).toBeUndefined();
   });
 
   it("multiple configs coexist and switching default does not delete either", async () => {
@@ -229,8 +321,14 @@ describe("VS Code provider onboarding and command safety", () => {
     await mock.commands.get("nyxara.manageProviders")?.(); expect(secrets.store).toHaveBeenCalledWith("provider/openai-compatible/api-key", "new-gateway-key"); expect(secrets.store).not.toHaveBeenCalledWith("provider/openai/api-key", expect.anything());
   });
 
+  it("failed credential validation restores the previous credential and provider state", async () => {
+    mock.settings.set("nyxara.providerConfigs", [OPENAI]); const session = fakeSession(true); session.core.listModels.mockRejectedValue(Object.assign(new Error("denied token=secret"), { code: "authentication_error", statusCode: 401 })); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "old-hidden"); const view = resolveRegisteredWebview(); mock.inputs.push("new-invalid-hidden");
+    view.receive({ type: "updateCredential", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError"));
+    expect(secretValues.get("provider/openai/api-key")).toBe("old-hidden"); expect(mock.settings.get("nyxara.providerConfigs")).toEqual([OPENAI]); expect(JSON.stringify(view.posted)).not.toContain("new-invalid-hidden");
+  });
+
   it("disconnect confirms and signs out only the intended provider while preserving config", async () => {
-    mock.settings.set("nyxara.providerConfigs", [OPENAI, GATEWAY]); mock.settings.set("nyxara.defaultProviderConfigId", "openai"); const { secrets } = activateFake(fakeSession(true)); mock.pickIndexes.push(0, 5);
+    mock.settings.set("nyxara.providerConfigs", [OPENAI, GATEWAY]); mock.settings.set("nyxara.defaultProviderConfigId", "openai"); const { secrets } = activateFake(fakeSession(true)); mock.pickIndexes.push(0, 6);
     await mock.commands.get("nyxara.manageProviders")?.(); expect(mock.warnings[0]).toContain("stored credential"); expect(secrets.delete).toHaveBeenCalledTimes(1); expect(secrets.delete).toHaveBeenCalledWith("provider/openai/api-key"); expect(mock.settings.get("nyxara.providerConfigs")).toEqual([{ ...OPENAI, signedOut: true }, GATEWAY]);
   });
 
@@ -283,6 +381,39 @@ describe("VS Code provider onboarding and command safety", () => {
     view.receive({ type: "submitRequirement", task: "Add pagination\nand filters" });
     await vi.waitFor(() => expect(session.generate).toHaveBeenCalledWith("Add pagination\nand filters", "/workspace", "default"));
     expect(mock.inputOptions).toHaveLength(0);
+  });
+
+  it.each(["hello", "helo", "thanks"])("resolves trivial request %s locally before provider setup or planning", async (task) => {
+    const session = fakeSession(false);
+    session.core.planningContextDecision = vi.fn(({ prompt, requestSignals }: any) => decidePlanningContext({ prompt, signals: requestSignals }));
+    activateFake(session);
+    const view = resolveRegisteredWebview();
+    view.receive({ type: "submitRequirement", task });
+    await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("clarificationRequired"));
+    expect(view.posted.at(-1)?.state.clarification).toMatchObject({
+      reason: "trivial",
+      message: "Tell Nyxara what you want to build, fix, review, or change.",
+    });
+    expect(session.core.planningContextDecision).toHaveBeenCalledOnce();
+    expect(session.generate).not.toHaveBeenCalled();
+    expect(session.core.startWorkflow).not.toHaveBeenCalled();
+    expect(session.core.createPlan).not.toHaveBeenCalled();
+    expect(session.core.listModels).not.toHaveBeenCalled();
+  });
+
+  it("returns an underspecified clarification without starting repository planning", async () => {
+    const session = fakeSession(true);
+    session.core.planningContextDecision = vi.fn(({ prompt, requestSignals }: any) => decidePlanningContext({ prompt, signals: requestSignals }));
+    activateFake(session);
+    const view = resolveRegisteredWebview();
+    view.receive({ type: "submitRequirement", task: "fix this" });
+    await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("clarificationRequired"));
+    expect(view.posted.at(-1)?.state.clarification).toMatchObject({
+      reason: "underspecified",
+      title: "Need more detail",
+    });
+    expect(session.generate).not.toHaveBeenCalled();
+    expect(session.core.createPlan).not.toHaveBeenCalled();
   });
 
   it("creates Recent history and reopens the active live task without a second workflow/provider call", async () => {

@@ -8,6 +8,7 @@ import type {
   ContextBudget,
   ContextBundle,
   ContextFile,
+  ContextFocus,
   ExpandContextInput,
   ExpandedContext,
 } from "./context.types.js";
@@ -64,14 +65,25 @@ export class ContextEngine {
         1,
         Math.min(CONTEXT_DIFF_MAX_BYTES, Math.floor(budget.maxBytes / 4)),
       );
-      const [gitStatus, gitDiff] = await Promise.all([
-        repository.gitStatus(),
-        repository.gitDiff(gitDiffBudget),
-      ]);
+      // A minimal/targeted exclusive request must not smuggle the rest of the
+      // working tree into the Planner through a broad Git diff. Normal mode
+      // keeps the existing parallel status/diff flow unchanged.
+      const [gitStatus, gitDiff] = input.focus?.exclusive
+        ? await repository.gitStatus().then((status) => [status, {
+            isRepository: status.isRepository,
+            diff: "",
+            files: [],
+            truncated: false,
+          }] as const)
+        : await Promise.all([
+            repository.gitStatus(),
+            repository.gitDiff(gitDiffBudget),
+          ]);
       const candidates = await this.findCandidates(
         repository,
         input.prompt,
         gitStatus.files.map((file) => file.path),
+        input.focus,
       );
       const files: ContextFile[] = [];
       let totalBytes = Buffer.byteLength(gitDiff.diff, "utf8");
@@ -215,15 +227,33 @@ export class ContextEngine {
     repository: Repository,
     prompt: string,
     changedFiles: readonly string[],
+    focus?: ContextFocus,
   ): Promise<Candidate[]> {
     const candidates = new Map<string, Candidate>();
-    const terms = extractSearchTerms(prompt);
+    const focusPaths = [...new Set(focus?.paths ?? [])];
+    const focusSymbols = [...new Set(focus?.symbols ?? [])];
+
+    for (const path of focusPaths) {
+      this.addCandidate(candidates, path, 100, "requested explicitly");
+    }
+    for (const symbol of focusSymbols) {
+      const matches = await repository.searchCode(symbol, 24);
+      for (const match of matches.matches) {
+        this.addCandidate(candidates, match.path, 40, `symbol matched "${symbol}"`);
+      }
+    }
+
+    // An exclusive focus narrows retrieval to the requested evidence. Remaining
+    // budget is deliberately left unused rather than filled with unrelated files.
+    if (focus?.exclusive) {
+      return this.rank(candidates);
+    }
 
     for (const path of changedFiles) {
       this.addCandidate(candidates, path, 20, "current Git change");
     }
 
-    for (const term of terms) {
+    for (const term of extractSearchTerms(prompt)) {
       const [fileMatches, codeMatches] = await Promise.all([
         repository.searchFiles(term, 24),
         repository.searchCode(term, 24),
@@ -236,6 +266,10 @@ export class ContextEngine {
       }
     }
 
+    return this.rank(candidates);
+  }
+
+  private rank(candidates: ReadonlyMap<string, Candidate>): Candidate[] {
     return [...candidates.values()].sort(
       (left, right) =>
         right.score - left.score || left.path.localeCompare(right.path),

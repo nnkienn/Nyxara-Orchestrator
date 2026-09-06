@@ -2,6 +2,7 @@ import type { PlannerInput } from "./planner.types.js";
 import { compilePlanningProfile } from "./planning-profile-compiler.js";
 import { DEFAULT_PLANNING_PROFILE, type PlanningProfile } from "./planning-profile.js";
 import { compileEngineeringRules, type ResolvedRuleSet } from "../rules/engineering-rule.js";
+import { DEFAULT_PLAN_STRUCTURE_BOUNDS } from "./plan-validator.js";
 
 export class PlannerPromptBuilder {
   build(input: PlannerInput, profile: PlanningProfile = DEFAULT_PLANNING_PROFILE, engineeringRules?: ResolvedRuleSet): string {
@@ -21,6 +22,8 @@ export class PlannerPromptBuilder {
       "Create an implementation plan only. Do not modify files, execute code, or claim work is complete.",
       "Use only the bounded repository context below. Avoid unrelated work.",
       "Define executable tasks, explicit dependencies, acceptance criteria, relevant files, and obvious risks.",
+      `Keep the plan concise: at most ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxTasks} tasks, ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxAcceptanceCriteriaPerTask} acceptance criteria per task, ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxRisks} risks, and ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxAssumptions} assumptions.`,
+      `Keep each title within ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxTitleCharacters} characters and each task description within ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxDescriptionCharacters} characters.`,
       "Return one JSON object only. Do not use Markdown fences or explanatory prose.",
       "",
       "Architecture boundaries:",

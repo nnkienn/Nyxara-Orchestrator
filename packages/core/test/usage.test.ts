@@ -3,8 +3,8 @@ import { aggregateWorkflowUsage, normalizeUsage } from "@nyxara/shared";
 
 describe("workflow usage accounting", () => {
   it("normalizes provider formats and leaves missing usage unavailable", () => {
-    expect(normalizeUsage({ prompt_tokens: 3, completion_tokens: 2 })).toEqual({ inputTokens: 3, outputTokens: 2, totalTokens: 5, usageSource: "provider_reported" });
-    expect(normalizeUsage(undefined)).toEqual({ inputTokens: null, outputTokens: null, totalTokens: null, usageSource: "unavailable" });
+    expect(normalizeUsage({ prompt_tokens: 3, completion_tokens: 2 })).toEqual({ inputTokens: 3, outputTokens: 2, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: 5, usageSource: "provider_reported" });
+    expect(normalizeUsage(undefined)).toEqual({ inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: null, usageSource: "unavailable" });
     expect(normalizeUsage({ inputTokens: 4, outputTokens: 1, usageSource: "estimated" }).usageSource).toBe("estimated");
   });
 

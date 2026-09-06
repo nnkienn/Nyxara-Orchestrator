@@ -37,7 +37,7 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = Object.freeze
     description: "ChatGPT Subscription",
     popular: true,
     iconKey: "CX",
-    onboarding: { category: "official", authMethods: ["oauth"], modelDiscovery: true, manualModelId: true },
+    onboarding: { category: "official", authMethods: ["subscription_cli"], modelDiscovery: true, manualModelId: true },
     cli: { command: "codex", loginCommand: ["codex", "login"], accountLabel: "ChatGPT", installUrl: "https://developers.openai.com/codex/cli" },
   },
   {
@@ -47,7 +47,7 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = Object.freeze
     description: "Claude Subscription",
     popular: true,
     iconKey: "CC",
-    onboarding: { category: "official", authMethods: ["oauth"], modelDiscovery: true, manualModelId: true },
+    onboarding: { category: "official", authMethods: ["subscription_cli"], modelDiscovery: true, manualModelId: true },
     cli: { command: "claude", loginCommand: ["claude", "auth", "login"], accountLabel: "Claude", installUrl: "https://docs.anthropic.com/en/docs/claude-code/setup" },
   },
   {
@@ -57,7 +57,7 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = Object.freeze
     description: "Google Account",
     popular: true,
     iconKey: "GC",
-    onboarding: { category: "official", authMethods: ["oauth"], modelDiscovery: true, manualModelId: true },
+    onboarding: { category: "official", authMethods: ["subscription_cli"], modelDiscovery: false, manualModelId: true },
     cli: { command: "gemini", loginCommand: ["gemini"], accountLabel: "Google", installUrl: "https://www.geminicli.com/docs/get-started/installation" },
   },
   {
@@ -88,16 +88,16 @@ export const PROVIDER_DEFINITIONS: readonly ProviderDefinition[] = Object.freeze
     onboarding: { category: "official", authMethods: ["api_key"], defaultEndpoint: "https://generativelanguage.googleapis.com/v1beta", modelDiscovery: true, manualModelId: true, apiKeyHelpUrl: "https://aistudio.google.com/app/apikey" },
   },
   {
-    id: "kimi", type: "openai-compatible", displayName: "Kimi", description: "Compatible Provider", iconKey: "K",
-    onboarding: { category: "compatible", authMethods: ["api_key"], defaultEndpoint: "https://api.moonshot.ai/v1", modelDiscovery: true, manualModelId: true },
+    id: "kimi", type: "openai-compatible", displayName: "Kimi", description: "Official Kimi API", iconKey: "K",
+    onboarding: { category: "official", authMethods: ["api_key"], defaultEndpoint: "https://api.moonshot.ai/v1", modelDiscovery: true, manualModelId: true },
   },
   {
     id: "deepseek", type: "openai-compatible", displayName: "DeepSeek", description: "Compatible Provider", iconKey: "D",
     onboarding: { category: "compatible", authMethods: ["api_key"], defaultEndpoint: "https://api.deepseek.com", modelDiscovery: true, manualModelId: true },
   },
   {
-    id: "glm", type: "openai-compatible", displayName: "GLM / Zhipu", description: "Compatible Provider", iconKey: "G",
-    onboarding: { category: "compatible", authMethods: ["api_key"], defaultEndpoint: "https://open.bigmodel.cn/api/paas/v4", modelDiscovery: true, manualModelId: true },
+    id: "glm", type: "openai-compatible", displayName: "GLM / Zhipu", description: "Official GLM API", iconKey: "G",
+    onboarding: { category: "official", authMethods: ["api_key"], defaultEndpoint: "https://open.bigmodel.cn/api/paas/v4", modelDiscovery: true, manualModelId: true },
   },
   {
     id: "openrouter", type: "openai-compatible", displayName: "OpenRouter", description: "Compatible Provider", iconKey: "OR",

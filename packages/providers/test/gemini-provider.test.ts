@@ -19,13 +19,24 @@ describe("GeminiProvider", () => {
     const provider = new GeminiProvider({ id: "gemini-work", credentialStore: credentials(), credentialKey: "provider/gemini-work/api-key", fetch: fetch as any });
 
     await expect(provider.listModels()).resolves.toEqual([{
-      id: "gemini-test",
+      id: "models/gemini-test",
       name: "Gemini Test",
       provider: "gemini-work",
       contextWindow: 32_768,
       capabilities: { text: true, tools: true, structuredOutput: true },
     }]);
-    expect(fetch.mock.calls[0]?.[0]).toBe("https://generativelanguage.googleapis.com/v1beta/models");
+    expect(fetch.mock.calls[0]?.[0]).toBe("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000");
+  });
+
+  it("follows provider page tokens and keeps exact resource IDs", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ name: "models/gemini/new-one", supportedGenerationMethods: ["generateContent"], thinking: true }], nextPageToken: "next/token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ name: "models/gemini-second", supportedGenerationMethods: ["generateContent"] }] }), { status: 200 }));
+    const provider = new GeminiProvider({ credentialStore: credentials(), fetch: fetch as any });
+    const models = await provider.listModels();
+    expect(models.map((model) => model.id)).toEqual(["models/gemini/new-one", "models/gemini-second"]);
+    expect(models[0]?.capabilities).toMatchObject({ reasoning: true });
+    expect(fetch.mock.calls[1]?.[0]).toBe("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&pageToken=next%2Ftoken");
   });
 
   it("normalizes text, function calls, usage, and exact model routing", async () => {
@@ -58,6 +69,19 @@ describe("GeminiProvider", () => {
       toolCalls: [{ id: "gemini-call-1", name: "read_file", arguments: { path: "src/index.ts" } }],
     });
     expect(fetch.mock.calls[0]?.[0]).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-requested:generateContent");
+  });
+
+  it("forwards an optional caller output bound without adding one by default", async () => {
+    const bodies: any[] = [];
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "{}" }] } }] }), { status: 200 });
+    });
+    const provider = new GeminiProvider({ credentialStore: credentials(), fetch: fetch as any });
+    await provider.generate({ model: "gemini-test", prompt: "bounded", maxOutputTokens: 2_560 });
+    await provider.generate({ model: "gemini-test", prompt: "default" });
+    expect(bodies[0].generationConfig.maxOutputTokens).toBe(2_560);
+    expect(bodies[1]).not.toHaveProperty("generationConfig");
   });
 
   it.each([[401, "authentication_error"], [429, "rate_limit_error"], [404, "invalid_model"]] as const)("maps generation HTTP %s safely", async (status, code) => {

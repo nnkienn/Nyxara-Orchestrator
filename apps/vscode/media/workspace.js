@@ -12,6 +12,14 @@
   let submittedTask;
   let renderedScreen;
   let settingsQuery = "";
+  let modelModeProjection;
+  let modelModeDraft;
+  let appliedDraft;
+  // One lightweight UI-only clock. It formats elapsed time from the authoritative
+  // stageStartedAt and never asks the extension, Core, or a provider for anything.
+  let stageTimer;
+  let stageTimerKey;
+  const disclosures = new Map();
 
   const node = (tag, className, text) => {
     const value = document.createElement(tag);
@@ -25,6 +33,17 @@
     value.addEventListener("click", () => vscode.postMessage(Object.assign({ type }, extra || {})));
     return value;
   };
+  /** Expands a collapsed section locally; disclosure state is pure presentation. */
+  const expandButton = (label, className, key) => {
+    const value = node("button", className, label);
+    value.type = "button";
+    value.addEventListener("click", () => {
+      disclosures.set(key, true);
+      vscode.postMessage({ type: "toggleDisclosure", key, expanded: true });
+      if (state) render();
+    });
+    return value;
+  };
   const formatDuration = (ms) => ms == null ? "-" : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
   const formatNumber = (value) => value == null ? "-" : Number(value).toLocaleString();
   const formatBytes = (value) => value == null || !Number.isFinite(value) || value < 0 ? "-" : value < 1024 ? `${Math.round(value)} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
@@ -36,12 +55,24 @@
     return formatNumber(amount);
   };
   const friendly = (value) => String(value || "pending").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const compactTokens = (value) => value == null ? null : value >= 1000 ? `${(value / 1000).toFixed(value >= 10000 ? 0 : 1).replace(/\.0$/, "")}K` : `${value}`;
+  const elapsedLabel = (startedAt) => {
+    const started = Date.parse(startedAt || "");
+    if (!Number.isFinite(started)) return null;
+    const seconds = Math.max(0, Math.round((Date.now() - started) / 1000));
+    return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  };
+  const outcomeOf = (task) => task.status === "rejected" ? "rejected" : task.status;
+  const outcomeLabel = (outcome) => outcome === "rejected" ? "Plan Rejected" : outcome === "completed" ? "Completed" : friendly(outcome);
+  /** Rejection and abort are neutral: red error styling is reserved for real failures. */
+  const outcomeClass = (outcome) => outcome === "completed" ? "outcome-success" : outcome === "failed" ? "outcome-failure" : "outcome-neutral";
+  const stageOccurred = (stages, stage) => Array.isArray(stages) && stages.includes(stage);
   const isNearBottom = () => timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 72;
   const workflowStatus = () => state.workflow && state.workflow.status;
   const isTerminal = () => !!state.completion;
   const afterApproval = () => !!state.workflow && !["created", "planning", "awaiting_plan_approval"].includes(state.workflow.status);
   const historyState = () => state.history || { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "all" };
-  const terminalHistoryStatus = (status) => ["completed", "failed", "aborted", "interrupted"].includes(status);
+  const terminalHistoryStatus = (status) => ["completed", "failed", "aborted", "rejected", "interrupted"].includes(status);
   const hasPerformance = (projection) => {
     if (!projection) return false;
     const overview = projection.overview || {};
@@ -66,9 +97,10 @@
     value.setAttribute("aria-label", `Open ${task.title}`);
     const head = node("span", "history-row-head");
     head.append(node("span", "history-title", task.title), node("span", "history-time", relativeTime(task.updatedAt)));
-    const meta = [friendly(task.status)];
+    // Compact row: outcome plus at most two metrics. Plan content never appears here.
+    const meta = [outcomeLabel(outcomeOf(task))];
     const usage = task.performanceSummary ? task.performanceSummary.overview : task.usageSummary;
-    if (usage && (usage.totalTokens != null)) meta.push(`${formatNumber(usage.totalTokens)} tokens`);
+    if (usage && (usage.totalTokens != null)) meta.push(`${compactTokens(usage.totalTokens)} tokens`);
     if (usage && (usage.workflowDurationMs != null)) meta.push(formatDuration(usage.workflowDurationMs));
     if (includeWorkspace) meta.push(task.workspaceIdentity.label);
     value.append(head, node("span", `history-meta status-${task.status}`, meta.join(" · ")));
@@ -87,6 +119,37 @@
       section.append(node("p", "muted history-empty", "No tasks yet."), node("p", "muted history-empty", "Start your first task below."));
     } else recent.forEach((task) => section.append(taskRow(task, false)));
     timeline.append(section);
+  }
+
+  /**
+   * Collapsible section. Terminal and historical detail collapse by default so
+   * the sidebar shows a summary instead of replaying the whole timeline.
+   */
+  function disclosure(key, title, meta, defaultExpanded) {
+    const expanded = disclosures.has(key) ? disclosures.get(key) : !!defaultExpanded;
+    const value = node("details", "section-disclosure");
+    if (expanded) value.setAttribute("open", "true");
+    const summary = node("summary", "section-disclosure-title");
+    summary.append(node("span", "", title));
+    if (meta) summary.append(node("span", "muted section-disclosure-meta", meta));
+    summary.addEventListener("click", () => {
+      const next = !(disclosures.has(key) ? disclosures.get(key) : !!defaultExpanded);
+      disclosures.set(key, next);
+      vscode.postMessage({ type: "toggleDisclosure", key, expanded: next });
+    });
+    value.append(summary);
+    return value;
+  }
+
+  function renderTaskHeader(host, title, outcome) {
+    const head = node("div", `outcome-head ${outcomeClass(outcome)}`);
+    head.append(node("h2", "", title));
+    host.append(head);
+  }
+
+  function renderUsageSummary(host, parts) {
+    const line = parts.filter(Boolean).join(" · ");
+    if (line) host.append(node("p", "muted usage-line", line));
   }
 
   function addActions(value, items) {
@@ -183,21 +246,23 @@
   function renderProviderDetails(projection, provider) {
     settingsHeading("Provider Details", "aiProviders");
     const cardValue = card(provider.displayName, "provider-detail");
-    cardValue.append(providerBadge(provider.status), labeledValue("Display Name", provider.displayName), labeledValue("Provider", provider.providerName), labeledValue("Category", provider.category), labeledValue("Authentication", provider.credentialStored ? "Credential stored securely" : provider.authStrategy === "subscription" ? "Official CLI account session" : provider.authStrategy === "local" || provider.authStrategy === "none" ? "No stored credential" : "Credential not stored"), labeledValue("Endpoint", provider.endpoint), labeledValue("Default Model", provider.defaultModel || "Not selected"), labeledValue("Model Discovery", provider.supportsModelDiscovery ? "Supported" : "Unavailable"));
+    const authPending = projection.pendingAuth && projection.pendingAuth.providerConfigId === provider.id;
+    const providerManagedModel = provider.authStrategy === "subscription_cli" && !provider.supportsModelDiscovery;
+    const modelSummary = provider.modelsStatus === "loading" ? "Loading…" : providerManagedModel ? "Provider-managed default" : `${provider.models.length} available · ${friendly(provider.modelsStatus)}`;
+    const refreshedSummary = providerManagedModel ? "Managed by official CLI" : provider.modelsLastRefreshedAt || "Never";
+    cardValue.append(providerBadge(authPending ? "Pending" : provider.status), labeledValue("Display Name", provider.displayName), labeledValue("Provider", provider.providerName), labeledValue("Category", provider.category), labeledValue("Authentication", authPending ? "Waiting for browser sign-in…" : provider.credentialStored ? "Credential stored securely" : provider.authStrategy === "subscription_cli" ? "Official CLI account session" : provider.authStrategy === "local" || provider.authStrategy === "none" ? "No stored credential" : "Credential not stored"), labeledValue("Endpoint", provider.endpoint), labeledValue("Default Model", provider.defaultModel || "Not selected"), labeledValue("Models", modelSummary), labeledValue("Last Refreshed", refreshedSummary));
     if (provider.isDefault) cardValue.append(node("div", "default-pill", "Default AI"));
     if (provider.endpoint !== "Official" && provider.endpoint !== "Managed by official CLI") {
       const edit = node("div", "provider-edit"); const nameInput = node("input", "settings-input"); nameInput.value = provider.displayName; nameInput.maxLength = 100; nameInput.setAttribute("aria-label", "Provider display name"); const endpointInput = node("input", "settings-input"); endpointInput.value = provider.endpoint; endpointInput.maxLength = 2048; endpointInput.setAttribute("aria-label", "Provider endpoint"); const save = node("button", "secondary", "Save Name & Endpoint"); save.type = "button"; save.addEventListener("click", () => { if (nameInput.value.trim() && endpointInput.value.trim()) vscode.postMessage({ type: "updateProviderMetadata", providerConfigId: provider.id, displayName: nameInput.value.trim(), endpoint: endpointInput.value.trim() }); }); edit.append(node("div", "field-label", "Edit Configuration"), nameInput, endpointInput, save); cardValue.append(edit);
     }
     const actions = node("div", "settings-actions");
+    if (authPending) actions.append(node("p", "muted", "Waiting for browser sign-in…"), button("Cancel", "secondary", "cancelBrowserAuth", { providerConfigId: provider.id, sessionId: projection.pendingAuth.sessionId }));
+    else if (provider.supportsBrowserAuth) actions.append(button("Sign In with Browser", "secondary", "startBrowserAuth", { providerConfigId: provider.id }));
     const testConnection = button("Test Connection", "secondary", "testProvider", { providerConfigId: provider.id }); testConnection.disabled = provider.status === "Signed out"; actions.append(testConnection);
-    if (provider.supportsManualModelId) {
-      const modelInput = node("input", "settings-input"); modelInput.placeholder = "Exact model ID"; modelInput.value = provider.defaultModel || ""; modelInput.maxLength = 2048; modelInput.setAttribute("aria-label", "Default model ID");
-      const changeModel = node("button", "secondary", "Change Model"); changeModel.type = "button"; changeModel.addEventListener("click", () => { if (modelInput.value.trim()) vscode.postMessage({ type: "setDefaultModel", providerConfigId: provider.id, modelId: modelInput.value.trim() }); });
-      actions.append(modelInput, changeModel);
-    }
-    if (!provider.isDefault) actions.append(button("Use as Default", "secondary", "setDefaultProvider", { providerConfigId: provider.id }));
+    const refreshModels = button("Refresh Models", "secondary", "refreshModels", { providerConfigId: provider.id }); refreshModels.disabled = !provider.supportsModelDiscovery || provider.status === "Signed out" || provider.modelsStatus === "loading"; actions.append(refreshModels);
+    if (provider.modelsMessage) actions.append(node("p", "muted", provider.modelsMessage));
+    actions.append(button("Configure Models & Roles", "secondary", "openSettingsSection", { section: "modelsRoles" }));
     if (provider.authStrategy === "api_key") actions.append(button(provider.credentialStored ? "Update Credential" : "Reconnect", "secondary", "updateCredential", { providerConfigId: provider.id }));
-    if (provider.authStrategy === "subscription" && provider.status === "Signed out") actions.append(button("Reconnect", "secondary", "updateCredential", { providerConfigId: provider.id }));
     if (provider.lifecycleBlocked) actions.append(node("p", "muted", "This provider is in use by the active workflow. Finish or abort the workflow before signing out or removing it."));
     if (provider.lifecycleAction !== "Remove Provider" && provider.status !== "Signed out") { const lifecycle = button(provider.lifecycleAction, "danger", "signOutProvider", { providerConfigId: provider.id }); lifecycle.disabled = provider.lifecycleBlocked; actions.append(lifecycle); }
     const remove = button("Remove Provider", "danger-link settings-remove", "removeProvider", { providerConfigId: provider.id }); remove.disabled = provider.lifecycleBlocked; actions.append(remove);
@@ -210,6 +275,9 @@
     const selectedId = state.settings.providerConfigId;
     if (selectedId) { const provider = projection.providers.find((item) => item.id === selectedId); if (provider) { renderProviderDetails(projection, provider); return; } }
     settingsHeading("AI Providers");
+    if (projection.pendingAuth && !projection.providers.some((provider) => provider.id === projection.pendingAuth.providerConfigId)) {
+      const pending = card("Connecting Provider", "provider-detail"); pending.append(providerBadge("Pending"), node("p", "muted", "Waiting for browser sign-in…"), button("Cancel", "secondary", "cancelBrowserAuth", { providerConfigId: projection.pendingAuth.providerConfigId, sessionId: projection.pendingAuth.sessionId })); timeline.append(pending);
+    }
     if (!projection.providers.length) timeline.append(node("p", "muted settings-empty", "No providers configured."));
     else {
       const list = node("div", "settings-list");
@@ -228,9 +296,22 @@
     return select;
   }
 
+  let modelSuggestionSequence = 0;
+  function discoveredModelPicker(projection, providerControl, modelInput) {
+    const host = node("div", "discovered-model-picker");
+    const list = node("datalist"); const listId = `nyxara-models-${++modelSuggestionSequence}`; list.setAttribute("id", listId); modelInput.setAttribute("list", listId);
+    const render = () => {
+      list.replaceChildren();
+      const provider = projection.providers.find((item) => item.id === providerControl.value);
+      (provider && provider.models || []).forEach((model) => { const option = node("option"); option.value = model.id; if (model.name !== model.id) option.setAttribute("label", model.name); list.append(option); });
+    };
+    providerControl.addEventListener("change", () => { const provider = projection.providers.find((item) => item.id === providerControl.value); modelInput.value = provider && provider.defaultModel || ""; if (typeof modelInput.dispatchEvent === "function" && typeof Event === "function") modelInput.dispatchEvent(new Event("input")); render(); });
+    host.append(list); render(); return host;
+  }
+
   function executionCapability(provider, modelId) {
-    const normalized = String(modelId || "").trim().toLocaleLowerCase();
-    return (provider && provider.executionCapabilityRules || []).find((rule) => rule.match === "exact" ? normalized === String(rule.modelId).toLocaleLowerCase() : normalized.startsWith(String(rule.modelId).toLocaleLowerCase()))?.capability;
+    const exact = String(modelId || "").trim();
+    return (provider && provider.models || []).find((model) => model.id === exact)?.capabilities?.execution;
   }
 
   function executionSupported(options, capability) {
@@ -261,10 +342,10 @@
         select.value = stale ? "__provider_default__" : selected;
         select.addEventListener("change", () => {
           if (select.value === "__provider_default__") current = { kind: "provider_default" };
-          else current = capability.kind === "openai_reasoning" ? { kind: capability.kind, effort: select.value } : { kind: capability.kind, level: select.value };
+          else current = capability.kind === "openai_reasoning" || capability.kind === "anthropic_effort" ? { kind: capability.kind, effort: select.value } : { kind: capability.kind, level: select.value };
           initiallyStale = false; render();
         });
-        host.append(select);
+        host.append(select, node("p", "muted", `Capability source: ${friendly(capability.provenance)}`));
       } else if (capability && capability.control === "toggle_number") {
         const mode = node("select", "settings-select");
         const defaultOption = node("option", "", "Provider Default"); defaultOption.value = "default"; mode.append(defaultOption);
@@ -281,7 +362,7 @@
         };
         mode.addEventListener("change", () => { if (mode.value === "enabled" && current.kind !== capability.kind) numberInput.value = String(capability.minimumBudgetTokens); update(); render(); });
         numberInput.addEventListener("input", update);
-        host.append(mode, node("label", "field-label", capability.budgetLabel), numberInput, node("p", "muted", `Allowed: ${formatNumber(capability.minimumBudgetTokens)}–${formatNumber(capability.maximumBudgetTokens)} tokens${capability.allowZero ? "; 0 disables thinking" : ""}.`));
+        host.append(mode, node("label", "field-label", capability.budgetLabel), numberInput, node("p", "muted", `Allowed: ${formatNumber(capability.minimumBudgetTokens)}–${formatNumber(capability.maximumBudgetTokens)} tokens${capability.allowZero ? "; 0 disables thinking" : ""}. Capability source: ${friendly(capability.provenance)}.`));
       } else {
         current = current.kind === "provider_default" ? current : current;
         const select = node("select", "settings-select"); const option = node("option", "", "Provider Default"); option.value = "provider_default"; select.append(option); host.append(select, node("p", "muted", "Advanced tuning unavailable for this provider/model."));
@@ -297,19 +378,23 @@
 
   function renderModelsRoles(projection) {
     settingsHeading("Models & Roles");
-    const mode = node("div", "mode-tabs"); mode.append(node("span", projection.modelMode === "simple" ? "chip selected" : "chip", "Simple"), node("span", projection.modelMode === "advanced" ? "chip selected" : "chip", "Advanced")); timeline.append(mode);
+    if (modelModeProjection !== projection) { modelModeProjection = projection; modelModeDraft = !projection.defaultModel ? "simple" : projection.modelMode; }
+    const visibleMode = modelModeDraft;
+    const mode = node("div", "mode-tabs"); const simpleTab = node("button", visibleMode === "simple" ? "chip selected" : "chip", "Simple"); simpleTab.type = "button"; simpleTab.addEventListener("click", () => { modelModeDraft = "simple"; render(); }); const advancedTab = node("button", visibleMode === "advanced" ? "chip selected" : "chip", "Advanced"); advancedTab.type = "button"; advancedTab.addEventListener("click", () => { modelModeDraft = "advanced"; render(); }); mode.append(simpleTab, advancedTab); timeline.append(mode);
     if (!projection.providers.length) { timeline.append(node("p", "muted settings-empty", "No providers configured."), button("Connect Provider", "primary", "connectProvider")); return; }
     const simple = card("Simple"); const defaultProvider = projection.providers.find((provider) => provider.id === projection.defaultProviderConfigId) || projection.providers[0];
-    const simpleProvider = providerSelect(projection, defaultProvider && defaultProvider.id, "Default provider"); const simpleModel = node("input", "settings-input"); simpleModel.placeholder = "Default model ID"; simpleModel.maxLength = 2048; simpleModel.value = defaultProvider && defaultProvider.defaultModel || "";
+    if (!defaultProvider.defaultModel) timeline.append(node("p", "partial-note", "Connected. Choose a model and its execution setting here to finish setup."));
+    const simpleProvider = providerSelect(projection, defaultProvider && defaultProvider.id, "Default provider"); const simpleModel = node("input", "settings-input"); simpleModel.placeholder = "Choose or enter exact model ID"; simpleModel.maxLength = 2048; simpleModel.value = defaultProvider && defaultProvider.defaultModel || "";
     const plannerAssignment = projection.roles.find((item) => item.role === "planner");
     const simpleExecution = executionEditor(projection, simpleProvider, simpleModel, plannerAssignment && plannerAssignment.executionOptions, plannerAssignment && plannerAssignment.executionProfileStatus === "stale", plannerAssignment && plannerAssignment.executionCapability, plannerAssignment && plannerAssignment.providerConfigId, plannerAssignment && plannerAssignment.modelId);
-    simple.append(node("label", "field-label", "Default Provider"), simpleProvider, node("label", "field-label", "Default Model"), simpleModel, simpleExecution.host, node("p", "muted", "Use this exact provider/model/execution profile for Planner, Executor, and Reviewer. Repair uses Executor."));
-    const saveSimple = node("button", "primary", "Use Simple Mode"); saveSimple.type = "button"; saveSimple.addEventListener("click", () => { if (simpleProvider.value && simpleModel.value.trim()) vscode.postMessage({ type: "setDefaultModel", providerConfigId: simpleProvider.value, modelId: simpleModel.value.trim(), executionOptions: simpleExecution.read() }); }); simple.append(saveSimple); timeline.append(simple);
+    simple.append(node("label", "field-label", "Default Provider"), simpleProvider, node("label", "field-label", "Default Model"), simpleModel, discoveredModelPicker(projection, simpleProvider, simpleModel), simpleExecution.host, node("p", "muted", "Model suggestions come from the selected provider. You can also enter an exact model ID manually. Repair uses Executor."));
+    const saveSimple = node("button", "primary", "Use Simple Mode"); saveSimple.type = "button"; saveSimple.addEventListener("click", () => { if (simpleProvider.value && simpleModel.value.trim()) vscode.postMessage({ type: "setDefaultModel", providerConfigId: simpleProvider.value, modelId: simpleModel.value.trim(), executionOptions: simpleExecution.read() }); }); simple.append(saveSimple);
     const advanced = card("Advanced Role Assignments"); const controls = []; const providerSearch = node("input", "settings-input"); providerSearch.type = "search"; providerSearch.placeholder = "Search configured providers…"; providerSearch.maxLength = 200; providerSearch.setAttribute("aria-label", "Search role providers"); advanced.append(providerSearch);
-    ["planner", "executor", "reviewer"].forEach((roleName) => { const assignment = projection.roles.find((item) => item.role === roleName) || {}; const group = node("div", "role-config"); const select = providerSelect(projection, assignment.providerConfigId || defaultProvider.id, `${friendly(roleName)} provider`); const modelInput = node("input", "settings-input"); modelInput.placeholder = `${friendly(roleName)} model ID`; modelInput.maxLength = 2048; modelInput.value = assignment.modelId || ""; const execution = executionEditor(projection, select, modelInput, assignment.executionOptions, assignment.executionProfileStatus === "stale", assignment.executionCapability, assignment.providerConfigId, assignment.modelId); group.append(node("div", "field-label", friendly(roleName)), select, modelInput, execution.host); advanced.append(group); controls.push({ role: roleName, select, modelInput, execution }); });
+    ["planner", "executor", "reviewer"].forEach((roleName) => { const assignment = projection.roles.find((item) => item.role === roleName) || {}; const group = node("div", "role-config"); const select = providerSelect(projection, assignment.providerConfigId || defaultProvider.id, `${friendly(roleName)} provider`); const modelInput = node("input", "settings-input"); modelInput.placeholder = `${friendly(roleName)} model ID`; modelInput.maxLength = 2048; modelInput.value = assignment.modelId || ""; const execution = executionEditor(projection, select, modelInput, assignment.executionOptions, assignment.executionProfileStatus === "stale", assignment.executionCapability, assignment.providerConfigId, assignment.modelId); group.append(node("div", "field-label", friendly(roleName)), select, modelInput, discoveredModelPicker(projection, select, modelInput), execution.host); advanced.append(group); controls.push({ role: roleName, select, modelInput, execution }); });
     providerSearch.addEventListener("input", () => { const query = providerSearch.value.trim().toLocaleLowerCase(); controls.forEach((control) => control.select._providerOptions.forEach((entry) => { entry.option.hidden = !!query && !entry.text.includes(query); })); });
     advanced.append(node("p", "muted", "Selections are validated and committed together. Cancellation or incomplete input saves nothing. Repair uses Executor."));
-    const saveAdvanced = node("button", "primary", "Save Advanced Roles"); saveAdvanced.type = "button"; saveAdvanced.addEventListener("click", () => { const assignments = controls.map((control) => ({ role: control.role, providerConfigId: control.select.value, modelId: control.modelInput.value.trim(), executionOptions: control.execution.read() })); if (assignments.every((item) => item.providerConfigId && item.modelId)) vscode.postMessage({ type: "updateRoleAssignments", assignments }); }); advanced.append(saveAdvanced); timeline.append(advanced);
+    const saveAdvanced = node("button", "primary", "Save Advanced Roles"); saveAdvanced.type = "button"; saveAdvanced.addEventListener("click", () => { const assignments = controls.map((control) => ({ role: control.role, providerConfigId: control.select.value, modelId: control.modelInput.value.trim(), executionOptions: control.execution.read() })); if (assignments.every((item) => item.providerConfigId && item.modelId)) vscode.postMessage({ type: "updateRoleAssignments", assignments }); }); advanced.append(saveAdvanced);
+    timeline.append(visibleMode === "simple" ? simple : advanced);
   }
 
   function renderPlanning(projection) {
@@ -375,7 +460,7 @@
     });
     shell.append(scopes);
     const filters = node("div", "history-filters");
-    [["all", "All"], ["active", "Active"], ["completed", "Completed"], ["failed", "Failed"], ["interrupted", "Interrupted"]].forEach(([value, label]) => filters.append(button(label, history.filter === value ? "chip selected" : "chip", "filterTasks", { filter: value })));
+    [["all", "All"], ["active", "Active"], ["completed", "Completed"], ["failed", "Failed"], ["rejected", "Rejected"], ["interrupted", "Interrupted"]].forEach(([value, label]) => filters.append(button(label, history.filter === value ? "chip selected" : "chip", "filterTasks", { filter: value })));
     shell.append(filters);
     const list = node("div", "history-list");
     if (!history.tasks.length) list.append(node("p", "history-empty muted", history.query ? "No matching local tasks." : "No tasks yet. Start your first task below."));
@@ -385,10 +470,8 @@
     timeline.append(shell);
   }
 
-  function historicalPlan(task) {
-    if (!task.planSummary) return;
-    const value = card("Implementation Plan", "plan-card");
-    value.append(node("p", "objective", task.planSummary.objective));
+  function historicalPlanBody(task, host) {
+    host.append(node("p", "objective", task.planSummary.objective));
     const tasks = node("ol", "task-list");
     task.planSummary.tasks.forEach((planTask) => {
       const item = node("li");
@@ -403,16 +486,31 @@
       if (planTask.risk) item.append(node("div", "task-meta", `Risk: ${friendly(planTask.risk)}`));
       tasks.append(item);
     });
-    value.append(tasks);
+    host.append(tasks);
     if (task.planSummary.risks.length) {
       const risks = node("ul", "risk-list");
       task.planSummary.risks.forEach((risk) => risks.append(node("li", "", `${friendly(risk.severity)} — ${risk.description}${risk.mitigation ? ` (${risk.mitigation})` : ""}`)));
-      value.append(node("h3", "", "Risks"), risks);
+      host.append(node("h3", "", "Risks"), risks);
     }
-    value.append(node("div", "approved-line", task.planSummary.approvalStatus === "approved" ? "Approved ✓" : task.planSummary.approvalStatus === "rejected" ? "Rejected" : "Not approved"));
-    timeline.append(value);
+    host.append(node("div", "approved-line", task.planSummary.approvalStatus === "approved" ? "Approved ✓" : task.planSummary.approvalStatus === "rejected" ? "Rejected" : "Not approved"));
   }
 
+  /** Historical plan is collapsed by default; History never replays plan content. */
+  function renderHistoricalPlanSummary(task) {
+    if (!task.planSummary) return;
+    const count = task.planSummary.tasks.length;
+    const section = disclosure(`history-plan:${task.id}`, "Implementation Plan", `${count} ${count === 1 ? "task" : "tasks"}`, false);
+    const body = node("div", "plan-card-body");
+    historicalPlanBody(task, body);
+    section.append(body);
+    timeline.append(section);
+  }
+
+  /**
+   * Compact historical detail. Every stage section is collapsed by default and a
+   * stage is rendered only when the record shows it actually occurred, so a
+   * rejected task never shows Execution, Validation, Review, or Repair.
+   */
   function renderHistoricalTask() {
     const history = historyState();
     const task = history.selectedTask;
@@ -421,48 +519,67 @@
     timeline.append(heading);
     if (!task) { timeline.append(node("p", "muted", "This local task is no longer available.")); return; }
     if (history.activeTaskId) timeline.append(button("Return to Active Task", "secondary return-active", "returnToActiveTask"));
-    const requirement = node("section", "requirement-block");
-    requirement.append(node("div", "eyebrow", "You"), node("div", "", task.requirement));
+    const outcome = outcomeOf(task);
+    const summaryCard = card(outcomeLabel(outcome) + (outcome === "completed" ? " ✓" : ""), `completion-card ${outcomeClass(outcome)}`);
+    if (outcome === "rejected") summaryCard.append(node("p", "", "No repository changes were made."));
+    if (outcome === "interrupted") summaryCard.append(node("p", "", "This workflow cannot be resumed automatically in the current version."));
+    if (task.failureSummary && outcome !== "rejected") summaryCard.append(node("p", "failed", task.failureSummary.message));
+    const usage = task.usageSummary;
+    const overview = task.performanceSummary ? task.performanceSummary.overview : undefined;
+    const tokenParts = overview ? [
+      overview.inputTokens == null ? null : `${compactTokens(overview.inputTokens)} input`,
+      overview.cacheWriteTokens ? `${compactTokens(overview.cacheWriteTokens)} cache write` : null,
+      overview.cacheReadTokens ? `${compactTokens(overview.cacheReadTokens)} cache read` : null,
+      overview.outputTokens == null ? null : `${compactTokens(overview.outputTokens)} output`,
+    ].filter(Boolean) : [];
+    renderUsageSummary(summaryCard, [
+      tokenParts.length ? tokenParts.join(" · ") : (usage && usage.totalTokens != null ? `${compactTokens(usage.totalTokens)} tokens` : null),
+      usage && usage.workflowDurationMs != null ? formatDuration(usage.workflowDurationMs) : null,
+      task.providerSummary ? `${task.providerSummary.provider}${task.providerSummary.model ? ` · ${task.providerSummary.model}` : ""}` : null,
+    ]);
+    timeline.append(summaryCard);
+    const requirement = disclosure(`history-requirement:${task.id}`, "Requirement", "", false);
+    requirement.append(node("div", "", task.requirement));
     timeline.append(requirement);
-    historicalPlan(task);
-    if (task.executionSummary) {
-      const execution = card("Execution");
-      execution.append(node("p", "", `${task.executionSummary.completed} / ${task.executionSummary.total} tasks completed`));
+    renderHistoricalPlanSummary(task);
+    const stages = task.occurredStages || [];
+    const executionOccurred = task.executionSummary && (stageOccurred(stages, "execution") || task.executionSummary.total > 0);
+    if (executionOccurred) {
+      const section = disclosure(`history-execution:${task.id}`, "Execution", `${task.executionSummary.completed} / ${task.executionSummary.total}`, false);
       const tasks = node("ul", "workflow-tasks");
       task.executionSummary.tasks.forEach((item) => {
         const row = node("li");
         row.append(node("span", item.status === "completed" ? "passed" : item.status === "failed" ? "failed" : "", item.status === "completed" ? "✓" : item.status === "failed" ? "✕" : "○"), node("span", "", `${item.title} — ${friendly(item.status)}`));
         tasks.append(row);
       });
-      execution.append(tasks); timeline.append(execution);
+      section.append(tasks);
+      timeline.append(section);
     }
-    if (task.validationSummary) {
-      const validation = card("Validation");
-      validation.append(node("p", task.validationSummary.status === "passed" ? "passed" : task.validationSummary.status === "failed" ? "failed" : "muted", friendly(task.validationSummary.status)));
-      task.validationSummary.steps.forEach((step) => { const row = node("div", "step"); row.append(node("span", "", `${step.status === "passed" ? "✓" : step.status === "skipped" ? "–" : step.status === "failed" ? "✕" : "●"} ${friendly(step.name)}`), node("span", "muted", `${friendly(step.status)}${step.durationMs == null ? "" : ` · ${formatDuration(step.durationMs)}`}`)); validation.append(row); });
-      timeline.append(validation);
+    if (task.validationSummary && task.validationSummary.steps.length) {
+      const failed = task.validationSummary.status === "failed";
+      const section = disclosure(`history-validation:${task.id}`, "Validation", friendly(task.validationSummary.status), failed);
+      task.validationSummary.steps.forEach((step) => {
+        const row = node("div", "step");
+        row.append(node("span", "", friendly(step.name)), node("span", step.status === "passed" ? "passed" : ["failed", "timed_out", "errored"].includes(step.status) ? "failed" : "muted", `${friendly(step.status)}${step.durationMs == null ? "" : ` · ${formatDuration(step.durationMs)}`}`));
+        section.append(row);
+      });
+      timeline.append(section);
     }
     if (task.reviewSummary) {
-      const review = card("Review");
-      review.append(node("p", task.reviewSummary.status === "passed" ? "passed" : task.reviewSummary.status === "failed" ? "failed" : "muted", friendly(task.reviewSummary.status)));
-      if (task.reviewSummary.findingCount != null) review.append(node("p", "muted", `${task.reviewSummary.findingCount} structured finding${task.reviewSummary.findingCount === 1 ? "" : "s"}`));
-      timeline.append(review);
+      const section = disclosure(`history-review:${task.id}`, "Review", friendly(task.reviewSummary.status), task.reviewSummary.status === "failed");
+      section.append(node("p", task.reviewSummary.status === "passed" ? "passed" : task.reviewSummary.status === "failed" ? "failed" : "muted", friendly(task.reviewSummary.status)));
+      if (task.reviewSummary.findingCount != null) section.append(node("p", "muted", `${task.reviewSummary.findingCount} structured finding${task.reviewSummary.findingCount === 1 ? "" : "s"}`));
+      timeline.append(section);
     }
     if (task.repairSummary && task.repairSummary.cycles) {
-      const repair = card("Repair");
-      repair.append(node("p", "", `${task.repairSummary.cycles} cycle${task.repairSummary.cycles === 1 ? "" : "s"} · ${friendly(task.repairSummary.outcome || "unavailable")}`));
-      timeline.append(repair);
+      const section = disclosure(`history-repair:${task.id}`, "Repair", `${task.repairSummary.cycles} ${task.repairSummary.cycles === 1 ? "cycle" : "cycles"}`, false);
+      section.append(node("p", "", `${task.repairSummary.cycles} cycle${task.repairSummary.cycles === 1 ? "" : "s"} · ${friendly(task.repairSummary.outcome || "unavailable")}`));
+      timeline.append(section);
     }
-    const final = card(task.status === "completed" ? "Completed ✓" : friendly(task.status), task.status === "completed" ? "completion-success" : "completion-failure");
-    if (task.status === "interrupted") final.append(node("p", "", "This workflow cannot be resumed automatically in the current version."));
-    if (task.failureSummary) final.append(node("div", "eyebrow", "Stage"), node("p", "", task.failureSummary.stage), node("div", "eyebrow", "Reason"), node("p", "failed", task.failureSummary.message));
-    const usage = task.usageSummary;
-    const summary = node("dl", "summary");
-    [["Provider", task.providerSummary ? `${task.providerSummary.provider}${task.providerSummary.model ? ` · ${task.providerSummary.model}` : ""}` : "-"], ["Tokens", formatNumber(usage && usage.totalTokens)], ["Model Calls", formatNumber(usage && usage.providerCalls)], ["Tool Calls", formatNumber(usage && usage.toolCalls)], ["Duration", formatDuration(usage && usage.workflowDurationMs)], ["Repair Cycles", formatNumber(usage && usage.repairCycles)]].forEach(([key, value]) => summary.append(node("dt", "muted", key), node("dd", "", value)));
-    final.append(summary); timeline.append(final);
     if (terminalHistoryStatus(task.status) && task.id !== history.activeTaskId) {
       const actions = node("div", "history-detail-actions");
       if (hasTaskPerformance(task)) actions.append(button("View Performance", "secondary", "openPerformance", { taskId: task.id }));
+      actions.append(button("Edit Requirement", "secondary", "editRequirement", { taskId: task.id }));
       actions.append(button("Delete Task", "danger", "deleteTask", { taskId: task.id }));
       if (!history.activeTaskId) actions.append(button("New Task", "primary", "newTask"));
       timeline.append(actions);
@@ -476,18 +593,49 @@
     timeline.append(value);
   }
 
-  function renderPlanning() {
-    if (!state.prompt || state.plan || !state.workflow || !["created", "planning"].includes(state.workflow.status)) return;
-    const line = node("div", "status-line");
-    line.append(node("span", "spinner"), node("span", "", state.workflow.stage === "Analyzing" ? "Analyzing…" : "Planning…"));
-    timeline.append(line);
+  /**
+   * Persistent live stage indicator. Stage plus elapsed time is always shown, so
+   * a non-streaming provider never looks frozen; streaming progress, when the
+   * transport genuinely supports it, is added as a safe status line.
+   */
+  function renderLiveStage() {
+    const workflow = state.workflow;
+    if (!workflow || !workflow.active || isTerminal()) return;
+    if (workflow.status === "awaiting_plan_approval" || workflow.permission) return;
+    const value = node("section", "live-stage");
+    const head = node("div", "live-stage-head");
+    const elapsed = elapsedLabel(workflow.stageStartedAt);
+    head.append(node("span", "spinner"), node("span", "live-stage-name", elapsed ? `${workflow.stage} · ${elapsed}` : workflow.stage));
+    value.append(head);
+    if (workflow.providerLabel) value.append(node("div", "muted live-stage-provider", workflow.providerLabel));
+    const waiting = workflow.progressLabel || (elapsed ? `Waiting for model response · ${elapsed}` : "Waiting for model response");
+    value.append(node("div", "muted live-stage-detail", waiting));
+    if (workflow.progress && workflow.progress.total) {
+      value.append(node("div", "muted live-stage-detail", `Task ${Math.min(workflow.progress.completed + 1, workflow.progress.total)} / ${workflow.progress.total}`));
+    }
+    timeline.append(value);
   }
 
-  function renderPlan() {
-    if (!state.plan) return;
-    const value = card("Implementation Plan", "plan-card");
-    value.append(node("p", "objective", state.plan.objective));
-    if (state.plan.summary) value.append(node("p", "muted", state.plan.summary));
+  function renderClarification() {
+    const clarification = state.clarification;
+    if (!clarification) return;
+    const value = card(clarification.title, "clarification-card");
+    value.append(node("p", "", clarification.message));
+    if (clarification.examples && clarification.examples.length) {
+      const list = node("ul", "clarification-examples");
+      clarification.examples.forEach((example) => list.append(node("li", "", example)));
+      value.append(node("div", "eyebrow", "Examples"), list);
+    }
+    const actions = [];
+    if (clarification.requirement) actions.push(button("Edit Requirement", "secondary", "editRequirement"));
+    actions.push(button("Dismiss", "secondary", "dismissClarification"));
+    addActions(value, actions);
+    timeline.append(value);
+  }
+
+  function planBody(host) {
+    host.append(node("p", "objective", state.plan.objective));
+    if (state.plan.summary) host.append(node("p", "muted", state.plan.summary));
     const tasks = node("ol", "task-list");
     state.plan.tasks.forEach((task) => {
       const item = node("li");
@@ -503,20 +651,47 @@
       if (task.risk) item.append(node("div", "task-meta", `Risk: ${friendly(task.risk)}`));
       tasks.append(item);
     });
-    value.append(tasks);
+    host.append(tasks);
     if (state.plan.risks.length) {
-      value.append(node("h3", "", "Risks"));
+      host.append(node("h3", "", "Risks"));
       const risks = node("ul", "risk-list");
       state.plan.risks.forEach((risk) => risks.append(node("li", "", `${friendly(risk.severity)} — ${risk.description}${risk.mitigation ? ` (${risk.mitigation})` : ""}`)));
-      value.append(risks);
+      host.append(risks);
     }
-    if (workflowStatus() === "awaiting_plan_approval") addActions(value, [button("Reject", "secondary", "rejectPlan"), button("Approve & Run", "primary", "approvePlan")]);
-    timeline.append(value);
   }
 
-  function renderWorkflow() {
+  /**
+   * The plan stays expanded only while it awaits approval, because that is when
+   * the user must read it. After approval or a terminal outcome it collapses to
+   * a one-line summary.
+   */
+  function renderPlan() {
+    if (!state.plan) return;
+    const awaitingApproval = workflowStatus() === "awaiting_plan_approval";
+    const taskCount = state.plan.tasks.length;
+    const meta = `${taskCount} ${taskCount === 1 ? "task" : "tasks"}`;
+    if (awaitingApproval) {
+      const value = card("Implementation Plan", "plan-card");
+      planBody(value);
+      addActions(value, [button("Reject", "secondary", "rejectPlan"), button("Approve & Run", "primary", "approvePlan")]);
+      timeline.append(value);
+      return;
+    }
+    const collapsed = disclosure("plan", "Implementation Plan", meta, false);
+    const body = node("div", "plan-card-body");
+    planBody(body);
+    collapsed.append(body);
+    timeline.append(collapsed);
+  }
+
+  /**
+   * During execution the current task is prominent and finished tasks collapse
+   * into a count instead of a growing expanded list.
+   */
+  function renderExecutionSummary() {
     const workflow = state.workflow;
     if (!workflow || workflow.status === "awaiting_plan_approval" || isTerminal()) return;
+    if (!stageOccurred(workflow.occurredStages, "execution") && !afterApproval()) return;
     const value = card(workflow.stage);
     if (afterApproval()) value.append(node("div", "approved-line", "Approved ✓"));
     const grid = node("div", "stage-grid");
@@ -530,12 +705,21 @@
       grid.append(node("span", "muted", "Current task"), node("span", "", current ? current.title : workflow.currentTaskId));
     }
     value.append(grid);
-    if (workflow.tasks.length) {
+    const done = workflow.tasks.filter((task) => task.status === "completed");
+    const remaining = workflow.tasks.filter((task) => task.status !== "completed");
+    if (done.length) {
+      const completedSection = disclosure("execution-completed", `${done.length} ${done.length === 1 ? "task" : "tasks"} completed`, "", false);
       const list = node("ul", "workflow-tasks");
-      workflow.tasks.forEach((task) => {
-        const icon = task.status === "completed" ? "✓" : task.status === "running" ? "●" : task.status === "failed" ? "✕" : task.status === "blocked" ? "!" : "○";
+      done.forEach((task) => { const item = node("li"); item.append(node("span", "passed", "✓"), node("span", "", task.title)); list.append(item); });
+      completedSection.append(list);
+      value.append(completedSection);
+    }
+    if (remaining.length) {
+      const list = node("ul", "workflow-tasks");
+      remaining.forEach((task) => {
+        const icon = task.status === "running" ? "●" : task.status === "failed" ? "✕" : task.status === "blocked" ? "!" : "○";
         const item = node("li");
-        item.append(node("span", task.status === "completed" ? "passed" : task.status === "failed" ? "failed" : "", icon), node("span", "", task.title));
+        item.append(node("span", task.status === "failed" ? "failed" : "", icon), node("span", "", task.title));
         list.append(item);
       });
       value.append(list);
@@ -560,7 +744,11 @@
   }
 
   function renderValidation() {
+    if (isTerminal()) return;
     if (!afterApproval() && !state.validation.length) return;
+    // Validation is rendered only once it has evidence or the workflow has
+    // actually reached a stage that runs it.
+    if (!state.validation.length && !["validating", "reviewing", "repairing"].includes(workflowStatus())) return;
     const value = card("Validation");
     if (!state.validation.length) {
       const label = workflowStatus() === "validating" ? "Running…" : ["executing", "running", "approved", "paused", "waiting_for_permission"].includes(workflowStatus()) ? "Pending" : "Unavailable";
@@ -576,7 +764,8 @@
   }
 
   function renderReview() {
-    if (!afterApproval() && !state.reviewStatus) return;
+    if (isTerminal()) return;
+    if (!state.reviewStatus && workflowStatus() !== "reviewing") return;
     const value = card("Review");
     const status = state.reviewStatus;
     const label = status ? friendly(status) : workflowStatus() === "reviewing" ? "Running…" : ["executing", "running", "approved", "validating", "paused", "waiting_for_permission"].includes(workflowStatus()) ? "Pending" : "Unavailable";
@@ -585,27 +774,84 @@
   }
 
   function renderRepair() {
+    if (isTerminal()) return;
     if (workflowStatus() !== "repairing" && !(state.repairCycles > 0)) return;
     const value = card(workflowStatus() === "repairing" ? "Repairing" : "Repair");
     value.append(node("p", "", state.repairCycles == null ? "Cycle in progress" : `Cycle ${state.repairCycles}`));
     timeline.append(value);
   }
 
+  /**
+   * Compact terminal outcome. It leads with the outcome, a short summary, and the
+   * primary next action; details stay collapsible, and stages that never ran are
+   * not rendered at all.
+   */
   function renderCompletion() {
     if (!state.completion) return;
-    const completed = state.completion.status === "completed";
-    const value = card(completed ? "Completed ✓" : friendly(state.completion.status), completed ? "completion-success" : "completion-failure");
-    if (!completed && state.workflow && state.workflow.error) value.append(node("div", "eyebrow", "Stage"), node("p", "", state.workflow.error.stage), node("div", "eyebrow", "Reason"), node("p", "failed", state.workflow.error.message));
-    const summary = node("dl", "summary completion-status-summary");
-    const validation = state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) ? "Failed" : state.validation.length ? "Passed" : "-";
-    [["Validation", validation], ["Review", state.reviewStatus ? friendly(state.reviewStatus) : "-"], ["Changed Files", formatNumber(state.completion.changedFiles)]].forEach(([key, value]) => summary.append(node("dt", "muted", key), node("dd", "", value)));
-    value.append(summary);
+    const outcome = state.completion.outcome || state.completion.status;
+    const stages = (state.workflow && state.workflow.occurredStages) || [];
+    const rejected = outcome === "rejected";
+    const completed = outcome === "completed";
+    const value = card(outcomeLabel(outcome) + (completed ? " ✓" : ""), `completion-card ${outcomeClass(outcome)}`);
+    if (rejected) {
+      value.append(node("p", "", "No repository changes were made."));
+      const actions = [];
+      if (state.plan) actions.push(expandButton("View Plan", "secondary", "plan"));
+      actions.push(button("Edit Requirement", "secondary", "editRequirement"), button("New Task", "primary", "newTask"));
+      addActions(value, actions);
+      timeline.append(value);
+      return;
+    }
+    if (!completed && state.workflow && state.workflow.error) {
+      value.append(node("p", outcome === "failed" ? "failed" : "muted", state.workflow.error.message));
+    }
+    const lines = [];
+    if (state.completion.changedFiles != null && stageOccurred(stages, "execution")) lines.push(`${formatNumber(state.completion.changedFiles)} files changed`);
+    if (stageOccurred(stages, "validation") && state.validation.length) {
+      lines.push(state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) ? "Validation failed" : "Validation passed");
+    }
+    if (stageOccurred(stages, "review") && state.reviewStatus) lines.push(`Review ${friendly(state.reviewStatus).toLowerCase()}`);
+    if (lines.length) value.append(node("p", "muted completion-lines", lines.join(" · ")));
     const overview = state.performance ? state.performance.overview : { totalTokens: state.completion.tokens, workflowDurationMs: state.completion.durationMs, providerCalls: state.completion.modelCalls, toolCalls: null };
-    const performanceSummary = node("dl", "summary performance-summary");
-    [["Tokens", formatNumber(overview.totalTokens)], ["Duration", formatDuration(overview.workflowDurationMs)], ["Model Calls", formatNumber(overview.providerCalls)], ["Tool Calls", formatNumber(overview.toolCalls)]].forEach(([key, metric]) => performanceSummary.append(node("dt", "muted", key), node("dd", "", metric)));
-    value.append(node("div", "performance-label", "Performance"), performanceSummary);
-    addActions(value, [...(hasPerformance(state.performance) ? [button("View Performance", "secondary", "openPerformance")] : []), button("New Task", "primary", "newTask")]);
+    renderUsageSummary(value, [
+      (state.completion.tokenParts && state.completion.tokenParts.length ? state.completion.tokenParts.join(" · ") : (compactTokens(overview.totalTokens) ? `${compactTokens(overview.totalTokens)} tokens` : null)),
+      overview.workflowDurationMs == null ? null : formatDuration(overview.workflowDurationMs),
+    ]);
+    const actions = [];
+    if (stages.length) actions.push(expandButton("View Details", "secondary", "terminal-details"));
+    if (hasPerformance(state.performance)) actions.push(button("View Performance", "secondary", "openPerformance"));
+    if (outcome === "failed" && state.prompt) actions.push(button("Try Again", "primary", "retryPlanning"), button("Choose Model", "secondary", "openSettingsSection", { section: "modelsRoles" }));
+    actions.push(button("New Task", completed ? "primary" : "secondary", "newTask"));
+    addActions(value, actions);
     timeline.append(value);
+    renderTerminalDetails(stages);
+  }
+
+  function renderTerminalDetails(stages) {
+    if (!stages.length) return;
+    const failedValidation = state.validation.filter((step) => ["failed", "timed_out", "errored"].includes(step.status));
+    const details = disclosure("terminal-details", "Details", "", false);
+    if (stageOccurred(stages, "validation") && state.validation.length) {
+      const section = disclosure("terminal-validation", "Validation", failedValidation.length ? "Failed" : "Passed", failedValidation.length > 0);
+      state.validation.forEach((step) => {
+        const row = node("div", "step");
+        const failed = ["failed", "timed_out", "errored"].includes(step.status);
+        row.append(node("span", "", friendly(step.kind)), node("span", failed ? "failed" : step.status === "passed" ? "passed" : "muted", friendly(step.status)));
+        section.append(row);
+      });
+      details.append(section);
+    }
+    if (stageOccurred(stages, "review") && state.reviewStatus) {
+      const section = disclosure("terminal-review", "Review", friendly(state.reviewStatus), state.reviewStatus === "failed");
+      section.append(node("p", state.reviewStatus === "passed" ? "passed" : state.reviewStatus === "failed" ? "failed" : "muted", friendly(state.reviewStatus)));
+      details.append(section);
+    }
+    if (stageOccurred(stages, "repair") && state.repairCycles > 0) {
+      const section = disclosure("terminal-repair", "Repair", `${state.repairCycles} ${state.repairCycles === 1 ? "cycle" : "cycles"}`, false);
+      section.append(node("p", "muted", `${state.repairCycles} ${state.repairCycles === 1 ? "cycle" : "cycles"}`));
+      details.append(section);
+    }
+    if (details.children.length > 1) timeline.append(details);
   }
 
   function metricRows(host, entries) {
@@ -640,6 +886,45 @@
     return value;
   }
 
+  function hasValue(value) {
+    return value !== null && value !== undefined;
+  }
+
+  function activePerformanceRole(role) {
+    return [role.providerConfigId, role.providerId, role.requestedModelId, role.resolvedModelId, role.executionProfileLabel, role.totalTokens, role.providerDurationMs].some(hasValue) || Number(role.calls) > 0;
+  }
+
+  function performanceDisclosure(title, className) {
+    const value = node("details", `performance-disclosure${className ? ` ${className}` : ""}`);
+    value.append(node("summary", "performance-disclosure-title", title));
+    return value;
+  }
+
+  function metricTiles(entries) {
+    const value = node("div", "performance-tiles");
+    entries.forEach(([label, metric]) => {
+      const tile = node("div", "performance-tile");
+      tile.append(node("span", "performance-tile-value", metric), node("span", "performance-tile-label", label));
+      value.append(tile);
+    });
+    return value;
+  }
+
+  function compactRoleRow(role) {
+    const value = node("div", "performance-role-row");
+    const copy = node("div", "performance-role-copy");
+    const provider = role.providerName || role.providerId || "Unknown provider";
+    const modelName = role.resolvedModelId || role.requestedModelId || "Unknown model";
+    copy.append(node("strong", "", friendly(role.role)), node("span", "muted", `${provider} · ${modelName}`));
+    const metrics = [role.totalTokens == null ? null : `${formatNumber(role.totalTokens)} tok`, role.providerDurationMs == null ? null : formatDuration(role.providerDurationMs)].filter(Boolean).join(" · ") || "-";
+    value.append(copy, node("span", "performance-role-metric", metrics));
+    return value;
+  }
+
+  function availableMetricRows(host, entries) {
+    entries.filter(([, value]) => value !== null && value !== undefined && value !== "-").forEach(([label, value]) => host.append(labeledValue(label, value)));
+  }
+
   function renderPerformance() {
     const view = state.performanceView;
     const heading = node("div", "history-screen-heading performance-heading");
@@ -661,78 +946,61 @@
       return;
     }
 
-    const overviewCard = card("Overview", "performance-section performance-overview");
-    overviewCard.append(node("div", "performance-hero", overview.totalTokens == null ? "-" : `${formatNumber(overview.totalTokens)} tokens`), node("div", "performance-compact", [overview.workflowDurationMs == null ? null : formatDuration(overview.workflowDurationMs), overview.providerCalls == null ? null : `${formatNumber(overview.providerCalls)} model call${overview.providerCalls === 1 ? "" : "s"}`, overview.toolCalls == null ? null : `${formatNumber(overview.toolCalls)} tool call${overview.toolCalls === 1 ? "" : "s"}`].filter(Boolean).join(" · ") || "-"));
-    metricRows(overviewCard, [["Input Tokens", formatNumber(overview.inputTokens)], ["Output Tokens", formatNumber(overview.outputTokens)], ["Total Tokens", formatNumber(overview.totalTokens)], ["Workflow Duration", formatDuration(overview.workflowDurationMs)], ["Provider Calls", formatNumber(overview.providerCalls)], ["Tool Calls", formatNumber(overview.toolCalls)], ["Repair Cycles", formatNumber(overview.repairCycles)], ["Usage Source", overview.usageSource ? friendly(overview.usageSource) : "-"], ["Validation Status", overview.validationStatus ? friendly(overview.validationStatus) : "-"], ["Review Status", overview.reviewStatus ? friendly(overview.reviewStatus) : "-"], ["Cost", formatCost(overview.cost, overview.currency)]]);
+    const overviewCard = card("Summary", "performance-section performance-overview");
+    overviewCard.append(metricTiles([["Tokens", formatNumber(overview.totalTokens)], ["Time", formatDuration(overview.workflowDurationMs == null ? projection.latency.totalProviderDurationMs : overview.workflowDurationMs)], ["Model calls", formatNumber(overview.providerCalls)], ["Cost", formatCost(overview.cost, overview.currency)]]));
+    const status = [overview.validationStatus ? `Validation ${friendly(overview.validationStatus)}` : null, overview.reviewStatus ? `Review ${friendly(overview.reviewStatus)}` : null, overview.repairCycles ? `${formatNumber(overview.repairCycles)} repair cycle${overview.repairCycles === 1 ? "" : "s"}` : null].filter(Boolean);
+    if (status.length) overviewCard.append(node("div", "performance-status-line", status.join(" · ")));
     timeline.append(overviewCard);
 
-    const roles = node("section", "performance-group"); roles.append(node("h2", "performance-group-title", "Models & Roles"));
-    projection.roles.forEach((role) => roles.append(rolePerformance(role)));
-    timeline.append(roles);
+    const activeRoles = projection.roles.filter(activePerformanceRole);
+    if (activeRoles.length) {
+      const roles = card("Models used", "performance-section performance-roles");
+      activeRoles.forEach((role) => roles.append(compactRoleRow(role)));
+      timeline.append(roles);
+
+      const modelDetails = performanceDisclosure("Model details");
+      activeRoles.forEach((role) => modelDetails.append(rolePerformance(role)));
+      timeline.append(modelDetails);
+    }
 
     if (projection.executorTasks.length) {
-      const tasks = node("section", "performance-group"); tasks.append(node("h2", "performance-group-title", "Executor Tasks"));
+      const tasks = performanceDisclosure(`Task breakdown · ${projection.executorTasks.length}`);
       projection.executorTasks.forEach((task, index) => { const value = card(task.title || `Task ${index + 1}`, "performance-section"); metricRows(value, [["Task ID", task.taskId], ["Input", task.inputTokens == null ? "-" : `${formatNumber(task.inputTokens)} tokens`], ["Output", task.outputTokens == null ? "-" : `${formatNumber(task.outputTokens)} tokens`], ["Total", task.totalTokens == null ? "-" : `${formatNumber(task.totalTokens)} tokens`], ["Provider Time", formatDuration(task.providerDurationMs)], ["Provider Calls", formatNumber(task.providerCalls)], ["Tool Calls", formatNumber(task.toolCalls)], ["Tool Time", formatDuration(task.toolDurationMs)]]); tasks.append(value); });
       timeline.append(tasks);
     }
 
-    const latency = card("Latency", "performance-section");
+    const latency = performanceDisclosure("Timing");
     latency.append(node("p", "muted", "Measured durations may overlap and are not presented as a stacked total."));
-    metricRows(latency, [["Workflow Total", formatDuration(projection.latency.workflowDurationMs)], ["Provider Time", formatDuration(projection.latency.totalProviderDurationMs)], ["Planner Provider Time", formatDuration(projection.latency.providerByRole.planner)], ["Executor Provider Time", formatDuration(projection.latency.providerByRole.executor)], ["Reviewer Provider Time", formatDuration(projection.latency.providerByRole.reviewer)], ["Repair Provider Time", formatDuration(projection.latency.providerByRole.repair)], ["Tools", formatDuration(projection.latency.toolDurationMs)], ["Validation", formatDuration(projection.latency.validationDurationMs)], ["Review", formatDuration(projection.latency.reviewDurationMs)], ["Repair", formatDuration(projection.latency.repairDurationMs)], ["Local Orchestration", formatDuration(projection.latency.localOrchestrationDurationMs)]]);
-    timeline.append(latency);
+    availableMetricRows(latency, [["Workflow Total", formatDuration(projection.latency.workflowDurationMs)], ["Provider Time", formatDuration(projection.latency.totalProviderDurationMs)], ["Planner", formatDuration(projection.latency.providerByRole.planner)], ["Executor", formatDuration(projection.latency.providerByRole.executor)], ["Reviewer", formatDuration(projection.latency.providerByRole.reviewer)], ["Repair", formatDuration(projection.latency.providerByRole.repair)], ["Tools", formatDuration(projection.latency.toolDurationMs)], ["Validation", formatDuration(projection.latency.validationDurationMs)], ["Review", formatDuration(projection.latency.reviewDurationMs)], ["Local Orchestration", formatDuration(projection.latency.localOrchestrationDurationMs)]]);
+    if (latency.children.length > 2 || projection.latency.workflowDurationMs != null || projection.latency.totalProviderDurationMs != null) timeline.append(latency);
 
-    const context = card("Context", "performance-section");
-    metricRows(context, [["Files", formatNumber(projection.context.files)], ["Size", formatBytes(projection.context.bytes)], ["Truncated", projection.context.truncated == null ? "-" : projection.context.truncated ? "Yes" : "No"], ["Targeted Expansions", formatNumber(projection.context.targetedExpansions)]]);
-    timeline.append(context);
+    const activity = performanceDisclosure("Context & tools");
+    availableMetricRows(activity, [["Context Files", formatNumber(projection.context.files)], ["Context Size", formatBytes(projection.context.bytes)], ["Context Truncated", projection.context.truncated == null ? "-" : projection.context.truncated ? "Yes" : "No"], ["Context Expansions", projection.context.targetedExpansions ? formatNumber(projection.context.targetedExpansions) : "-"], ["Tools Requested", formatNumber(projection.tools.requestedByModel)], ["Tools Executed", formatNumber(projection.tools.executed)], ["Tools Successful", formatNumber(projection.tools.successful)], ["Tools Failed", formatNumber(projection.tools.failed)], ["Tools Invalid", formatNumber(projection.tools.invalid)], ["Tool Time", formatDuration(projection.tools.durationMs)]]);
+    if (projection.tools.byName.length) { activity.append(node("h3", "performance-subheading", "Tool calls")); projection.tools.byName.forEach((entry) => activity.append(labeledValue(entry.name, formatNumber(entry.count)))); }
+    if (activity.children.length > 1) timeline.append(activity);
 
-    const tools = card("Tools", "performance-section");
-    metricRows(tools, [["Requested by Model", formatNumber(projection.tools.requestedByModel)], ["Executed", formatNumber(projection.tools.executed)], ["Successful", formatNumber(projection.tools.successful)], ["Failed", formatNumber(projection.tools.failed)], ["Invalid", formatNumber(projection.tools.invalid)], ["Duration", formatDuration(projection.tools.durationMs)]]);
-    if (projection.tools.byName.length) { tools.append(node("h3", "performance-subheading", "By Name")); projection.tools.byName.forEach((entry) => tools.append(labeledValue(entry.name, formatNumber(entry.count)))); }
-    timeline.append(tools);
+    const quality = performanceDisclosure("Quality & repair");
+    availableMetricRows(quality, [["Validation", projection.validation.status ? friendly(projection.validation.status) : "-"], ["Validation Time", formatDuration(projection.validation.durationMs)], ["Review", projection.review.status ? friendly(projection.review.status) : "-"], ["Review Time", formatDuration(projection.review.durationMs)], ["Review Context Expansions", projection.review.contextExpansions ? formatNumber(projection.review.contextExpansions) : "-"], ["Repair Cycles", projection.repair.cycles ? formatNumber(projection.repair.cycles) : "-"], ["Repair Time", formatDuration(projection.repair.durationMs)], ["Repair Tokens", formatNumber(projection.repair.totalTokens)], ["Repair Execution", projection.repair.executionProfileLabel ? `Uses Executor · ${projection.repair.executionProfileLabel}` : "-"]]);
+    projection.validation.steps.forEach((step) => { const row = node("div", "step"); row.append(node("span", "", friendly(step.name)), node("span", ["failed", "timed_out", "errored"].includes(step.status) ? "failed" : step.status === "passed" ? "passed" : "muted", `${friendly(step.status)}${step.durationMs == null ? "" : ` · ${formatDuration(step.durationMs)}`}`)); quality.append(row); });
+    if (quality.children.length > 1) timeline.append(quality);
 
-    const validation = card("Validation", "performance-section");
-    metricRows(validation, [["Overall Status", projection.validation.status ? friendly(projection.validation.status) : "-"], ["Duration", formatDuration(projection.validation.durationMs)]]);
-    projection.validation.steps.forEach((step) => { const row = node("div", "step"); row.append(node("span", "", friendly(step.name)), node("span", ["failed", "timed_out", "errored"].includes(step.status) ? "failed" : step.status === "passed" ? "passed" : "muted", `${friendly(step.status)}${step.durationMs == null ? "" : ` · ${formatDuration(step.durationMs)}`}`)); validation.append(row); });
-    timeline.append(validation);
-
-    const review = rolePerformance(projection.review.role, "Review");
-    metricRows(review, [["Status", projection.review.status ? friendly(projection.review.status) : "-"], ["Measured Duration", formatDuration(projection.review.durationMs)], ["Context Expansions", formatNumber(projection.review.contextExpansions)]]);
-    timeline.append(review);
-
-    const repair = card("Repair", "performance-section");
-    metricRows(repair, [["Cycles", formatNumber(projection.repair.cycles)], ["Measured Duration", formatDuration(projection.repair.durationMs)], ["Provider Calls", formatNumber(projection.repair.providerCalls)], ["Input Tokens", formatNumber(projection.repair.inputTokens)], ["Output Tokens", formatNumber(projection.repair.outputTokens)], ["Total Tokens", formatNumber(projection.repair.totalTokens)], ["Provider Time", formatDuration(projection.repair.providerDurationMs)], ["Execution Profile", projection.repair.executionProfileLabel ? `Uses Executor · ${projection.repair.executionProfileLabel}` : "Uses Executor · -"]]);
-    timeline.append(repair);
-
-    const cost = card("Cost", "performance-section");
-    metricRows(cost, [["Cost", formatCost(projection.cost.amount, projection.cost.currency)], ["Source", projection.cost.source ? friendly(projection.cost.source) : "-"]]);
-    timeline.append(cost);
+    const usage = performanceDisclosure("Token & cost details");
+    availableMetricRows(usage, [["Input Tokens", formatNumber(overview.inputTokens)], ["Output Tokens", formatNumber(overview.outputTokens)], ["Total Tokens", formatNumber(overview.totalTokens)], ["Usage Source", overview.usageSource ? friendly(overview.usageSource) : "-"], ["Cost", formatCost(projection.cost.amount, projection.cost.currency)], ["Cost Source", projection.cost.source && projection.cost.source !== "unavailable" ? friendly(projection.cost.source) : "-"]]);
+    if (usage.children.length > 1) timeline.append(usage);
   }
 
   function renderModelSelector() {
-    model.replaceChildren();
     if (!state.providers.length) {
-      const option = node("option", "", "Connect an AI provider");
-      option.value = "";
-      model.append(option);
-      model.disabled = true;
+      model.textContent = "Connect provider";
+      model.disabled = false;
       return;
     }
     if (state.advancedRouting) {
-      const option = node("option", "", "Advanced routing");
-      option.value = "";
-      model.append(option);
+      model.textContent = "Advanced roles";
     } else {
-      state.providers.forEach((provider) => {
-        const option = node("option", "", `${provider.displayName}${provider.modelId ? ` · ${provider.modelId}` : " · Choose model"}`);
-        option.value = provider.modelId ? JSON.stringify({ providerConfigId: provider.id, modelId: provider.modelId }) : "";
-        option.selected = provider.isDefault;
-        if (!provider.modelId) option.disabled = true;
-        model.append(option);
-      });
+      const provider = state.providers.find((item) => item.isDefault) || state.providers[0];
+      model.textContent = provider ? `${provider.displayName} · ${provider.modelId || "Choose model"}` : "Choose model";
     }
-    const settings = node("option", "", state.advancedRouting ? "Configure routing…" : "Configure provider / model…");
-    settings.value = "__settings__";
-    model.append(settings);
     model.disabled = false;
   }
 
@@ -746,11 +1014,12 @@
     else if (screen === "history") renderHistoryScreen();
     else if (screen === "historical") renderHistoricalTask();
     else {
-      if (!state.prompt && !state.plan && !state.workflow) renderEmpty();
+      if (!state.prompt && !state.plan && !state.workflow && !state.clarification) renderEmpty();
       renderRequirement();
-      renderPlanning();
+      renderClarification();
+      renderLiveStage();
       renderPlan();
-      renderWorkflow();
+      renderExecutionSummary();
       renderPermission();
       renderValidation();
       renderReview();
@@ -771,10 +1040,43 @@
     const warning = el("workspace-warning");
     warning.classList.toggle("hidden", state.workspace.available && !state.workspace.multiple);
     warning.textContent = !state.workspace.available ? "Open a folder or workspace to start a coding task." : state.workspace.multiple ? "Choose the target workspace when you generate a plan." : "";
-    if (screenChanged) timeline.scrollTop = screen === "workspace" && state.workflow ? timeline.scrollHeight : 0;
+    // A historical task opens at the top of its compact summary; an active
+    // workspace task keeps following new output.
+    if (screenChanged) timeline.scrollTop = screen === "workspace" && state.workflow && !isTerminal() ? timeline.scrollHeight : 0;
     else if (stick) timeline.scrollTop = timeline.scrollHeight;
     renderedScreen = screen;
+    syncStageTimer();
   }
+
+  /**
+   * Keeps at most one bounded UI clock alive, and only while a non-terminal stage
+   * is on screen. It re-renders locally from stageStartedAt and never contacts
+   * the extension, Core, or a provider, so it is not a polling loop.
+   */
+  function syncStageTimer() {
+    const workflow = state && state.workflow;
+    const shouldRun = !!workflow && workflow.active && !isTerminal() && !state.settings && !state.performanceView
+      && historyState().screen === "workspace" && workflow.status !== "awaiting_plan_approval" && !!workflow.stageStartedAt;
+    const key = shouldRun ? `${workflow.id}:${workflow.status}:${workflow.stageStartedAt}` : undefined;
+    if (stageTimerKey === key) return;
+    stopStageTimer();
+    if (!shouldRun) return;
+    stageTimerKey = key;
+    stageTimer = setInterval(() => {
+      if (!state || isTerminal() || !state.workflow || !state.workflow.active) { stopStageTimer(); return; }
+      render();
+    }, 1000);
+  }
+
+  function stopStageTimer() {
+    if (stageTimer !== undefined) clearInterval(stageTimer);
+    stageTimer = undefined;
+    stageTimerKey = undefined;
+  }
+
+  // The timer must not outlive the Webview.
+  window.addEventListener("unload", stopStageTimer);
+  window.addEventListener("pagehide", stopStageTimer);
 
   function resize() {
     input.style.height = "auto";
@@ -803,20 +1105,7 @@
   el("new-task").addEventListener("click", () => vscode.postMessage({ type: "newTask" }));
   if (el("history")) el("history").addEventListener("click", () => vscode.postMessage({ type: "openHistory" }));
   el("settings").addEventListener("click", () => vscode.postMessage({ type: "openSettings" }));
-  model.addEventListener("change", () => {
-    if (model.value === "__settings__") {
-      vscode.postMessage({ type: "openSettings" });
-      renderModelSelector();
-      return;
-    }
-    if (!model.value) return;
-    try {
-      const selection = JSON.parse(model.value);
-      vscode.postMessage({ type: "selectModel", providerConfigId: selection.providerConfigId, modelId: selection.modelId });
-    } catch {
-      vscode.postMessage({ type: "openSettings" });
-    }
-  });
+  model.addEventListener("click", () => vscode.postMessage({ type: "openSettingsSection", section: "modelsRoles" }));
 
   window.addEventListener("message", (event) => {
     const message = event.data;
@@ -838,6 +1127,16 @@
       input.value = "";
       submittedTask = undefined;
       resize();
+    }
+    // Edit Requirement prefills a fresh draft. It never resumes the old workflow.
+    if (state.requirementDraft && state.requirementDraft !== appliedDraft) {
+      appliedDraft = state.requirementDraft;
+      input.value = state.requirementDraft;
+      submittedTask = undefined;
+      resize();
+      if (!input.disabled) input.focus();
+    } else if (!state.requirementDraft) {
+      appliedDraft = undefined;
     }
     render();
   });

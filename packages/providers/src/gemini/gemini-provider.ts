@@ -49,21 +49,33 @@ export class GeminiProvider implements ModelProvider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    const payload = record(await this.request("/models", { method: "GET" }, "list_models"));
-    if (!Array.isArray(payload.models)) throw this.invalidResponse("Provider returned an invalid models response");
-    return payload.models.flatMap((value): ModelInfo[] => {
+    const rawModels: unknown[] = [];
+    const tokens = new Set<string>();
+    let pageToken: string | undefined;
+    for (let page = 0; page < 32; page += 1) {
+      const path = `/models?pageSize=1000${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+      const payload = record(await this.request(path, { method: "GET" }, "list_models"));
+      if (!Array.isArray(payload.models)) throw this.invalidResponse("Provider returned an invalid models response");
+      rawModels.push(...payload.models);
+      if (typeof payload.nextPageToken !== "string" || !payload.nextPageToken) break;
+      if (tokens.has(payload.nextPageToken)) throw this.invalidResponse("Provider returned an invalid models page token");
+      tokens.add(payload.nextPageToken); pageToken = payload.nextPageToken;
+    }
+    return rawModels.flatMap((value): ModelInfo[] => {
       const model = record(value);
       if (typeof model.name !== "string" || !model.name) return [];
       const methods = Array.isArray(model.supportedGenerationMethods) ? model.supportedGenerationMethods : [];
       if (!methods.includes("generateContent")) return [];
-      const id = model.name.replace(/^models\//, "");
+      // Preserve the exact provider-returned identifier. Request construction removes
+      // the resource prefix only at the transport boundary.
+      const id = model.name;
       const contextWindow = finiteNumber(model.inputTokenLimit);
       return [{
         id,
         name: typeof model.displayName === "string" && model.displayName ? model.displayName : id,
         provider: this.id,
         ...(contextWindow !== undefined ? { contextWindow } : {}),
-        capabilities: { text: true, tools: true, structuredOutput: true, ...this.modelCapabilities(id) },
+        capabilities: { text: true, tools: true, structuredOutput: true, ...(model.thinking === true ? { reasoning: true } : {}), ...this.modelCapabilities(id) },
       }];
     });
   }
@@ -76,6 +88,7 @@ export class GeminiProvider implements ModelProvider {
   async generate(input: GenerateRequest): Promise<GenerateResponse> {
     const modelId = input.model.replace(/^models\//, "");
     const executionOptions = assertExecutionOptionsSupported(input.executionOptions, this.modelCapabilities(modelId)?.execution);
+    const maxOutputTokens = boundedOutputTokens(input.maxOutputTokens);
     const contents: JsonRecord[] = [{ role: "user", parts: [{ text: input.prompt }] }];
     for (const message of input.conversation ?? []) {
       if (message.role === "assistant") {
@@ -95,8 +108,9 @@ export class GeminiProvider implements ModelProvider {
       body: JSON.stringify({
         contents,
         ...(input.tools?.length ? { tools: [{ functionDeclarations: input.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })) }] } : {}),
-        ...(input.responseFormat === "json" || executionOptions.kind !== "provider_default" ? { generationConfig: {
+        ...(input.responseFormat === "json" || executionOptions.kind !== "provider_default" || maxOutputTokens !== undefined ? { generationConfig: {
           ...(input.responseFormat === "json" ? { responseMimeType: "application/json" } : {}),
+          ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
           ...(executionOptions.kind === "gemini_thinking_budget" ? { thinkingConfig: { thinkingBudget: executionOptions.budgetTokens } } : {}),
           ...(executionOptions.kind === "gemini_thinking_level" ? { thinkingConfig: { thinkingLevel: executionOptions.level.toUpperCase() } } : {}),
         } } : {}),
@@ -168,6 +182,12 @@ export class GeminiProvider implements ModelProvider {
   private invalidResponse(message: string): ProviderError {
     return new ProviderError(message, { code: "invalid_response", providerId: this.id });
   }
+}
+
+function boundedOutputTokens(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
 }
 
 function record(value: unknown): JsonRecord {

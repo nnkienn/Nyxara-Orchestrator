@@ -27,10 +27,27 @@ export interface ContextBundle {
   readonly truncated: boolean;
 }
 
+/**
+ * Optional retrieval focus supplied by the pre-planning context policy. It
+ * narrows what ContextEngine considers; ranking, bounding, and truncation
+ * remain ContextEngine's responsibility.
+ */
+export interface ContextFocus {
+  /** Paths the request named explicitly, or a cheap active-file anchor. */
+  readonly paths?: readonly string[];
+  readonly symbols?: readonly string[];
+  /**
+   * True when retrieval must stay inside the focus set. Unrelated files are then
+   * left out even when budget remains available.
+   */
+  readonly exclusive?: boolean;
+}
+
 export interface BuildContextInput {
   readonly workspaceRoot: string;
   readonly prompt: string;
   readonly budget?: Partial<ContextBudget>;
+  readonly focus?: ContextFocus;
   readonly signal?: AbortSignal;
 }
 

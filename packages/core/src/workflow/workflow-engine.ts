@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type {
-  PendingWorkflowPermission,
-  WorkflowSnapshot,
-  WorkflowState,
-  WorkflowStatus,
+import {
+  workflowOutcome,
+  type PendingWorkflowPermission,
+  type WorkflowSnapshot,
+  type WorkflowStage,
+  type WorkflowState,
+  type WorkflowStatus,
 } from "@nyxara/shared";
 import { z } from "zod";
 import type { EventBus } from "../events/event-bus.js";
@@ -59,6 +61,7 @@ export class WorkflowEngine {
       status: "created" as const,
       createdAt: timestamp,
       updatedAt: timestamp,
+      stageStartedAt: timestamp,
     });
     this.store.create(state);
     this.events.emit("workflow.started", {
@@ -96,13 +99,20 @@ export class WorkflowEngine {
     const planId = patch.planId ?? current.planId;
     const currentTaskId = patch.currentTaskId === null ? undefined : (patch.currentTaskId ?? current.currentTaskId);
     const error = patch.error ?? current.error;
+    const timestamp = this.now();
+    // A status change is a stage entry, so the authoritative stage clock resets
+    // here. Clients format elapsed time from it and never poll Core.
+    const stageStartedAt = next === current.status
+      ? current.stageStartedAt ?? timestamp
+      : timestamp;
     const state: WorkflowState = Object.freeze({
       id: current.id,
       workspace: current.workspace,
       prompt: current.prompt,
       status: next,
       createdAt: current.createdAt,
-      updatedAt: this.now(),
+      updatedAt: timestamp,
+      stageStartedAt,
       ...(planId ? { planId } : {}),
       ...(currentTaskId ? { currentTaskId } : {}),
       ...(error ? { error } : {}),
@@ -114,6 +124,13 @@ export class WorkflowEngine {
     });
     this.store.replace(state);
 
+    if (next !== current.status) {
+      this.events.emit("workflow.stage_changed", {
+        workflowId,
+        stage: next,
+        stageStartedAt,
+      });
+    }
     this.events.emit("workflow.status_changed", {
       workflowId,
       from: current.status,
@@ -246,6 +263,10 @@ export class WorkflowEngine {
 
   snapshot(workflowId: string): WorkflowSnapshot {
     const state = this.store.require(workflowId);
+    const outcome = workflowOutcome({
+      status: state.status,
+      ...(state.error ? { error: state.error } : {}),
+    });
     return Object.freeze({
       workflowId: state.id,
       status: state.status,
@@ -254,6 +275,9 @@ export class WorkflowEngine {
         .map((task) => Object.freeze({ ...task })),
       startedAt: state.createdAt,
       updatedAt: state.updatedAt,
+      ...(state.stageStartedAt ? { stageStartedAt: state.stageStartedAt } : {}),
+      ...(outcome ? { outcome } : {}),
+      occurredStages: this.occurredStages(state),
       ...(state.planId ? { planId: state.planId } : {}),
       ...(state.currentTaskId ? { currentTaskId: state.currentTaskId } : {}),
       ...(state.error ? { error: state.error } : {}),
@@ -263,6 +287,24 @@ export class WorkflowEngine {
       ...(state.pauseRequested ? { pauseRequested: true } : {}),
       ...(state.pendingPermission ? { pendingPermission: state.pendingPermission } : {}),
     });
+  }
+
+  /**
+   * Reports only stages with recorded evidence. A rejected plan therefore never
+   * projects Execution 0/0, Validation Pending, or Repair 0.
+   */
+  private occurredStages(state: WorkflowState): readonly WorkflowStage[] {
+    const tasks = this.store.tasks(state.id);
+    const stages: WorkflowStage[] = [];
+    if (state.status !== "created") stages.push("planning");
+    if (state.planId) stages.push("approval");
+    if (tasks.some((task) => task.executionStatus && task.executionStatus !== "pending")) {
+      stages.push("execution");
+    }
+    if (tasks.some((task) => task.validationStatus !== undefined)) stages.push("validation");
+    if (tasks.some((task) => task.reviewStatus !== undefined)) stages.push("review");
+    if (tasks.some((task) => task.repairStatus !== undefined)) stages.push("repair");
+    return Object.freeze(stages);
   }
 
   private emitTerminal(state: WorkflowState): void {

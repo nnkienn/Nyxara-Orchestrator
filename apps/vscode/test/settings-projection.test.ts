@@ -61,7 +61,7 @@ describe("Settings authoritative projection", () => {
     expect(value.roles[1]).toMatchObject({ executionProfileStatus: "unknown", executionOptions: { kind: "provider_default" } });
     expect(value.roles[1]).not.toHaveProperty("executionCapability");
     expect(value.roles[2]).toMatchObject({ executionProfileStatus: "stale" });
-    expect(value.providers.find((provider) => provider.id === local.id)?.executionCapabilityRules).toEqual([]);
+    expect(value.providers.find((provider) => provider.id === local.id)?.models).toEqual([]);
   });
 
   it("diagnostics expose only safe execution summaries", () => {
@@ -73,5 +73,21 @@ describe("Settings authoritative projection", () => {
     const text = JSON.stringify(buildSanitizedDiagnostics(value));
     expect(text).toContain('"execution":{"kind":"openai_reasoning","value":"low"}');
     expect(text).not.toMatch(/api[_ -]?key|authorization|request.*payload|response.*payload|sk-secret/i);
+  });
+
+  it("projects account-discovered models and authoritative capabilities without hiding unknown IDs", () => {
+    const modelStates = new Map([[openai.id, { providerConfigId: openai.id, status: "cached", lastRefreshedAt: "2026-09-05T00:00:00.000Z", models: [
+      { id: "new/model-exact", name: "New Model" },
+      { id: "known/model", name: "Known", capabilities: { execution: { kind: "openai_reasoning", label: "Reasoning", control: "select", values: [{ value: "deep", label: "Deep" }], provenance: "provider_discovery" } } },
+    ] }]]);
+    const value = projection({ modelStates }); const provider = value.providers[0]!;
+    expect(provider).toMatchObject({ modelsStatus: "cached", modelsLastRefreshedAt: "2026-09-05T00:00:00.000Z" }); expect(provider.models.map((model) => model.id)).toEqual(["new/model-exact", "known/model"]); expect(provider.models[0]).not.toHaveProperty("capabilities.execution");
+  });
+
+  it("labels subscription CLIs without a public catalog as provider-managed instead of claiming an empty account", () => {
+    const gemini = { id: "gemini-account", catalogId: "gemini-cli", type: "gemini-cli" as const, displayName: "Gemini Account", modelId: "default", authStrategy: "subscription_cli" as const };
+    const value = projection({ providers: [gemini], defaultProviderId: gemini.id, credentialStored: new Map(), testedProviderIds: new Set([gemini.id]), roles: [] });
+    expect(value.providers[0]).toMatchObject({ supportsModelDiscovery: false, models: [], modelsStatus: "unknown" });
+    expect(value.providers[0]?.modelsMessage).toContain("provider-managed default alias");
   });
 });

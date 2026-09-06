@@ -3,6 +3,8 @@ export type PlannerErrorCode =
   | "invalid_plan"
   | "plan_parse_error"
   | "plan_cycle_detected"
+  | "plan_bounds_exceeded"
+  | "clarification_required"
   | "missing_dependency"
   | "self_dependency"
   | "invalid_model";
@@ -16,4 +18,3 @@ export class PlannerError extends Error {
     this.name = "PlannerError";
   }
 }
-

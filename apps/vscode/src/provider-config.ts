@@ -16,7 +16,7 @@ export interface ProviderConfig {
   /** Last explicitly selected model for this local configuration. Non-secret. */
   readonly modelId?: string;
   readonly baseUrl?: string;
-  readonly authStrategy: "api_key" | "subscription" | "local" | "none";
+  readonly authStrategy: "api_key" | "subscription_cli" | "local" | "none";
   readonly createdAt?: string;
   /** Local lifecycle marker for externally authenticated CLI providers. */
   readonly signedOut?: boolean;
@@ -72,7 +72,7 @@ function parseProviderConfig(value: unknown): ProviderConfig[] {
   try { definition = providerDefinition(catalogId); } catch { return []; }
   const baseUrl = typeof value.baseUrl === "string" && value.baseUrl.trim() ? value.baseUrl.trim() : definition.onboarding.defaultEndpoint;
   if (!baseUrl && !definition.cli) return [];
-  const authStrategy = value.authStrategy === "api_key" || value.authStrategy === "subscription" || value.authStrategy === "local" || value.authStrategy === "none" ? value.authStrategy : definition.cli ? "subscription" : definition.onboarding.category === "official" ? "api_key" : "none";
+  const authStrategy = value.authStrategy === "subscription" ? "subscription_cli" : value.authStrategy === "api_key" || value.authStrategy === "subscription_cli" || value.authStrategy === "local" || value.authStrategy === "none" ? value.authStrategy : definition.cli ? "subscription_cli" : definition.onboarding.category === "official" ? "api_key" : "none";
   const modelId = typeof value.modelId === "string" && value.modelId.trim() ? value.modelId.trim() : undefined;
   const createdAt = typeof value.createdAt === "string" && !Number.isNaN(Date.parse(value.createdAt)) ? value.createdAt : undefined;
   return [{ id: value.id, ...(catalogId !== value.type ? { catalogId } : {}), type: value.type as ProviderAdapterType, displayName: typeof value.displayName === "string" && value.displayName.trim() ? value.displayName.trim() : definition.displayName, ...(modelId ? { modelId } : {}), ...(baseUrl ? { baseUrl } : {}), authStrategy, ...(createdAt ? { createdAt } : {}), ...(value.signedOut === true ? { signedOut: true } : {}) }];

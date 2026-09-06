@@ -11,7 +11,19 @@ describe("AnthropicProvider", () => {
     });
     const provider = new AnthropicProvider({ id: "anthropic-work", credentialStore: { get: async () => "fake-key", set: vi.fn(), delete: vi.fn() }, credentialKey: "provider/anthropic-work/api-key", fetch: fetch as any });
     await expect(provider.listModels()).resolves.toEqual([{ id: "claude-test", name: "Claude Test", provider: "anthropic-work" }]);
-    expect(fetch.mock.calls[0]?.[0]).toBe("https://api.anthropic.com/v1/models");
+    expect(fetch.mock.calls[0]?.[0]).toBe("https://api.anthropic.com/v1/models?limit=1000");
+  });
+
+  it("follows the official cursor and projects safe discovery capabilities", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "claude-new-exact", display_name: "Claude New", max_input_tokens: 200000, capabilities: { thinking: { supported: true }, image_input: { supported: true } } }], has_more: true, last_id: "cursor/exact" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: "claude-second", display_name: "Claude Second" }], has_more: false }), { status: 200 }));
+    const provider = new AnthropicProvider({ credentialStore: { get: async () => "fake-key", set: vi.fn(), delete: vi.fn() }, fetch: fetch as any });
+    await expect(provider.listModels()).resolves.toEqual([
+      { id: "claude-new-exact", name: "Claude New", provider: "anthropic", contextWindow: 200000, capabilities: { vision: true, reasoning: true } },
+      { id: "claude-second", name: "Claude Second", provider: "anthropic" },
+    ]);
+    expect(fetch.mock.calls[1]?.[0]).toBe("https://api.anthropic.com/v1/models?limit=1000&after_id=cursor%2Fexact");
   });
 
   it("normalizes text, tool calls, usage, and preserves requested vs resolved model identity", async () => {
@@ -74,5 +86,49 @@ describe("AnthropicProvider", () => {
     ] });
     expect(bodies[1].messages[1].content[0]).toEqual({ type: "thinking", thinking: "private chain", signature: "signed" });
     expect(JSON.stringify(first)).not.toContain("private chain");
+  });
+  it("preserves Anthropic input and cache token provenance separately", async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      model: "claude-sonnet-4-5",
+      content: [{ type: "text", text: "ok" }],
+      usage: { input_tokens: 2, output_tokens: 2048, cache_creation_input_tokens: 1024, cache_read_input_tokens: 126_000 },
+    }), { status: 200 }));
+    const provider = new AnthropicProvider({ credentialStore: { get: async () => "fake", set: vi.fn(), delete: vi.fn() }, fetch: fetch as any });
+    const response = await provider.generate({ model: "claude-sonnet-4-5", prompt: "x" });
+    // The tiny uncached input must not stand in for the cache-backed work done.
+    expect(response.usage).toEqual({ inputTokens: 2, outputTokens: 2048, cacheWriteTokens: 1024, cacheReadTokens: 126_000, totalTokens: 129_074 });
+  });
+
+  it("leaves cache token fields absent when the provider does not report them", async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      model: "claude-sonnet-4-5", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 10, output_tokens: 4 },
+    }), { status: 200 }));
+    const provider = new AnthropicProvider({ credentialStore: { get: async () => "fake", set: vi.fn(), delete: vi.fn() }, fetch: fetch as any });
+    const response = await provider.generate({ model: "claude-sonnet-4-5", prompt: "x" });
+    // Absent is not zero: a cache-silent response must not claim zero cache use.
+    expect(response.usage).toEqual({ inputTokens: 10, outputTokens: 4, totalTokens: 14 });
+    expect(response.usage).not.toHaveProperty("cacheReadTokens");
+    expect(response.usage).not.toHaveProperty("cacheWriteTokens");
+  });
+
+  it("applies a caller-supplied output bound inside the supported range", async () => {
+    const bodies: any[] = [];
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ model: "claude-sonnet-4-5", content: [{ type: "text", text: "ok" }] }), { status: 200 });
+    });
+    const provider = new AnthropicProvider({ credentialStore: { get: async () => "fake", set: vi.fn(), delete: vi.fn() }, fetch: fetch as any });
+    await provider.generate({ model: "claude-sonnet-4-5", prompt: "x", maxOutputTokens: 1536 });
+    await provider.generate({ model: "claude-sonnet-4-5", prompt: "x", maxOutputTokens: 4 });
+    await provider.generate({ model: "claude-sonnet-4-5", prompt: "x" });
+    expect(bodies[0].max_tokens).toBe(1536);
+    // An unusably small bound is corrected rather than truncating valid output.
+    expect(bodies[1].max_tokens).toBe(512);
+    expect(bodies[2].max_tokens).toBe(4096);
+  });
+
+  it("does not declare progress streaming for the HTTP Messages transport", () => {
+    const provider = new AnthropicProvider({ credentialStore: { get: async () => "fake", set: vi.fn(), delete: vi.fn() }, fetch: vi.fn() as any });
+    expect(provider.capabilities().progressStreaming).toBeUndefined();
   });
 });

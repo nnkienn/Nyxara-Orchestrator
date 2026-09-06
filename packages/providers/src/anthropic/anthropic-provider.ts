@@ -4,6 +4,7 @@ import {
   type CredentialStore,
   type GenerateRequest,
   type GenerateResponse,
+  type GenerateUsage,
   type ModelInfo,
   type ModelCapabilities,
   type ModelProvider,
@@ -11,6 +12,11 @@ import {
   type ProviderErrorCode,
 } from "@nyxara/provider-sdk";
 import { knownModelExecutionCapability } from "../execution-capabilities.js";
+
+const DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
+/** Keeps a caller-supplied bound inside the range the Messages API accepts. */
+const MIN_MAX_OUTPUT_TOKENS = 512;
+const MAX_MAX_OUTPUT_TOKENS = 64_000;
 
 export interface AnthropicProviderConfig {
   readonly id?: string;
@@ -46,15 +52,27 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    const payload = await this.request("/v1/models", { method: "GET" }, "list_models");
-    const data = record(payload).data;
-    if (!Array.isArray(data)) throw this.invalidResponse("Provider returned an invalid models response");
-    return data.map((value) => {
-      const model = record(value);
-      if (typeof model.id !== "string" || !model.id) throw this.invalidResponse("Provider returned a model without an ID");
-      const capabilities = this.modelCapabilities(model.id);
-      return { id: model.id, name: typeof model.display_name === "string" ? model.display_name : model.id, provider: this.id, ...(capabilities ? { capabilities } : {}) };
-    });
+    const models: ModelInfo[] = [];
+    const cursors = new Set<string>();
+    let afterId: string | undefined;
+    for (let page = 0; page < 32; page += 1) {
+      const path = `/v1/models?limit=1000${afterId ? `&after_id=${encodeURIComponent(afterId)}` : ""}`;
+      const payload = record(await this.request(path, { method: "GET" }, "list_models"));
+      if (!Array.isArray(payload.data)) throw this.invalidResponse("Provider returned an invalid models response");
+      for (const value of payload.data) {
+        const model = record(value);
+        if (typeof model.id !== "string" || !model.id) throw this.invalidResponse("Provider returned a model without an ID");
+        const declared = this.modelCapabilities(model.id);
+        const discovered = discoveredCapabilities(model.capabilities);
+        const capabilities = { ...discovered, ...declared };
+        const contextWindow = finiteNumber(model.max_input_tokens);
+        models.push({ id: model.id, name: typeof model.display_name === "string" ? model.display_name : model.id, provider: this.id, ...(contextWindow !== undefined ? { contextWindow } : {}), ...(Object.keys(capabilities).length ? { capabilities } : {}) });
+      }
+      if (payload.has_more !== true) break;
+      if (typeof payload.last_id !== "string" || !payload.last_id || cursors.has(payload.last_id)) throw this.invalidResponse("Provider returned an invalid models cursor");
+      cursors.add(payload.last_id); afterId = payload.last_id;
+    }
+    return models;
   }
 
   modelCapabilities(modelId: string): ModelCapabilities | undefined {
@@ -64,9 +82,10 @@ export class AnthropicProvider implements ModelProvider {
 
   async generate(input: GenerateRequest): Promise<GenerateResponse> {
     const executionOptions = assertExecutionOptionsSupported(input.executionOptions, this.modelCapabilities(input.model)?.execution);
+    const requestedOutputBound = boundedOutputTokens(input.maxOutputTokens);
     const maxTokens = executionOptions.kind === "anthropic_thinking"
-      ? Math.max(4_096, executionOptions.budgetTokens + 1_024)
-      : 4_096;
+      ? Math.max(requestedOutputBound ?? DEFAULT_MAX_OUTPUT_TOKENS, executionOptions.budgetTokens + 1_024)
+      : requestedOutputBound ?? DEFAULT_MAX_OUTPUT_TOKENS;
     const payload = record(await this.request("/v1/messages", {
       method: "POST",
       body: JSON.stringify({
@@ -101,9 +120,7 @@ export class AnthropicProvider implements ModelProvider {
     const thinkingBlocks = content.map(record).filter((part) => part.type === "thinking" || part.type === "redacted_thinking");
     if (thinkingBlocks.length) for (const call of toolCalls) this.rememberThinkingBlocks(call.id, thinkingBlocks);
     if (!text && toolCalls.length === 0) throw this.invalidResponse("Provider returned no content");
-    const usage = record(payload.usage);
-    const inputTokens = number(usage.input_tokens);
-    const outputTokens = number(usage.output_tokens);
+    const usage = normalizeAnthropicUsage(payload.usage);
     return {
       ...(typeof payload.id === "string" ? { id: payload.id } : {}),
       provider: this.id,
@@ -111,7 +128,7 @@ export class AnthropicProvider implements ModelProvider {
       text,
       ...(toolCalls.length ? { toolCalls } : {}),
       ...(typeof payload.stop_reason === "string" ? { finishReason: payload.stop_reason } : {}),
-      ...((inputTokens !== undefined || outputTokens !== undefined) ? { usage: { ...(inputTokens !== undefined ? { inputTokens } : {}), ...(outputTokens !== undefined ? { outputTokens } : {}), ...(inputTokens !== undefined && outputTokens !== undefined ? { totalTokens: inputTokens + outputTokens } : {}) } } : {}),
+      ...(usage ? { usage } : {}),
     };
   }
 
@@ -158,8 +175,47 @@ export class AnthropicProvider implements ModelProvider {
   private invalidResponse(message: string): ProviderError { return new ProviderError(message, { code: "invalid_response", providerId: this.id }); }
 }
 
+function boundedOutputTokens(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.min(MAX_MAX_OUTPUT_TOKENS, Math.max(MIN_MAX_OUTPUT_TOKENS, Math.floor(value)));
+}
+
+/**
+ * Preserves Anthropic input/cache provenance separately. `input_tokens` excludes
+ * cached input, so `totalTokens` is the total processed token count (uncached
+ * input + cache write + cache read + output) rather than a plain input+output sum.
+ * Absent provider fields stay absent; they are never coerced to zero.
+ */
+export function normalizeAnthropicUsage(value: unknown): GenerateUsage | undefined {
+  const usage = record(value);
+  const inputTokens = number(usage.input_tokens);
+  const outputTokens = number(usage.output_tokens);
+  const cacheWriteTokens = number(usage.cache_creation_input_tokens);
+  const cacheReadTokens = number(usage.cache_read_input_tokens);
+  const parts: readonly (number | undefined)[] = [inputTokens, cacheWriteTokens, cacheReadTokens, outputTokens];
+  if (parts.every((part) => part === undefined)) return undefined;
+  const totalTokens = parts.reduce<number>((total, part) => total + (part ?? 0), 0);
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+  };
+}
+
 function record(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function number(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
+function finiteNumber(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined; }
+function discoveredCapabilities(value: unknown): ModelCapabilities {
+  const capabilities = record(value);
+  const supported = (entry: unknown): boolean => record(entry).supported === true;
+  return {
+    ...(supported(capabilities.image_input) ? { vision: true } : {}),
+    ...(supported(capabilities.structured_outputs) ? { structuredOutput: true } : {}),
+    ...(supported(capabilities.thinking) || supported(capabilities.effort) ? { reasoning: true } : {}),
+  };
+}
 function normalizeBaseUrl(value: string, providerId: string): string {
   try { return new URL(value).toString().replace(/\/$/, ""); }
   catch { throw new ProviderError("Provider base URL is invalid", { code: "provider_error", providerId }); }

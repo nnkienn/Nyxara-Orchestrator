@@ -1,14 +1,18 @@
 export {
   isTerminalWorkflowStatus,
+  PLAN_REJECTED_ERROR_CODE,
   TERMINAL_WORKFLOW_STATUSES,
   WORKFLOW_STATUSES,
+  workflowOutcome,
 } from "./workflow.js";
 export type {
   TaskRuntimeStatus,
   PendingWorkflowPermission,
   WorkflowError,
   WorkflowFailure,
+  WorkflowOutcome,
   WorkflowSnapshot,
+  WorkflowStage,
   WorkflowState,
   WorkflowStatus,
   WorkflowTaskSnapshot,

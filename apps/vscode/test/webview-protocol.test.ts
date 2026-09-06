@@ -6,6 +6,10 @@ describe("webview message boundary", () => {
     expect(parseWebviewMessage({ type: "submitRequirement", task: "  small task  " })).toEqual({ type: "submitRequirement", task: "small task" });
     expect(parseWebviewMessage({ type: "selectModel", providerConfigId: " gateway ", modelId: " routed/exact " })).toEqual({ type: "selectModel", providerConfigId: "gateway", modelId: "routed/exact" });
     expect(parseWebviewMessage({ type: "ready", unexpected: "ignored" })).toEqual({ type: "ready" });
+    expect(parseWebviewMessage({ type: "retryPlanning", unexpected: "ignored" })).toEqual({ type: "retryPlanning" });
+    expect(parseWebviewMessage({ type: "startBrowserAuth", providerConfigId: " cli " })).toEqual({ type: "startBrowserAuth", providerConfigId: "cli" });
+    expect(parseWebviewMessage({ type: "cancelBrowserAuth", providerConfigId: "cli", sessionId: "session" })).toEqual({ type: "cancelBrowserAuth", providerConfigId: "cli", sessionId: "session" });
+    expect(parseWebviewMessage({ type: "refreshModels", providerConfigId: " work " })).toEqual({ type: "refreshModels", providerConfigId: "work" });
   });
 
   it("rejects unknown, empty, malformed, and oversized payloads", () => {
@@ -14,6 +18,7 @@ describe("webview message boundary", () => {
     expect(parseWebviewMessage({ type: "submitRequirement", task: "x".repeat(MAX_TASK_INPUT + 1) })).toBeUndefined();
     expect(parseWebviewMessage({ type: "selectModel", providerConfigId: 123, modelId: "x" })).toBeUndefined();
     expect(parseWebviewMessage({ type: "allowPermission", requestId: "x".repeat(2_049) })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "cancelBrowserAuth", providerConfigId: "p", sessionId: "" })).toBeUndefined();
   });
 
   it("accepts bounded local history actions and rejects malformed IDs and searches", () => {

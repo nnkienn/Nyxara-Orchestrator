@@ -17,6 +17,8 @@ export type {
   ModelToolResult,
   ProviderCapabilities,
   ProviderInfo,
+  ProviderProgressEvent,
+  ProviderProgressPhase,
   ProviderAuthMethod,
   ProviderCategory,
   ProviderOnboardingCapabilities,

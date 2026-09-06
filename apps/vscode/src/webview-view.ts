@@ -45,6 +45,8 @@ function updateType(state: WorkspaceViewState): StateMessageType {
   if (state.settings) return "settingsProjection";
   if (state.history?.screen === "history") return "taskHistory";
   if (state.history?.screen === "historical") return "historicalTaskLoaded";
+  if (state.clarification) return "clarificationRequired";
+  if (state.completion?.outcome === "rejected") return "workflowRejected";
   if (state.completion?.status === "completed") return "workflowCompleted";
   if (state.completion) return "workflowFailed";
   if (state.workflow?.permission) return "permissionRequired";
