@@ -2,7 +2,7 @@ import type { ExecutionPlan, WorkflowSnapshot } from "@nyxara/core";
 type WorkflowUsage = NonNullable<WorkflowSnapshot["usage"]>;
 import type { ProviderConfig } from "./provider-config.js";
 import type { TaskSession } from "./task-session.js";
-import { buildLegacyPerformanceProjection, buildPerformanceProjection, type TaskPerformanceProjection } from "./performance-projection.js";
+import { buildPerformanceProjection, type PerformanceProjection, type PerformanceTerminalStatus } from "./performance-projection.js";
 import { friendlyErrorMessage, tokenSummaryParts, workflowStage } from "./projection.js";
 import type { SettingsProjection, SettingsSection } from "./settings-projection.js";
 
@@ -80,12 +80,12 @@ export interface WorkspaceViewState {
   readonly repairUsage?: { readonly durationMs: number | null; readonly tokens: number | null };
   readonly usage?: { readonly tokens: number | null; readonly modelCalls: number | null; readonly toolCalls: number | null; readonly durationMs: number | null; readonly repairCycles: number | null };
   readonly completion?: { readonly status: "completed" | "failed" | "aborted" | "rejected"; readonly outcome: "completed" | "failed" | "aborted" | "rejected" | "interrupted"; readonly changedFiles: number | null; readonly tokens: number | null; readonly modelCalls: number | null; readonly durationMs: number | null; readonly repairCycles: number | null; readonly tokenParts: readonly string[] };
-  readonly performance?: TaskPerformanceProjection;
+  readonly performance?: PerformanceProjection;
   readonly performanceView?: {
     readonly source: "live" | "history";
     readonly taskId?: string;
     readonly taskStatus: string;
-    readonly projection?: TaskPerformanceProjection;
+    readonly projection?: PerformanceProjection;
   };
   readonly settings?: { readonly section: SettingsSection; readonly providerConfigId?: string; readonly projection: SettingsProjection; readonly diagnostics?: Readonly<Record<string, unknown>> };
 }
@@ -126,12 +126,13 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
   const usage = input.result?.usage ?? snapshot?.usage;
   const plan = projectPlan(input.plan);
   const completionStatus = input.result?.status ?? (snapshot && terminal.has(snapshot.status) ? snapshot.status as "completed" | "failed" | "aborted" : undefined);
+  const outcome = snapshot?.outcome;
   const taskTitles = Object.fromEntries((plan?.tasks ?? []).map((task) => [task.id, task.title]));
-  const performance = usage ? buildPerformanceProjection({ usage, providers: input.providers, executorTaskTitles: taskTitles, ...(completionStatus ? { terminalStatus: completionStatus } : {}) }) : undefined;
+  const performanceStatus = terminalPerformanceStatus(outcome ?? completionStatus ?? "");
+  const performance = usage ? buildPerformanceProjection({ usage, providers: input.providers, executorTaskTitles: taskTitles, ...(performanceStatus ? { terminalStatus: performanceStatus } : {}) }) : undefined;
   const validation = usage?.validation?.steps?.slice(0, MAX_ITEMS).map((step) => ({ kind: bounded(step.name, 120), status: bounded(step.status, 40), durationMs: step.durationMs }))
     ?? [...input.validation.entries()].slice(0, MAX_ITEMS).map(([kind, status]) => ({ kind: bounded(kind, 120), status: bounded(status, 40), ...(input.validationDurations?.has(kind) ? { durationMs: input.validationDurations.get(kind)! } : {}) }));
   const reviewStatus = bounded(usage?.review?.status ?? input.reviewStatus, 80) || undefined;
-  const outcome = snapshot?.outcome;
   const workflow = snapshot ? {
     id: bounded(snapshot.workflowId, 200),
     status: snapshot.status,
@@ -163,7 +164,7 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
   const performanceView = input.performanceTarget?.source === "live"
     ? { source: "live" as const, taskStatus: completionStatus ?? snapshot?.status ?? "active", ...(performance ? { projection: performance } : {}) }
     : input.performanceTarget?.source === "history"
-      ? { source: "history" as const, taskId: input.performanceTarget.task.id, taskStatus: input.performanceTarget.task.status, ...(input.performanceTarget.task.performanceSummary ? { projection: input.performanceTarget.task.performanceSummary } : input.performanceTarget.task.usageSummary ? { projection: buildLegacyPerformanceProjection(input.performanceTarget.task.usageSummary, terminalPerformanceStatus(input.performanceTarget.task.status)) } : {}) }
+      ? { source: "history" as const, taskId: input.performanceTarget.task.id, taskStatus: input.performanceTarget.task.status, ...(input.performanceTarget.task.performanceSummary ? { projection: input.performanceTarget.task.performanceSummary } : input.performanceTarget.task.usageSummary ? { projection: buildPerformanceProjection({ legacySummary: input.performanceTarget.task.usageSummary, ...(terminalPerformanceStatus(input.performanceTarget.task.status) ? { terminalStatus: terminalPerformanceStatus(input.performanceTarget.task.status)! } : {}) }) } : {}) }
       : undefined;
   return {
     version: bounded(input.version, 40), configured: input.configured,
@@ -185,8 +186,8 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
   };
 }
 
-function terminalPerformanceStatus(status: string): "completed" | "failed" | "aborted" | "interrupted" | undefined {
-  return status === "completed" || status === "failed" || status === "aborted" || status === "interrupted" ? status : undefined;
+function terminalPerformanceStatus(status: string): PerformanceTerminalStatus | undefined {
+  return status === "completed" || status === "failed" || status === "aborted" || status === "rejected" || status === "interrupted" ? status : undefined;
 }
 
 function projectPlan(plan: ExecutionPlan | undefined): WorkspacePlanState | undefined {

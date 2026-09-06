@@ -21,7 +21,7 @@ describe("workflow usage accounting", () => {
       { role: "planner", providerId: "p1", requestedModelId: "route/model", resolvedModelId: "model", inputTokens: 10, outputTokens: 5, totalTokens: 15, providerDurationMs: 20 },
       { role: "executor", taskId: "T1", providerId: "p2", requestedModelId: "other", resolvedModelId: "resolved", inputTokens: 20, outputTokens: 10, totalTokens: 30, providerDurationMs: 30, toolCalls: 2, contextBytes: 1024 },
       { role: "reviewer", taskId: "T1", providerId: "p1", requestedModelId: "route/model", resolvedModelId: "model", inputTokens: 5, outputTokens: 5, totalTokens: 10, providerDurationMs: 10 },
-    ], { contextBytes: 1024, totalDurationMs: 100, toolDurationMs: 10, validationDurationMs: 10 });
+    ], { planningContextMode: "targeted", contextBytes: 1024, totalDurationMs: 100, toolDurationMs: 10, validationDurationMs: 10 });
     expect(usage.totalTokens).toBe(55);
     expect(usage.executor.totalTokens).toBe(30);
     expect(usage.tasks[0]).toMatchObject({ taskId: "T1", totalTokens: 30, toolCalls: 2 });
@@ -31,6 +31,7 @@ describe("workflow usage accounting", () => {
       expect.objectContaining({ role: "reviewer", providerId: "p1" }),
     ]));
     expect(usage.localOrchestrationDurationMs).toBe(20);
+    expect(usage.planningContextMode).toBe("targeted");
     expect(usage.planner).toMatchObject({ requestedModelId: "route/model", resolvedModelId: "model" });
     expect(usage.planner.costSource).toBe("unavailable");
     expect(JSON.stringify(usage)).not.toMatch(/prompt|source code|api.?key/i);

@@ -28,14 +28,14 @@ describe("TaskSession projection", () => {
     expect(projected.validationSummary).toEqual({ status: "passed", steps: [{ name: "typecheck", status: "passed", durationMs: 12.25 }] });
     expect(projected.reviewSummary).toEqual({ status: "passed", findingCount: 2, ruleViolationCount: null });
     expect(projected.repairSummary).toEqual({ cycles: 1, outcome: "completed", durationMs: 40.5, tokens: 6 });
-    expect(projected.usageSummary).toEqual({ inputTokens: 8, outputTokens: 2, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: 7073, providerCalls: 4, toolCalls: 9, workflowDurationMs: 20600.5, repairCycles: 1 });
+    expect(projected.usageSummary).toEqual({ inputTokens: 8, outputTokens: 2, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: 10, providerCalls: 1, toolCalls: 0, workflowDurationMs: 80, repairCycles: 0 });
     expect(projected.performanceSummary?.roles[0]).toMatchObject({ providerConfigId: "removed-provider", providerName: "OpenAI Work", requestedModelId: "route/gpt", resolvedModelId: "gpt" });
     expect(JSON.stringify(projected)).not.toContain("not persisted");
   });
 
   it("keeps unavailable authoritative usage null and does not independently calculate it", () => {
     const projected = projectTaskSession(base, state({ workflow: { id: "w", status: "completed", stage: "Completed", active: false, tasks: [] }, completion: { status: "completed", changedFiles: null, tokens: null, modelCalls: null, durationMs: null, repairCycles: null } }));
-    expect(projected.usageSummary).toEqual({ totalTokens: null, providerCalls: null, toolCalls: null, workflowDurationMs: null, repairCycles: null });
+    expect(projected.usageSummary).toEqual({ inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: null, providerCalls: null, toolCalls: null, workflowDurationMs: null, repairCycles: null });
   });
 
   it("records a rejected task without stages that never ran", () => {

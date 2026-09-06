@@ -33,6 +33,7 @@ import {
   boundPlannerOutputTokens,
   decidePlanningContext,
   type PlanningContextDecision,
+  type PlanningContextMode,
 } from "../context/planning-context-policy.js";
 import { ApproximateTokenEstimator } from "../context/token-estimator.js";
 import {
@@ -160,6 +161,7 @@ export class NyxaraOrchestrator {
   private readonly workflowTools = new Map<string, { modelRequested: number; executed: number; successful: number; failed: number; invalid: number; durationMs: number; byName: Record<string, number> }>();
   private readonly workflowTaskTools = new Map<string, Map<string, { modelRequested: number; executed: number; successful: number; failed: number; invalid: number; durationMs: number; byName: Record<string, number> }>>();
   private readonly workflowTargetedExpansions = new Map<string, number>();
+  private readonly workflowPlanningContextMode = new Map<string, PlanningContextMode>();
   private readonly workflowRepairDuration = new Map<string, number>();
   private readonly finalizedUsage = new Set<string>();
 
@@ -662,6 +664,7 @@ export class NyxaraOrchestrator {
       }
 
       if (workflowId) {
+        this.workflowPlanningContextMode.set(workflowId, decision.mode);
         this.plannerContexts.set(plan.id, context);
         while (this.plannerContexts.size > 20) this.plannerContexts.delete(this.plannerContexts.keys().next().value!);
         if (replacingDraft) {
@@ -782,7 +785,7 @@ export class NyxaraOrchestrator {
     const validation = validations.length ? { status: validations.every(v => v.status === "passed") ? "passed" as const : "failed" as const, durationMs: validations.reduce((n, v) => n + v.durationMs, 0), steps: validations.flatMap(v => v.steps.map(s => ({ name: s.kind, status: s.status, durationMs: s.durationMs }))) } : undefined;
     const review = this.workflowReview.get(runtime.workflowId);
     const tools = this.workflowTools.get(runtime.workflowId);
-    this.workflowUsage.set(runtime.workflowId, aggregateWorkflowUsage(runtime.workflowId, records, { totalDurationMs: result.durationMs, ...(tools ? { toolDurationMs: tools.durationMs } : {}), contextFiles: context?.files.length ?? null, contextBytes: context?.totalBytes ?? null, ...(context ? { contextTruncated: context.truncated } : {}), targetedExpansions: this.workflowTargetedExpansions.get(runtime.workflowId) ?? 0, repairCycles: runtime.repairCycles, repairDurationMs: this.workflowRepairDuration.get(runtime.workflowId) ?? null, ...(validation ? { validationDurationMs: validation.durationMs, validation } : {}), ...(review ? { review } : {}) }));
+    this.workflowUsage.set(runtime.workflowId, aggregateWorkflowUsage(runtime.workflowId, records, { totalDurationMs: result.durationMs, ...(tools ? { toolDurationMs: tools.durationMs } : {}), ...(this.workflowPlanningContextMode.get(runtime.workflowId) ? { planningContextMode: this.workflowPlanningContextMode.get(runtime.workflowId)! } : {}), contextFiles: context?.files.length ?? null, contextBytes: context?.totalBytes ?? null, ...(context ? { contextTruncated: context.truncated } : {}), targetedExpansions: this.workflowTargetedExpansions.get(runtime.workflowId) ?? 0, repairCycles: runtime.repairCycles, repairDurationMs: this.workflowRepairDuration.get(runtime.workflowId) ?? null, ...(validation ? { validationDurationMs: validation.durationMs, validation } : {}), ...(review ? { review } : {}) }));
     const usage = this.workflowUsage.get(runtime.workflowId);
     const finalUsage = usage && tools ? { ...usage, totalToolCalls: tools.executed, toolDurationMs: tools.durationMs, modelRequestedToolCalls: tools.modelRequested, executedToolCalls: tools.executed, successfulToolCalls: tools.successful, failedToolCalls: tools.failed, invalidToolCalls: tools.invalid, toolCallsByName: { ...tools.byName } } : usage;
     const taskTools = this.workflowTaskTools.get(runtime.workflowId);
@@ -799,7 +802,7 @@ export class NyxaraOrchestrator {
     while (this.workflowUsage.size > 20) {
       const oldest = [...this.workflowUsage.keys()].find(id => this.finalizedUsage.has(id));
       if (!oldest) return;
-      this.workflowUsage.delete(oldest); this.usageRecords.delete(oldest); this.workflowValidation.delete(oldest); this.workflowReview.delete(oldest); this.workflowTools.delete(oldest); this.workflowTaskTools.delete(oldest); this.workflowTargetedExpansions.delete(oldest); this.workflowRepairDuration.delete(oldest); this.finalizedUsage.delete(oldest);
+      this.workflowUsage.delete(oldest); this.usageRecords.delete(oldest); this.workflowValidation.delete(oldest); this.workflowReview.delete(oldest); this.workflowTools.delete(oldest); this.workflowTaskTools.delete(oldest); this.workflowTargetedExpansions.delete(oldest); this.workflowPlanningContextMode.delete(oldest); this.workflowRepairDuration.delete(oldest); this.finalizedUsage.delete(oldest);
     }
   }
 
@@ -813,6 +816,7 @@ export class NyxaraOrchestrator {
       steps: validations.flatMap(value => value.steps.map(step => ({ name: step.kind, status: step.status, durationMs: step.durationMs }))),
     } : undefined;
     this.workflowUsage.set(workflowId, aggregateWorkflowUsage(workflowId, this.usageRecords.get(workflowId) ?? [], {
+      ...(this.workflowPlanningContextMode.get(workflowId) ? { planningContextMode: this.workflowPlanningContextMode.get(workflowId)! } : {}),
       contextFiles: context?.files.length ?? null, contextBytes: context?.totalBytes ?? null,
       ...(context ? { contextTruncated: context.truncated } : {}),
       targetedExpansions: this.workflowTargetedExpansions.get(workflowId) ?? 0,

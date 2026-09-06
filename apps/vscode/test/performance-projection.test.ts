@@ -4,7 +4,6 @@ import {
   MAX_PERFORMANCE_EXECUTOR_TASKS,
   MAX_PERFORMANCE_TOOL_NAMES,
   MAX_PERFORMANCE_VALIDATION_STEPS,
-  buildLegacyPerformanceProjection,
   buildPerformanceProjection,
   executionProfileLabel,
   formatPerformanceBytes,
@@ -22,6 +21,8 @@ function role(name: RoleUsage["role"], overrides: Partial<RoleUsage> = {}): Role
     calls: 1,
     inputTokens: 100,
     outputTokens: 20,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
     totalTokens: 120,
     usageSource: "provider_reported",
     providerDurationMs: 1_000,
@@ -40,15 +41,17 @@ function role(name: RoleUsage["role"], overrides: Partial<RoleUsage> = {}): Role
 function fullUsage(overrides: Partial<WorkflowUsage> = {}): WorkflowUsage {
   return {
     workflowId: "workflow-1",
-    planner: role("planner", { providerConfigId: "claude-work", providerId: "anthropic", requestedModelId: "claude-sonnet", resolvedModelId: "claude-sonnet", executionProfileSummary: { kind: "provider_default" }, calls: 1, inputTokens: 1_000, outputTokens: 200, totalTokens: 1_200, providerDurationMs: 3_000 }),
-    executor: role("executor", { providerConfigId: "openai-work", providerId: "openai", requestedModelId: "ha-op/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol", executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, calls: 2, inputTokens: 2_900, outputTokens: 810, totalTokens: 3_710, providerDurationMs: 12_100 }),
-    reviewer: role("reviewer", { providerConfigId: "gemini-work", providerId: "gemini", requestedModelId: "gemini-2.5-pro", resolvedModelId: "gemini-2.5-pro", executionProfileSummary: { kind: "gemini_thinking_level", value: "high" }, calls: 1, inputTokens: 1_200, outputTokens: 400, totalTokens: 1_600, providerDurationMs: 4_100 }),
-    repair: role("repair", { providerConfigId: "openai-work", providerId: "openai", requestedModelId: "ha-op/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol", executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, calls: 1, inputTokens: 480, outputTokens: 83, totalTokens: 563, providerDurationMs: 1_400 }),
-    tasks: [{ taskId: "task-1", executorCalls: 1, inputTokens: 1_000, outputTokens: 240, totalTokens: 1_240, usageSource: "provider_reported", providerDurationMs: 3_200, toolCalls: 2, toolDurationMs: 410, contextFiles: 4, contextBytes: 2_000, contextTruncated: false, targetedExpansions: 0 }],
+    planner: role("planner", { providerConfigId: "claude-work", providerId: "anthropic", requestedModelId: "claude-sonnet", resolvedModelId: "claude-sonnet", executionProfileSummary: { kind: "provider_default" }, calls: 1, inputTokens: 1_000, cacheReadTokens: 200, cacheWriteTokens: 50, outputTokens: 200, totalTokens: 1_450, providerDurationMs: 3_000 }),
+    executor: role("executor", { providerConfigId: "openai-work", providerId: "openai", requestedModelId: "ha-op/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol", executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, calls: 2, inputTokens: 2_900, cacheReadTokens: 1_000, cacheWriteTokens: 100, outputTokens: 810, totalTokens: 4_810, providerDurationMs: 12_100 }),
+    reviewer: role("reviewer", { providerConfigId: "gemini-work", providerId: "gemini", requestedModelId: "gemini-2.5-pro", resolvedModelId: "gemini-2.5-pro", executionProfileSummary: { kind: "gemini_thinking_level", value: "high" }, calls: 1, inputTokens: 1_200, cacheReadTokens: 300, cacheWriteTokens: 25, outputTokens: 400, totalTokens: 1_925, providerDurationMs: 4_100 }),
+    repair: role("repair", { providerConfigId: "openai-work", providerId: "openai", requestedModelId: "ha-op/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol", executionProfileSummary: { kind: "openai_reasoning", value: "medium" }, calls: 1, inputTokens: 480, cacheReadTokens: 120, cacheWriteTokens: 10, outputTokens: 83, totalTokens: 693, providerDurationMs: 1_400 }),
+    tasks: [{ taskId: "task-1", executorCalls: 1, inputTokens: 1_000, cacheReadTokens: 400, cacheWriteTokens: 40, outputTokens: 240, totalTokens: 1_680, usageSource: "provider_reported", providerDurationMs: 3_200, toolCalls: 2, toolDurationMs: 410, contextFiles: 4, contextBytes: 2_000, contextTruncated: false, targetedExpansions: 0 }],
     totalProviderCalls: 5,
     totalInputTokens: 5_580,
     totalOutputTokens: 1_493,
-    totalTokens: 7_073,
+    totalCacheReadTokens: 1_620,
+    totalCacheWriteTokens: 185,
+    totalTokens: 8_878,
     totalProviderDurationMs: 20_600,
     totalToolCalls: 14,
     modelRequestedToolCalls: 16,
@@ -65,9 +68,10 @@ function fullUsage(overrides: Partial<WorkflowUsage> = {}): WorkflowUsage {
     costSource: "provider_reported",
     totalDurationMs: 25_000,
     repairCycles: 1,
-    repairSummary: { cycles: 1, calls: 1, providerDurationMs: 1_400, totalDurationMs: 2_100, tokens: 563 },
+    repairSummary: { cycles: 1, calls: 1, providerDurationMs: 1_400, totalDurationMs: 2_100, tokens: 693 },
     validation: { status: "passed", durationMs: 6_500, steps: [{ name: "typecheck", status: "passed", durationMs: 800 }, { name: "lint", status: "skipped", durationMs: null }, { name: "tests", status: "passed", durationMs: 4_200 }, { name: "build", status: "passed", durationMs: 1_300 }] },
     review: { status: "passed", calls: 1, providerDurationMs: 4_100, totalDurationMs: 4_500 },
+    planningContextMode: "targeted",
     contextFiles: 18,
     contextBytes: 76_000,
     contextTruncated: false,
@@ -81,22 +85,22 @@ describe("PerformanceProjection", () => {
   it("maps full Core usage once into every bounded public section", () => {
     const value = buildPerformanceProjection({ usage: fullUsage(), terminalStatus: "completed", providers: [{ id: "claude-work", displayName: "Claude Work" }, { id: "openai-work", displayName: "OpenAI Work" }, { id: "gemini-work", displayName: "Gemini Work" }], executorTaskTitles: { "task-1": "Update service" } });
     expect(value.detailLevel).toBe("detailed");
-    expect(value.overview).toEqual({ terminalStatus: "completed", inputTokens: 5_580, outputTokens: 1_493, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: 7_073, workflowDurationMs: 25_000, providerCalls: 5, toolCalls: 14, repairCycles: 1, usageSource: "provider_reported", validationStatus: "passed", reviewStatus: "passed", cost: 0.034, currency: "USD", costSource: "provider_reported" });
-    expect(value.roles.map((item) => [item.role, item.totalTokens, item.providerDurationMs])).toEqual([["planner", 1_200, 3_000], ["executor", 3_710, 12_100], ["reviewer", 1_600, 4_100], ["repair", 563, 1_400]]);
+    expect(value.overview).toEqual({ terminalStatus: "completed", inputTokens: 5_580, outputTokens: 1_493, cacheReadTokens: 1_620, cacheWriteTokens: 185, processedTokens: 8_878, totalTokens: 8_878, workflowDurationMs: 25_000, providerCalls: 5, toolCalls: 14, repairCycles: 1, usageSource: "provider_reported", validationStatus: "passed", reviewStatus: "passed", providerReportedCost: 0.034, cost: 0.034, currency: "USD", costSource: "provider_reported" });
+    expect(value.roles.map((item) => [item.role, item.processedTokens, item.providerDurationMs])).toEqual([["planner", 1_450, 3_000], ["executor", 4_810, 12_100], ["reviewer", 1_925, 4_100], ["repair", 693, 1_400]]);
     expect(value.roles[1]).toMatchObject({ providerConfigId: "openai-work", providerId: "openai", providerName: "OpenAI Work", requestedModelId: "ha-op/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol", executionProfileLabel: "Reasoning · Medium" });
-    expect(value.executorTasks).toEqual([{ taskId: "task-1", title: "Update service", inputTokens: 1_000, outputTokens: 240, totalTokens: 1_240, providerDurationMs: 3_200, providerCalls: 1, toolCalls: 2, toolDurationMs: 410 }]);
+    expect(value.executorTasks).toEqual([{ taskId: "task-1", title: "Update service", inputTokens: 1_000, cacheReadTokens: 400, cacheWriteTokens: 40, outputTokens: 240, processedTokens: 1_680, totalTokens: 1_680, providerDurationMs: 3_200, providerCalls: 1, toolCalls: 2, toolDurationMs: 410 }]);
     expect(value.latency).toEqual({ workflowDurationMs: 25_000, totalProviderDurationMs: 20_600, providerByRole: { planner: 3_000, executor: 12_100, reviewer: 4_100, repair: 1_400 }, toolDurationMs: 2_400, validationDurationMs: 6_500, reviewDurationMs: 4_500, repairDurationMs: 2_100, localOrchestrationDurationMs: 1_500 });
-    expect(value.context).toEqual({ files: 18, bytes: 76_000, truncated: false, targetedExpansions: 2 });
+    expect(value.context).toEqual({ planningContextMode: "targeted", files: 18, bytes: 76_000, truncated: false, targetedExpansions: 2 });
     expect(value.tools).toEqual({ requestedByModel: 16, executed: 14, successful: 12, failed: 2, invalid: 2, durationMs: 2_400, byName: [{ name: "read_file", count: 5 }, { name: "run_command", count: 4 }, { name: "search_code", count: 3 }, { name: "apply_patch", count: 2 }] });
     expect(value.validation.steps).toEqual(fullUsage().validation?.steps);
-    expect(value.review).toMatchObject({ status: "passed", durationMs: 4_500, contextExpansions: null, role: { role: "reviewer", totalTokens: 1_600 } });
-    expect(value.repair).toMatchObject({ cycles: 1, durationMs: 2_100, providerCalls: 1, inputTokens: 480, outputTokens: 83, totalTokens: 563, providerDurationMs: 1_400, usesExecutorProfile: true, executionProfileLabel: "Reasoning · Medium" });
+    expect(value.review).toMatchObject({ status: "passed", durationMs: 4_500, contextExpansions: null, role: { role: "reviewer", processedTokens: 1_925 } });
+    expect(value.repair).toMatchObject({ cycles: 1, durationMs: 2_100, providerCalls: 1, inputTokens: 480, cacheReadTokens: 120, cacheWriteTokens: 10, outputTokens: 83, processedTokens: 693, providerDurationMs: 1_400, usesExecutorProfile: true, executionProfileLabel: "Reasoning · Medium" });
     expect(value.cost).toEqual({ amount: 0.034, currency: "USD", source: "provider_reported" });
   });
 
   it("keeps missing values null, preserves authoritative zero, and rejects negative durations", () => {
     const value = buildPerformanceProjection({ usage: { workflowId: "missing", planner: undefined, executor: undefined, reviewer: undefined, repair: undefined, tasks: [], totalProviderCalls: 0, totalInputTokens: null, totalOutputTokens: null, totalTokens: null, totalProviderDurationMs: -1, totalToolCalls: 0, usageSource: "unavailable", providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable", totalDurationMs: -5, repairCycles: 0, toolDurationMs: -2, localOrchestrationDurationMs: -3 } as any });
-    expect(value.overview).toMatchObject({ inputTokens: null, outputTokens: null, totalTokens: null, workflowDurationMs: null, providerCalls: 0, toolCalls: 0, repairCycles: 0 });
+    expect(value.overview).toMatchObject({ inputTokens: null, outputTokens: null, processedTokens: null, totalTokens: null, workflowDurationMs: null, providerCalls: 0, toolCalls: 0, repairCycles: 0 });
     expect(value.roles.every((item) => item.calls === null && item.totalTokens === null)).toBe(true);
     expect(value.latency).toMatchObject({ workflowDurationMs: null, totalProviderDurationMs: null, toolDurationMs: null, localOrchestrationDurationMs: null });
     expect(value.cost.amount).toBeNull();
@@ -138,13 +142,13 @@ describe("PerformanceProjection", () => {
   it("retains only provider-reported or already-provenanced Core cost and never infers dollars from tokens", () => {
     expect(buildPerformanceProjection({ usage: fullUsage() }).cost).toEqual({ amount: 0.034, currency: "USD", source: "provider_reported" });
     expect(buildPerformanceProjection({ usage: fullUsage({ totalTokens: 9_999_999, providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable" }) }).cost).toEqual({ amount: null, currency: null, source: "unavailable" });
-    expect(buildPerformanceProjection({ usage: fullUsage({ providerReportedCost: null, estimatedCost: 0.02, costSource: "configured_price" }) }).cost.amount).toBe(0.02);
+    expect(buildPerformanceProjection({ usage: fullUsage({ providerReportedCost: null, estimatedCost: 0.02, costSource: "configured_price" }) }).cost).toEqual({ amount: null, currency: null, source: "unavailable" });
   });
 
   it("maps old summaries to legacy overview only", () => {
-    const value = buildLegacyPerformanceProjection({ totalTokens: 7_073, providerCalls: 3, toolCalls: 1, workflowDurationMs: 20_600, repairCycles: 0 }, "completed");
+    const value = buildPerformanceProjection({ legacySummary: { totalTokens: 7_073, providerCalls: 3, toolCalls: 1, workflowDurationMs: 20_600, repairCycles: 0 }, terminalStatus: "completed" });
     expect(value.detailLevel).toBe("legacy");
-    expect(value.overview).toMatchObject({ totalTokens: 7_073, workflowDurationMs: 20_600, providerCalls: 3, toolCalls: 1, repairCycles: 0 });
+    expect(value.overview).toMatchObject({ processedTokens: 7_073, totalTokens: 7_073, workflowDurationMs: 20_600, providerCalls: 3, toolCalls: 1, repairCycles: 0 });
     expect(value.overview.inputTokens).toBeNull();
     expect(value.roles.every((item) => item.calls === null)).toBe(true);
     expect(value.executorTasks).toEqual([]);
@@ -168,5 +172,34 @@ describe("PerformanceProjection", () => {
     expect(safe?.roles[1]).toMatchObject({ providerConfigId: "openai-work", requestedModelId: "ha-op/gpt-5.6-sol", resolvedModelId: "gpt-5.6-sol" });
     for (const forbidden of ["sk-secret-value", "sk-provider-secret-value", "Bearer secret", "RAW_SOURCE", "RAW_DIFF", "/secret", "RAW_TOOL_OUTPUT", "RAW_STDOUT", "RAW_REVIEW", "RAW_REASONING", "RAW_SIGNATURE"]) expect(text).not.toContain(forbidden);
     expect(text).toContain("[redacted]");
+  });
+
+  it("drops persisted cost without provider-reported provenance", () => {
+    const dirty: any = structuredClone(buildPerformanceProjection({ usage: fullUsage() }));
+    dirty.cost = { amount: 12.34, currency: "USD", source: "configured_price" };
+    dirty.overview.providerReportedCost = 12.34;
+    dirty.overview.cost = 12.34;
+    dirty.overview.costSource = "configured_price";
+    expect(sanitizePerformanceProjection(dirty)).toMatchObject({
+      overview: { providerReportedCost: null, cost: null, currency: null, costSource: "unavailable" },
+      cost: { amount: null, currency: null, source: "unavailable" },
+    });
+  });
+
+  it("upgrades alpha.18 detailed projections with processed aliases and missing context mode", () => {
+    const old: any = structuredClone(buildPerformanceProjection({ usage: fullUsage() }));
+    delete old.overview.processedTokens;
+    delete old.overview.providerReportedCost;
+    delete old.context.planningContextMode;
+    for (const role of old.roles) delete role.processedTokens;
+    for (const task of old.executorTasks) delete task.processedTokens;
+    delete old.repair.processedTokens;
+    const migrated = sanitizePerformanceProjection(old);
+    expect(migrated?.overview.processedTokens).toBe(migrated?.overview.totalTokens);
+    expect(migrated?.roles[1]?.processedTokens).toBe(migrated?.roles[1]?.totalTokens);
+    expect(migrated?.executorTasks[0]?.processedTokens).toBe(migrated?.executorTasks[0]?.totalTokens);
+    expect(migrated?.repair.processedTokens).toBe(migrated?.repair.totalTokens);
+    expect(migrated?.context.planningContextMode).toBeNull();
+    expect(migrated?.overview.providerReportedCost).toBe(0.034);
   });
 });

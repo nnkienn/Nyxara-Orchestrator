@@ -107,7 +107,9 @@ describe("TaskHistoryStore persistence", () => {
     await writeFile(path.join(directory, "task-history.v1.json"), JSON.stringify({ schemaVersion: 1, sessions: [legacy] }));
     const loaded = new TaskHistoryStore(directory).get("legacy");
     expect(loaded?.usageSummary).toEqual(legacy.usageSummary);
-    expect(loaded?.performanceSummary).toBeUndefined();
+    expect(loaded?.performanceSummary?.detailLevel).toBe("legacy");
+    expect(loaded?.performanceSummary?.overview).toMatchObject({ processedTokens: 7, totalTokens: 7, providerCalls: 1, toolCalls: 0, workflowDurationMs: 20, repairCycles: 0 });
+    expect(loaded?.performanceSummary?.roles.every((role) => role.calls === null)).toBe(true);
   });
 
   it("retains partial Performance for failed, aborted, and interrupted sessions", () => {
