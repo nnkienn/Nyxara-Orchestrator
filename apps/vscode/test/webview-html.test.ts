@@ -27,6 +27,15 @@ describe("Nyxara Webview shell", () => {
     expect(html).toContain('aria-label="Generate Plan"');
   });
 
+  it("sizes the New icon separately and keeps History visible in narrow sidebars", () => {
+    expect(html).toContain('class="header-icon" aria-hidden="true">＋</span>');
+    expect(html).toContain('class="header-label">New</span>');
+    expect(styles).toContain(".header-icon {");
+    expect(styles).toContain(".header-button > .header-label { display: none; }");
+    expect(styles).not.toContain(".header-button > span:first-child");
+    expect(styles).not.toContain(".header-button > span:last-child");
+  });
+
   it("uses a strict nonce CSP with no remote execution surface", () => {
     expect(html).toContain("default-src 'none'");
     expect(html).toContain("base-uri 'none'");

@@ -285,7 +285,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   };
   const webview = new NyxaraWorkspaceViewProvider(context.extensionUri, workspaceState, async (message: WebviewToExtensionMessage) => {
     try { switch (message.type) {
-      case "ready": if (settingsSection) await refreshSettingsProjection(); webview.refresh(settingsSection ? "settingsProjection" : "initialState"); return;
+      case "ready": await refreshSettingsProjection(); webview.refresh(settingsSection ? "settingsProjection" : "initialState"); return;
       case "openProviderSetup": await connectProvider(); if (settingsSection) await refreshSettingsProjection(); webview.refresh(settingsSection ? "settingsProjection" : "providerState"); return;
       case "openSettings": performanceScreen = undefined; settingsSection = "home"; selectedSettingsProviderId = undefined; settingsDiagnostics = undefined; await refreshSettingsProjection(); webview.refresh("settingsProjection"); return;
       case "closeSettings": settingsSection = undefined; selectedSettingsProviderId = undefined; settingsDiagnostics = undefined; webview.refresh("providerState"); return;
@@ -388,7 +388,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
         webview.refresh("performanceProjection"); return;
       }
       case "closePerformance": performanceScreen = undefined; webview.refresh(historyScreen === "historical" ? "historicalTaskLoaded" : "workflowSnapshot"); return;
-      case "openHistory": performanceScreen = undefined; historyScreen = "history"; selectedHistoryTaskId = undefined; webview.refresh("taskHistory"); return;
+      case "openHistory": settingsSection = undefined; selectedSettingsProviderId = undefined; settingsDiagnostics = undefined; performanceScreen = undefined; historyScreen = "history"; selectedHistoryTaskId = undefined; webview.refresh("taskHistory"); return;
       case "listTasks": historyScope = message.scope; historyScreen = "history"; webview.refresh("taskHistory"); return;
       case "searchTasks": historyQuery = message.query; historyScreen = "history"; webview.refresh("historySearchResults"); return;
       case "filterTasks": historyFilter = message.filter; historyScreen = "history"; webview.refresh("taskHistory"); return;
@@ -648,20 +648,38 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     }
   };
   const refreshProviderModels = async (config: ProviderConfig): Promise<void> => {
-    const definition = providerDefinition(config.catalogId ?? config.type);
-    if (!definition.onboarding.modelDiscovery) throw Object.assign(new Error("Model discovery is not supported by this provider integration. Enter a model ID manually."), { statusCode: 501 });
-    if (config.signedOut) throw new Error(`${config.displayName} is signed out. Reconnect it before refreshing models.`);
-    if (config.authStrategy === "api_key" && !(await context.secrets.get(providerSecretKey(config.id))) && !(config.id === "openai-compatible" && await context.secrets.get(LEGACY_SECRET_KEY))) throw Object.assign(new Error("Provider credential is missing"), { code: "authentication_error" });
-    try {
-      const models = await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id));
-      testedProviderIds.add(config.id);
-      await refreshSettingsProjection(); webview.refresh("capabilitiesUpdated");
-      void vscode.window.showInformationMessage(`${models.length} model${models.length === 1 ? "" : "s"} loaded for ${config.displayName}.`);
-    } catch (error) {
-      await refreshSettingsProjection(); webview.refresh("modelsFailed");
-      throw error;
-    }
-  };
+  const definition = providerDefinition(config.catalogId ?? config.type);
+  if (!definition.onboarding.modelDiscovery) throw Object.assign(new Error("Model discovery is not supported by this provider integration. Enter a model ID manually."), { statusCode: 501 });
+  if (config.signedOut) throw new Error(`${config.displayName} is signed out. Reconnect it before refreshing models.`);
+  if (config.authStrategy === "api_key" && !(await context.secrets.get(providerSecretKey(config.id))) && !(config.id === "openai-compatible" && await context.secrets.get(LEGACY_SECRET_KEY))) throw Object.assign(new Error("Provider credential is missing"), { code: "authentication_error" });
+    output.appendLine(`[Model Refresh] Starting for provider: ${config.id} (${config.displayName})`);
+  try {
+    const models = await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id));
+      output.appendLine(`[Model Refresh] Discovery complete: ${models.length} models`);
+      output.appendLine(`[Model Refresh] Model IDs: ${models.map(m => m.id).join(", ")}`);
+    testedProviderIds.add(config.id);
+      const stateBeforeProjection = modelDiscovery.state(config.id);
+      output.appendLine(`[Model Refresh] State before projection: status=${stateBeforeProjection.status}, models=${stateBeforeProjection.models.length}`);
+    await refreshSettingsProjection(); webview.refresh("capabilitiesUpdated");
+      output.appendLine(`[Model Refresh] Projection refreshed, checking projection state...`);
+      if (settingsProjection) {
+        const providerInProjection = settingsProjection.providers.find(p => p.id === config.id);
+        if (providerInProjection) {
+          output.appendLine(`[Model Refresh] Provider in projection: models=${providerInProjection.models.length}, status=${providerInProjection.modelsStatus}`);
+          output.appendLine(`[Model Refresh] Projection model IDs: ${providerInProjection.models.map(m => m.id).join(", ")}`);
+        } else {
+          output.appendLine(`[Model Refresh] WARNING: Provider not found in projection!`);
+        }
+      } else {
+        output.appendLine(`[Model Refresh] WARNING: settingsProjection is undefined!`);
+      }
+    void vscode.window.showInformationMessage(`${models.length} model${models.length === 1 ? "" : "s"} loaded for ${config.displayName}.`);
+  } catch (error) {
+      output.appendLine(`[Model Refresh] ERROR: ${safeErrorMessage(error)}`);
+    await refreshSettingsProjection(); webview.refresh("modelsFailed");
+    throw error;
+  }
+};
   const completeCliBrowserAuth = async (config: ProviderConfig, isNew: boolean, auth: { readonly sessionId: string; readonly state: string }): Promise<void> => {
     const definition = providerDefinition(config.catalogId ?? config.type);
     let temporarilyRegistered = false;

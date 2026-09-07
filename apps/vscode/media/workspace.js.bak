@@ -313,52 +313,20 @@
     return select;
   }
 
+  let modelSuggestionSequence = 0;
   function discoveredModelPicker(projection, providerControl, modelInput) {
     const host = node("div", "discovered-model-picker");
-    const select = node("select", "settings-select model-select");
-    const label = modelInput.getAttribute("aria-label") || "Model";
-    select.setAttribute("aria-label", label);
-    modelInput.setAttribute("aria-label", `${label} ID (manual)`);
-    const status = node("p", "muted model-picker-status");
-    const notifyChange = () => modelInput.dispatchEvent(new Event("input"));
+    const list = node("datalist"); const listId = `nyxara-models-${++modelSuggestionSequence}`; list.setAttribute("id", listId); modelInput.setAttribute("list", listId);
+    let latestProjection = projection;
     const render = () => {
-      select.replaceChildren();
-      const provider = projection.providers.find((item) => item.id === providerControl.value);
-      const models = provider && provider.models || [];
-      const selectedId = modelInput.value.trim();
-      const placeholder = node("option", "", provider && provider.modelsStatus === "loading" ? "Loading models…" : "Choose a model…");
-      placeholder.value = ""; placeholder.disabled = true; select.append(placeholder);
-      models.forEach((model) => {
-        const option = node("option", "", model.name && model.name !== model.id ? `${model.name} · ${model.id}` : model.id);
-        option.value = `model:${model.id}`; select.append(option);
-      });
-      if (selectedId && !models.some((model) => model.id === selectedId)) {
-        const saved = node("option", "", selectedId); saved.value = `model:${selectedId}`; select.append(saved);
-      }
-      if (provider && provider.supportsManualModelId !== false) {
-        const manual = node("option", "", "Enter model ID manually…"); manual.value = "manual"; select.append(manual);
-      }
-      select.value = selectedId ? `model:${selectedId}` : "";
-      select.disabled = !provider;
-      select.title = selectedId;
-      modelInput.classList.add("hidden");
-      status.classList.toggle("hidden", models.length > 0);
-      status.textContent = provider && provider.modelsMessage || (provider && provider.modelsStatus === "loading" ? "Loading available models…" : "No discovered models. Refresh Models in AI Providers or enter a model ID manually.");
+      list.replaceChildren();
+      const provider = latestProjection.providers.find((item) => item.id === providerControl.value);
+      (provider && provider.models || []).forEach((model) => { const option = node("option"); option.value = model.id; if (model.name !== model.id) option.setAttribute("label", model.name); list.append(option); });
     };
-    select.addEventListener("change", () => {
-      const manual = select.value === "manual";
-      modelInput.classList.toggle("hidden", !manual);
-      if (manual) { modelInput.focus(); modelInput.select(); return; }
-      modelInput.value = select.value.startsWith("model:") ? select.value.slice(6) : "";
-      select.title = modelInput.value;
-      notifyChange();
-    });
-    providerControl.addEventListener("change", () => {
-      const provider = projection.providers.find((item) => item.id === providerControl.value);
-      modelInput.value = provider && provider.defaultModel || "";
-      render(); notifyChange();
-    });
-    host.append(select, modelInput, status); render();
+    const _updateProjection = (newProjection) => { latestProjection = newProjection; render(); };
+    providerControl.addEventListener("change", () => { const provider = latestProjection.providers.find((item) => item.id === providerControl.value); modelInput.value = provider && provider.defaultModel || ""; if (typeof modelInput.dispatchEvent === "function" && typeof Event === "function") modelInput.dispatchEvent(new Event("input")); render(); });
+    host.append(list); render();
+    host._updateProjection = _updateProjection;
     return host;
   }
 
@@ -431,23 +399,32 @@
 
   function renderModelsRoles(projection) {
     settingsHeading("Models & Roles");
-    if (modelModeProjection !== projection) { modelModeProjection = projection; modelModeDraft = projection.modelMode; }
+    if (modelModeProjection !== projection) {
+      modelModeProjection = projection;
+      if (modelModeDraft === undefined) {
+        modelModeDraft = projection.modelMode;
+      }
+    }
     const visibleMode = modelModeDraft;
     const mode = node("div", "mode-tabs"); const simpleTab = node("button", visibleMode === "simple" ? "chip selected" : "chip", "Simple"); simpleTab.type = "button"; simpleTab.addEventListener("click", () => { modelModeDraft = "simple"; render(); }); const advancedTab = node("button", visibleMode === "advanced" ? "chip selected" : "chip", "Advanced"); advancedTab.type = "button"; advancedTab.addEventListener("click", () => { modelModeDraft = "advanced"; render(); }); mode.append(simpleTab, advancedTab); timeline.append(mode);
     if (!projection.providers.length) { timeline.append(node("p", "muted settings-empty", "No providers configured."), button("Connect Provider", "primary", "connectProvider")); return; }
-    const simple = card("Simple"); const defaultProvider = projection.providers.find((provider) => provider.id === projection.defaultProviderConfigId) || projection.providers[0];
+    const simple = card("Simple");
+    const plannerAssignment = projection.roles.find((item) => item.role === "planner");
+    const defaultProvider = projection.providers.find((provider) => provider.id === (plannerAssignment && plannerAssignment.providerConfigId || projection.defaultProviderConfigId)) || projection.providers[0];
     if (!defaultProvider.defaultModel) timeline.append(node("p", "partial-note", "Connected. Choose a model and its execution setting here to finish setup."));
-    const simpleProvider = providerSelect(projection, defaultProvider && defaultProvider.id, "Default provider"); const simpleModel = node("input", "settings-input"); simpleModel.setAttribute("aria-label", "Default model"); simpleModel.placeholder = "Enter exact model ID"; simpleModel.maxLength = 2048; simpleModel.value = defaultProvider && defaultProvider.defaultModel || "";
-    const simpleAssignment = projection.roles.find((assignment) => assignment.role === "planner" && assignment.providerConfigId === defaultProvider.id && assignment.modelId === simpleModel.value);
-    const simpleExecution = executionEditor(projection, simpleProvider, simpleModel, simpleAssignment && simpleAssignment.executionOptions, simpleAssignment && simpleAssignment.executionProfileStatus === "stale", simpleAssignment && simpleAssignment.executionCapability, defaultProvider.id, simpleModel.value);
-    simple.append(node("label", "field-label", "Default Provider"), simpleProvider, node("label", "field-label", "Default Model"), discoveredModelPicker(projection, simpleProvider, simpleModel), simpleExecution.host, node("p", "muted", "Choose from all discovered models or select Enter model ID manually. Repair uses Executor."));
+    const simpleProvider = providerSelect(projection, defaultProvider && defaultProvider.id, "Default provider"); const simpleModel = node("input", "settings-input"); simpleModel.placeholder = "Choose or enter exact model ID"; simpleModel.maxLength = 2048;
+    simpleModel.value = (plannerAssignment && plannerAssignment.modelId) || "";
+    const simpleExecution = executionEditor(projection, simpleProvider, simpleModel, plannerAssignment && plannerAssignment.executionOptions, plannerAssignment && plannerAssignment.executionProfileStatus === "stale", plannerAssignment && plannerAssignment.executionCapability, plannerAssignment && plannerAssignment.providerConfigId, plannerAssignment && plannerAssignment.modelId);
+    const simplePicker = discoveredModelPicker(projection, simpleProvider, simpleModel);
+    simple.append(node("label", "field-label", "Default Provider"), simpleProvider, node("label", "field-label", "Default Model"), simpleModel, simplePicker, simpleExecution.host, node("p", "muted", "Model suggestions come from the selected provider. You can also enter an exact model ID manually. Repair uses Executor."));
     const saveSimple = node("button", "primary", "Use Simple Mode"); saveSimple.type = "button"; saveSimple.addEventListener("click", () => { if (simpleProvider.value && simpleModel.value.trim()) vscode.postMessage({ type: "setDefaultModel", providerConfigId: simpleProvider.value, modelId: simpleModel.value.trim(), executionOptions: simpleExecution.read() }); }); simple.append(saveSimple);
-    const advanced = card("Advanced Role Assignments"); const controls = []; const providerSearch = node("input", "settings-input"); providerSearch.type = "search"; providerSearch.placeholder = "Search configured providers…"; providerSearch.maxLength = 200; providerSearch.setAttribute("aria-label", "Search role providers"); advanced.append(providerSearch);
-    ["planner", "executor", "reviewer"].forEach((roleName) => { const assignment = projection.roles.find((item) => item.role === roleName) || {}; const group = node("div", "role-config"); const select = providerSelect(projection, assignment.providerConfigId || defaultProvider.id, `${friendly(roleName)} provider`); const modelInput = node("input", "settings-input"); modelInput.setAttribute("aria-label", `${friendly(roleName)} model`); modelInput.placeholder = `${friendly(roleName)} model ID`; modelInput.maxLength = 2048; modelInput.value = assignment.modelId || ""; const execution = executionEditor(projection, select, modelInput, assignment.executionOptions, assignment.executionProfileStatus === "stale", assignment.executionCapability, assignment.providerConfigId, assignment.modelId); const picker = discoveredModelPicker(projection, select, modelInput); group.append(node("div", "field-label", friendly(roleName)), select, picker, execution.host); advanced.append(group); controls.push({ role: roleName, select, modelInput, execution }); });
+    const advanced = card("Advanced Role Assignments"); const controls = []; const advancedPickers = []; const providerSearch = node("input", "settings-input"); providerSearch.type = "search"; providerSearch.placeholder = "Search configured providers…"; providerSearch.maxLength = 200; providerSearch.setAttribute("aria-label", "Search role providers"); advanced.append(providerSearch);
+    ["planner", "executor", "reviewer"].forEach((roleName) => { const assignment = projection.roles.find((item) => item.role === roleName) || {}; const group = node("div", "role-config"); const select = providerSelect(projection, assignment.providerConfigId || defaultProvider.id, `${friendly(roleName)} provider`); const modelInput = node("input", "settings-input"); modelInput.placeholder = `${friendly(roleName)} model ID`; modelInput.maxLength = 2048; modelInput.value = assignment.modelId || ""; const execution = executionEditor(projection, select, modelInput, assignment.executionOptions, assignment.executionProfileStatus === "stale", assignment.executionCapability, assignment.providerConfigId, assignment.modelId); group.append(node("div", "field-label", friendly(roleName)), select, modelInput, picker, execution.host); const picker = discoveredModelPicker(projection, select, modelInput); advanced.append(group); controls.push({ role: roleName, select, modelInput, execution }); advancedPickers.push(picker); });
     providerSearch.addEventListener("input", () => { const query = providerSearch.value.trim().toLocaleLowerCase(); controls.forEach((control) => control.select._providerOptions.forEach((entry) => { entry.option.hidden = !!query && !entry.text.includes(query); })); });
     advanced.append(node("p", "muted", "Selections are validated and committed together. Cancellation or incomplete input saves nothing. Repair uses Executor."));
     const saveAdvanced = node("button", "primary", "Save Advanced Roles"); saveAdvanced.type = "button"; saveAdvanced.addEventListener("click", () => { const assignments = controls.map((control) => ({ role: control.role, providerConfigId: control.select.value, modelId: control.modelInput.value.trim(), executionOptions: control.execution.read() })); if (assignments.every((item) => item.providerConfigId && item.modelId)) vscode.postMessage({ type: "updateRoleAssignments", assignments }); }); advanced.append(saveAdvanced);
     timeline.append(visibleMode === "simple" ? simple : advanced);
+    timeline._modelsPickers = visibleMode === "simple" ? [simplePicker] : advancedPickers;
   }
 
   function renderPlanning(projection) {
@@ -1235,7 +1212,14 @@
       submittedTask = undefined;
       resize();
     }
-
+    if (state.settings && state.settings.projection) {
+      const pickers = timeline._modelsPickers || [];
+      pickers.forEach((picker) => {
+        if (picker && typeof picker._updateProjection === "function") {
+          picker._updateProjection(state.settings.projection);
+        }
+      });
+    }
     // Edit Requirement prefills a fresh draft. It never resumes the old workflow.
     if (state.requirementDraft && state.requirementDraft !== appliedDraft) {
       appliedDraft = state.requirementDraft;

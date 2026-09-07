@@ -74,6 +74,29 @@ describe("VS Code provider onboarding and command safety", () => {
     mock.commands.clear(); mock.settings.clear(); mock.updates.length = 0; mock.failNextUpdateKey = undefined; mock.inputs.length = 0; mock.inputOptions.length = 0; mock.pickIndexes.length = 0; mock.pickCalls.length = 0; mock.errors.length = 0; mock.info.length = 0; mock.infoResults.length = 0; mock.externalUrls.length = 0; mock.clipboard.length = 0; mock.terminals.length = 0; mock.taskExecutions.length = 0; mock.taskEndListeners.length = 0; mock.providers.length = 0; mock.workspaceFolders.length = 0; mock.warnings.length = 0; mock.warningResult = "Disconnect"; vi.clearAllMocks();
   });
 
+  it.each([false, true])("keeps the chat workspace visible after ready with configured=%s", async (configured) => {
+    activateFake(fakeSession(configured));
+    const view = resolveRegisteredWebview();
+    const initialCount = view.posted.length;
+    view.receive({ type: "ready" });
+    await vi.waitFor(() => expect(view.posted.length).toBeGreaterThan(initialCount));
+    expect(view.posted.at(-1)).toMatchObject({ type: "initialState", state: { configured, history: { screen: "workspace" } } });
+    expect(view.posted.at(-1).state.settings).toBeUndefined();
+  });
+
+  it.each(["closeSettings", "openHistory"])("leaves Settings and restores the chat composer through %s", async (type) => {
+    activateFake();
+    const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettings" });
+    await vi.waitFor(() => expect(view.posted.at(-1)?.state.settings?.section).toBe("home"));
+    view.receive({ type });
+    expect(view.posted.at(-1)).toMatchObject({ type: type === "closeSettings" ? "providerState" : "taskHistory", state: { history: { screen: type === "closeSettings" ? "workspace" : "history" } } });
+    expect(view.posted.at(-1).state.settings).toBeUndefined();
+    view.receive({ type: "openSettingsSection", section: "modelsRoles" });
+    await vi.waitFor(() => expect(view.posted.at(-1)?.state.settings?.section).toBe("modelsRoles"));
+    expect(view.posted.at(-1).state.settings.projection).toBeDefined();
+  });
+
   it("activation only registers UI and performs no provider, credential, repository, workflow, or timer work", () => {
     vi.useFakeTimers(); const { session, secrets } = activateFake();
     expect(mock.commands.size).toBe(19); expect(session.core.listModels).not.toHaveBeenCalled(); expect(session.core.createPlan).not.toHaveBeenCalled(); expect(session.core.runApprovedPlan).not.toHaveBeenCalled(); expect(session.core.startWorkflow).not.toHaveBeenCalled(); expect(secrets.get).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);

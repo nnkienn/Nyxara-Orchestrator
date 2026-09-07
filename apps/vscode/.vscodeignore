@@ -11,4 +11,4 @@ coverage/**
 .env.*
 dist/**
 !dist/extension.cjs
-!media/**
+**/*.bak

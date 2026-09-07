@@ -41,14 +41,17 @@ class FakeElement {
   replaceChildren(...items: FakeElement[]): void { this.children.splice(0, this.children.length, ...items); this.value = items.find((item) => item.selected)?.value ?? items[0]?.value ?? ""; }
   addEventListener(type: string, listener: Listener): void { this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]); }
   dispatch(type: string, event: Record<string, unknown> = {}): void { for (const listener of this.listeners.get(type) ?? []) listener({ preventDefault() {}, ...event }); }
+  dispatchEvent(event: Event): boolean { this.dispatch(event.type); return true; }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
+  getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
+  select(): void {}
   focus(): void { /* focus is presentation only */ }
   allText(): string { return this.textContent + this.children.map((child) => child.allText()).join(""); }
   descendants(): FakeElement[] { return [this, ...this.children.flatMap((child) => child.descendants())]; }
 }
 
 const runtimeSource = readFileSync(new URL("../media/workspace.js", import.meta.url), "utf8");
-const ids = ["timeline", "requirement", "submit", "model", "new-task", "history", "settings", "provider-dot", "workspace-warning", "notice", "context"];
+const ids = ["timeline", "composer-wrap", "requirement", "submit", "model", "new-task", "history", "settings", "provider-dot", "workspace-warning", "notice", "context"];
 
 function harness() {
   const elements = new Map(ids.map((id) => [id, new FakeElement(id === "requirement" ? "textarea" : id === "model" ? "button" : "div", id)]));
@@ -75,6 +78,7 @@ function harness() {
     acquireVsCodeApi: () => ({ postMessage: (message: unknown) => messages.push(message) }),
     document,
     window,
+    Event,
     setInterval: (handler: () => void) => { const id = nextTimer++; timers.set(id, handler); return id; },
     clearInterval: (id: number) => { timers.delete(id); },
     Date: FakeDate,
@@ -118,6 +122,25 @@ const awaiting = { id: "w", status: "awaiting_plan_approval", stage: "Awaiting a
 const settingsProjection = buildSettingsProjection({ version: "0.1.0-alpha.9", providers: [{ id: "work", catalogId: "openai", type: "openai", displayName: "OpenAI Work", modelId: "gpt-5.1", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" }], defaultProviderId: "work", credentialStored: new Map([["work", true]]), testedProviderIds: new Set(["work"]), modelMode: "simple", roles: [{ role: "planner", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "reviewer", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }], selectedPlanningProfile: "default", planningProfiles: [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }], engineeringRules: [{ id: "avoid-secret-exposure", name: "Avoid secret exposure", description: "Protect secrets", scope: "global", severity: "error", enabled: true }], historyRetention: 50, historyCount: 4, workspaceFolders: [{ id: "root-0", label: "Project" }], selectedWorkspaceRootId: "root-0" } as any);
 
 describe("Nyxara browser runtime", () => {
+  it("restores the composer and its draft when leaving Settings", () => {
+    const h = harness();
+    const composer = h.elements.get("composer-wrap")!;
+    const input = h.elements.get("requirement")!;
+    h.emit(baseState());
+    expect(composer.className).not.toContain("hidden");
+    input.value = "Keep this draft";
+    input.dispatch("input");
+    h.emit(baseState({ settings: { section: "home", projection: settingsProjection } }));
+    expect(composer.className).toContain("hidden");
+    expect(input.disabled).toBe(true);
+    h.emit(baseState());
+    expect(composer.className).not.toContain("hidden");
+    expect(input.value).toBe("Keep this draft");
+    expect(input.disabled).toBe(false);
+    expect(h.elements.get("submit")!.disabled).toBe(false);
+    expect(h.elements.get("new-task")!.disabled).toBe(false);
+  });
+
   it("does not submit while typing, accepts multiline input, and explicit Send submits once", () => {
     const h = harness();
     h.emit(baseState());
@@ -617,9 +640,10 @@ describe("Nyxara browser runtime", () => {
 
   it("keeps model and execution controls in one visible Simple or Advanced editor", () => {
     const h = harness(); h.emit(baseState({ settings: { section: "modelsRoles", projection: settingsProjection } }), "settingsProjection");
-    expect(h.text()).toContain("SimpleDefault ProviderOpenAI Work · ConnectedDefault ModelReasoningProvider Default");
+    expect(h.text()).toContain("SimpleDefault ProviderOpenAI Work · ConnectedDefault Model");
+    expect(h.text()).toContain("ReasoningProvider Default");
     expect(h.text()).not.toContain("Advanced Role Assignments");
-    expect(h.elements.get("timeline")!.descendants().some((item) => item.tagName === "input" && item.attributes.has("list"))).toBe(true);
+    expect(h.elements.get("timeline")!.descendants().some((item) => item.tagName === "select" && item.attributes.get("aria-label") === "Default model")).toBe(true);
     h.findButton("Use Simple Mode")?.dispatch("click");
     expect(h.messages.at(-1)).toEqual({ type: "setDefaultModel", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } });
     h.findButton("Advanced")?.dispatch("click");
@@ -636,6 +660,99 @@ describe("Nyxara browser runtime", () => {
     ]);
   });
 
+  it("lists every discovered model without clearing the current selection", () => {
+    const provider = { ...settingsProjection.providers[0], modelsStatus: "loaded", models: [{ id: "gpt-5.1", name: "GPT 5.1" }, { id: "unrelated/model", name: "Other model" }] };
+    const h = harness();
+    h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...settingsProjection, providers: [provider] } } }));
+    const select = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model")!;
+    const input = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model ID (manual)")!;
+    expect(select.value).toBe("model:gpt-5.1");
+    expect(select.children.map((option) => option.value)).toEqual(["", "model:gpt-5.1", "model:unrelated/model", "manual"]);
+    expect(input.className).toContain("hidden");
+    select.value = "model:unrelated/model"; select.dispatch("change");
+    expect(input.value).toBe("unrelated/model");
+    expect(h.messages).toEqual([{ type: "ready" }]);
+    h.findButton("Use Simple Mode")!.dispatch("click");
+    expect(h.messages.at(-1)).toEqual({ type: "setDefaultModel", providerConfigId: "work", modelId: "unrelated/model", executionOptions: { kind: "provider_default" } });
+  });
+
+  it("preserves undiscovered IDs and supports explicit manual entry without filtering the dropdown", () => {
+    const provider = { ...settingsProjection.providers[0], models: [{ id: "other/model", name: "Other model" }] };
+    const h = harness();
+    h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...settingsProjection, providers: [provider] } } }));
+    const select = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model")!;
+    const input = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model ID (manual)")!;
+    expect(select.value).toBe("model:gpt-5.1");
+    expect(select.children.map((option) => option.value)).toContain("model:gpt-5.1");
+    select.value = "manual"; select.dispatch("change");
+    expect(input.className).not.toContain("hidden");
+    input.value = " private/exact-id "; input.dispatch("input");
+    h.findButton("Use Simple Mode")!.dispatch("click");
+    expect(h.messages.at(-1)).toMatchObject({ modelId: "private/exact-id" });
+    expect(select.children.map((option) => option.value)).toContain("model:other/model");
+    select.value = "model:other/model"; select.dispatch("change");
+    expect(input.className).toContain("hidden");
+    expect(input.value).toBe("other/model");
+  });
+
+  it("repopulates the dropdown and execution controls when the selected provider changes", () => {
+    const other = { ...settingsProjection.providers[0], id: "other", defaultModel: "opus", models: [{ id: "opus", name: "Opus", capabilities: { execution: { kind: "anthropic_effort", label: "Effort", control: "select", values: [{ value: "high", label: "High" }], provenance: "provider_discovery" } } }] };
+    const h = harness();
+    h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...settingsProjection, providers: [settingsProjection.providers[0], other] } } }));
+    const providerSelect = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default provider")!;
+    const modelSelect = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model")!;
+    providerSelect.value = "other"; providerSelect.dispatch("change");
+    expect(modelSelect.value).toBe("model:opus");
+    expect(modelSelect.children.map((option) => option.value)).toEqual(["", "model:opus", "manual"]);
+    expect(h.text()).toContain("EffortProvider DefaultHigh");
+    expect(h.text()).not.toContain("Reasoning");
+    h.findButton("Use Simple Mode")!.dispatch("click");
+    expect(h.messages.at(-1)).toMatchObject({ providerConfigId: "other", modelId: "opus" });
+  });
+
+  it.each(["loading", "failed", "loaded"])("handles a %s empty catalog and populates all choices on refresh", (modelsStatus) => {
+    const provider = { ...settingsProjection.providers[0], defaultModel: undefined, modelsStatus, models: [] };
+    const h = harness();
+    const projection = { ...settingsProjection, defaultModel: undefined, providers: [provider], roles: [] };
+    h.emit(baseState({ settings: { section: "modelsRoles", projection } }));
+    const select = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model")!;
+    expect(select.value).toBe("");
+    expect(select.children.map((option) => option.value)).toEqual(["", "manual"]);
+    h.findButton("Use Simple Mode")!.dispatch("click");
+    expect(h.messages).toEqual([{ type: "ready" }]);
+    h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...projection, providers: [{ ...provider, modelsStatus: "loaded", models: [{ id: "first", name: "First" }, { id: "second", name: "Second" }] }] } } }), "capabilitiesUpdated");
+    const refreshed = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model")!;
+    expect(refreshed.children.map((option) => option.value)).toEqual(["", "model:first", "model:second", "manual"]);
+  });
+
+  it("uses independent unfiltered dropdowns for all Advanced roles", () => {
+    const provider = { ...settingsProjection.providers[0], models: [{ id: "gpt-5.1", name: "GPT 5.1" }, { id: "other/model", name: "Other model" }] };
+    const h = harness();
+    h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...settingsProjection, modelMode: "advanced", providers: [provider] } } }));
+    for (const role of ["Planner", "Executor", "Reviewer"]) {
+      const select = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === `${role} model`)!;
+      expect(select.value).toBe("model:gpt-5.1");
+      expect(select.children.map((option) => option.value)).toContain("model:other/model");
+      if (role === "Executor") { select.value = "model:other/model"; select.dispatch("change"); }
+    }
+    h.findButton("Save Advanced Roles")!.dispatch("click");
+    expect(h.messages.at(-1).assignments.map((assignment: any) => [assignment.role, assignment.modelId])).toEqual([["planner", "gpt-5.1"], ["executor", "other/model"], ["reviewer", "gpt-5.1"]]);
+  });
+
+  it("preserves Simple execution options and requires recovery of stale saved settings", () => {
+    const projection = { ...settingsProjection, roles: settingsProjection.roles.map((role) => ({ ...role, executionOptions: { kind: "openai_reasoning", effort: "medium" } })) };
+    const h = harness();
+    h.emit(baseState({ settings: { section: "modelsRoles", projection } }));
+    expect(h.text()).toContain("ReasoningProvider Default");
+    h.findButton("Use Simple Mode")!.dispatch("click");
+    expect(h.messages.at(-1)).toMatchObject({ executionOptions: { kind: "openai_reasoning", effort: "medium" } });
+    h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...projection, roles: projection.roles.map((role) => ({ ...role, executionProfileStatus: "stale" })) } } }));
+    expect(h.text()).toContain("Execution setting no longer supported");
+    h.findButton("Use Provider Default")!.dispatch("click");
+    h.findButton("Use Simple Mode")!.dispatch("click");
+    expect(h.messages.at(-1)).toMatchObject({ executionOptions: { kind: "provider_default" } });
+  });
+
   it("opens Models & Roles from the composer summary without changing provider or model directly", () => {
     const h = harness(); h.emit(baseState());
     expect(h.elements.get("model")?.textContent).toBe("Gateway · route/model");
@@ -649,11 +766,11 @@ describe("Nyxara browser runtime", () => {
     const projection = { ...settingsProjection, providers: [provider], defaultProviderConfigId: provider.id, defaultModel: undefined, modelMode: "simple", roles: [] };
     const h = harness(); h.emit(baseState({ configured: false, providers: [{ id: provider.id, displayName: provider.displayName, isDefault: true }], settings: { section: "modelsRoles", projection } }), "authCompleted");
     expect(h.text()).toContain("Connected. Choose a model and its execution setting here to finish setup.");
-    const modelInput = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "input" && item.attributes.has("list"))!;
-    modelInput.value = "opus"; modelInput.dispatch("input");
+    const modelSelect = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "select" && item.attributes.get("aria-label") === "Default model")!;
+    modelSelect.value = "model:opus"; modelSelect.dispatch("change");
     const effort = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "select" && item.children.some((child) => child.allText() === "High"))!;
     effort.value = "high"; effort.dispatch("change");
-    const save = h.findButton("Use Simple Mode"); expect(save).toBeDefined(); expect(modelInput.value).toBe("opus");
+    const save = h.findButton("Use Simple Mode"); expect(save).toBeDefined(); expect(modelSelect.value).toBe("model:opus");
     save!.dispatch("click");
     expect(h.messages.at(-1)).toEqual({ type: "setDefaultModel", providerConfigId: provider.id, modelId: "opus", executionOptions: { kind: "anthropic_effort", effort: "high" } });
     expect(h.messages.some((message) => message.type === "selectModel")).toBe(false);

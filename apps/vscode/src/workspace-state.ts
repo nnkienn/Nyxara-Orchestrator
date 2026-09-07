@@ -87,7 +87,7 @@ export interface WorkspaceViewState {
     readonly taskStatus: string;
     readonly projection?: PerformanceProjection;
   };
-  readonly settings?: { readonly section: SettingsSection; readonly providerConfigId?: string; readonly projection: SettingsProjection; readonly diagnostics?: Readonly<Record<string, unknown>> };
+  readonly settings?: { readonly section?: SettingsSection; readonly providerConfigId?: string; readonly projection: SettingsProjection; readonly diagnostics?: Readonly<Record<string, unknown>> };
 }
 
 export interface BuildWorkspaceStateInput {
