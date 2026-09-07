@@ -1115,6 +1115,7 @@
     const screen = state.performanceView ? `performance:${state.performanceView.source}:${state.performanceView.taskId || "live"}` : state.settings ? `settings:${state.settings.section}:${state.settings.providerConfigId || ""}` : historyState().screen;
     const screenChanged = screen !== renderedScreen;
     const stick = !screenChanged && isNearBottom();
+    timeline.classList.toggle("settings-screen", !!state.settings && !state.performanceView);
     timeline.replaceChildren();
     if (state.performanceView) renderPerformance();
     else if (state.settings) renderSettings();

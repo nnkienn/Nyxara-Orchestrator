@@ -122,6 +122,21 @@ const awaiting = { id: "w", status: "awaiting_plan_approval", stage: "Awaiting a
 const settingsProjection = buildSettingsProjection({ version: "0.1.0-alpha.9", providers: [{ id: "work", catalogId: "openai", type: "openai", displayName: "OpenAI Work", modelId: "gpt-5.1", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" }], defaultProviderId: "work", credentialStored: new Map([["work", true]]), testedProviderIds: new Set(["work"]), modelMode: "simple", roles: [{ role: "planner", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "reviewer", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }], selectedPlanningProfile: "default", planningProfiles: [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }], engineeringRules: [{ id: "avoid-secret-exposure", name: "Avoid secret exposure", description: "Protect secrets", scope: "global", severity: "error", enabled: true }], historyRetention: 50, historyCount: 4, workspaceFolders: [{ id: "root-0", label: "Project" }], selectedWorkspaceRootId: "root-0" } as any);
 
 describe("Nyxara browser runtime", () => {
+  it("scopes responsive layout to Settings and removes it from other screens", () => {
+    const h = harness();
+    const timeline = h.elements.get("timeline")!;
+    h.emit(baseState({ settings: { section: "modelsRoles", projection: settingsProjection } }));
+    expect(timeline.className).toContain("settings-screen");
+    h.emit(baseState());
+    expect(timeline.className).not.toContain("settings-screen");
+    h.emit(baseState({ settings: { section: "home", projection: settingsProjection } }));
+    expect(timeline.className).toContain("settings-screen");
+    h.emit(baseState({ history: { screen: "history", tasks: [], recentTasks: [], query: "", filter: "all", scope: "current" } }));
+    expect(timeline.className).not.toContain("settings-screen");
+    h.emit(baseState({ settings: { section: "home", projection: settingsProjection }, performanceView: { source: "live", taskStatus: "completed", projection: performanceProjection } }));
+    expect(timeline.className).not.toContain("settings-screen");
+  });
+
   it("restores the composer and its draft when leaving Settings", () => {
     const h = harness();
     const composer = h.elements.get("composer-wrap")!;
