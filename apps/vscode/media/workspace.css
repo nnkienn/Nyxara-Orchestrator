@@ -136,27 +136,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .summary { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px 10px; }
 .summary dt, .summary dd { margin: 0; }
 .summary dd { text-align: right; font-variant-numeric: tabular-nums; }
-.performance-label { margin-top: 11px; color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; }
-.performance-compact { margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 12px; overflow-wrap: anywhere; }
 .performance-heading { position: sticky; top: -14px; z-index: 1; padding: 8px 0; background: var(--vscode-sideBar-background); }
 .performance-empty { margin: 18px 4px; text-align: center; }
 .partial-note { margin: 0 0 10px; padding: 7px 9px; border-left: 2px solid var(--vscode-editorWarning-foreground, var(--vscode-notificationsWarningIcon-foreground)); color: var(--vscode-descriptionForeground); background: var(--vscode-textBlockQuote-background); }
-.performance-group { min-width: 0; }
-.performance-group-title { margin: 15px 2px 7px; font-size: 13px; }
 .performance-section .settings-value { grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); }
-.performance-hero { margin: 2px 0; font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.performance-overview .performance-compact { margin-bottom: 10px; }
 .performance-subheading { margin-top: 12px !important; padding-top: 9px; border-top: 1px solid var(--vscode-widget-border); }
-.performance-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 8px; }
-.performance-tile { display: flex; min-width: 0; padding: 8px; flex-direction: column; gap: 2px; border-radius: 5px; background: var(--vscode-textBlockQuote-background); }
-.performance-tile-value { overflow: hidden; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
-.performance-tile-label { color: var(--vscode-descriptionForeground); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
-.performance-status-line { margin-top: 9px; color: var(--vscode-descriptionForeground); font-size: 11px; overflow-wrap: anywhere; }
-.performance-role-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--vscode-widget-border); }
-.performance-role-row:first-of-type { border-top: 0; }
-.performance-role-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
-.performance-role-copy > span { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.performance-role-metric { color: var(--vscode-descriptionForeground); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.performance-note { margin-top: 8px; font-size: 11px; line-height: 1.35; }
 .performance-disclosure { margin: 0 0 7px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-editorWidget-background); overflow: hidden; }
 .performance-disclosure-title { padding: 8px 10px; cursor: pointer; font-weight: 600; font-size: 12px; }
 .performance-disclosure[open] > .performance-disclosure-title { border-bottom: 1px solid var(--vscode-widget-border); }

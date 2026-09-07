@@ -96,7 +96,6 @@ interface CliSpec {
   readonly displayName: string;
   readonly statusArgs: readonly string[];
   readonly modelDiscovery: boolean;
-  readonly models: readonly { readonly id: string; readonly name: string }[];
   validateStatus(result: CliRunResult, providerId: string): void;
   generationArgs(model: string, executionOptions: ExecutionOptions): readonly string[];
   responseText(stdout: string): { readonly text: string; readonly usage?: GenerateUsage };
@@ -107,7 +106,12 @@ interface CliSpec {
   readonly progressPhase?: (line: string) => ProviderProgressEvent | undefined;
 }
 
-const DEFAULT_MODEL = "default";
+/**
+ * Alias meaning "let the CLI choose its own default model". Claude Code returns
+ * this exact value in its supported-model list, so it is a real provider alias
+ * rather than a Nyxara invention; omitting --model is how each CLI expresses it.
+ */
+const DEFAULT_MODEL_ALIAS = "default";
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 30_000;
@@ -161,11 +165,10 @@ export class CliSubscriptionProvider implements ModelProvider {
         await rm(cwd, { recursive: true, force: true });
       }
     }
-    return this.spec.models.map((model) => ({
-      ...model,
-      provider: this.id,
-      capabilities: { text: true, tools: true, structuredOutput: true },
-    }));
+    // This CLI exposes no documented machine-readable model list. Returning an
+    // empty catalog keeps the absence honest instead of inventing a "default"
+    // pseudo-model; clients fall back to manual model entry.
+    return [];
   }
 
   modelCapabilities(modelId: string): ModelInfo["capabilities"] | undefined {
@@ -261,7 +264,7 @@ export class NodeCodexAppServerCatalog implements CodexModelCatalog {
       const requestPage = (cursor?: string): void => {
         pageCount += 1;
         if (pageCount > MAX_MODEL_PAGES) { fail("Codex returned too many model pages", "invalid_response"); return; }
-        send({ method: "model/list", id: nextRequestId++, params: { limit: 100, includeHidden: false, ...(cursor ? { cursor } : {}) } });
+        send({ method: "model/list", id: nextRequestId++, params: { limit: 100, includeHidden: true, ...(cursor ? { cursor } : {}) } });
       };
       const handleLine = (line: string): void => {
         if (!line.trim()) return;
@@ -280,6 +283,7 @@ export class NodeCodexAppServerCatalog implements CodexModelCatalog {
         try { page = normalizeCodexModelPage(message.result, input.providerId); }
         catch { fail("Codex returned an invalid model catalog", "invalid_response"); return; }
         models.push(...page.models);
+        console.log(`[Codex Discovery] Page received: ${page.models.length} models, total so far: ${models.length + page.models.length}`);
         if (models.length > MAX_DISCOVERED_MODELS) { fail("Codex returned too many models", "invalid_response"); return; }
         if (page.nextCursor) {
           if (cursors.has(page.nextCursor)) { fail("Codex returned an invalid model cursor", "invalid_response"); return; }
@@ -288,6 +292,7 @@ export class NodeCodexAppServerCatalog implements CodexModelCatalog {
           return;
         }
         finish(() => resolve(models));
+        console.log(`[Codex Discovery] Complete: ${models.length} total models discovered`);
       };
       child.stdout.on("data", (chunk: Buffer) => {
         outputBytes += chunk.byteLength;
@@ -354,6 +359,7 @@ export class NodeClaudeAgentSdkCatalog implements ClaudeModelCatalog {
         if (message.response.subtype !== "success") { fail("Claude model discovery failed"); return; }
         try {
           const models = normalizeClaudeModels(isRecord(message.response.response) ? message.response.response.models : undefined, input.providerId);
+          console.log(`[Claude Discovery] Complete: ${models.length} total models discovered`);
           finish(() => resolve(models));
         } catch {
           fail("Claude returned an invalid supported-model catalog", "invalid_response");
@@ -440,11 +446,10 @@ function cliSpec(kind: CliSubscriptionKind): CliSpec {
     displayName: "OpenAI Codex (ChatGPT)",
     statusArgs: ["login", "status"],
     modelDiscovery: true,
-    models: [{ id: DEFAULT_MODEL, name: "Codex CLI default" }],
     validateStatus: (result, providerId) => {
       if (!/logged in using chatgpt/i.test(`${result.stdout}\n${result.stderr}`)) throw new ProviderError("Codex must be signed in with ChatGPT, not an API key", { code: "authentication_error", providerId });
     },
-    generationArgs: (model, executionOptions) => ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", ...(model === DEFAULT_MODEL ? [] : ["--model", model]), ...(executionOptions.kind === "openai_reasoning" ? ["--config", `model_reasoning_effort=${JSON.stringify(executionOptions.effort)}`] : []), "-"],
+    generationArgs: (model, executionOptions) => ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", ...(model === DEFAULT_MODEL_ALIAS ? [] : ["--model", model]), ...(executionOptions.kind === "openai_reasoning" ? ["--config", `model_reasoning_effort=${JSON.stringify(executionOptions.effort)}`] : []), "-"],
     responseText: parseCodexOutput,
     progressPhase: codexProgressPhase,
   };
@@ -453,13 +458,12 @@ function cliSpec(kind: CliSubscriptionKind): CliSpec {
     displayName: "Claude Code (Claude account)",
     statusArgs: ["auth", "status"],
     modelDiscovery: true,
-    models: [{ id: DEFAULT_MODEL, name: "Claude Code default" }],
     validateStatus: (result, providerId) => {
       let status: unknown;
       try { status = JSON.parse(result.stdout); } catch { status = undefined; }
       if (!isRecord(status) || status.loggedIn !== true || status.authMethod !== "claude.ai") throw new ProviderError("Claude Code must be signed in with a Claude account, not an API key", { code: "authentication_error", providerId });
     },
-    generationArgs: (model, executionOptions) => ["--print", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--safe-mode", "--tools", "", "--permission-mode", "dontAsk", ...(model === DEFAULT_MODEL ? [] : ["--model", model]), ...(executionOptions.kind === "anthropic_effort" ? ["--effort", executionOptions.effort] : [])],
+    generationArgs: (model, executionOptions) => ["--print", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--safe-mode", "--tools", "", "--permission-mode", "dontAsk", ...(model === DEFAULT_MODEL_ALIAS ? [] : ["--model", model]), ...(executionOptions.kind === "anthropic_effort" ? ["--effort", executionOptions.effort] : [])],
     responseText: parseClaudeOutput,
     progressPhase: claudeProgressPhase,
   };
@@ -468,9 +472,8 @@ function cliSpec(kind: CliSubscriptionKind): CliSpec {
     displayName: "Gemini CLI (Google account)",
     statusArgs: ["--version"],
     modelDiscovery: false,
-    models: [{ id: DEFAULT_MODEL, name: "Gemini CLI default" }],
     validateStatus: () => {},
-    generationArgs: (model) => ["--prompt", "", "--output-format", "stream-json", "--approval-mode", "plan", "--allowed-tools", "", ...(model === DEFAULT_MODEL ? [] : ["--model", model])],
+    generationArgs: (model) => ["--prompt", "", "--output-format", "stream-json", "--approval-mode", "plan", "--allowed-tools", "", ...(model === DEFAULT_MODEL_ALIAS ? [] : ["--model", model])],
     responseText: parseGeminiOutput,
     progressPhase: geminiProgressPhase,
   };

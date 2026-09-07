@@ -739,7 +739,7 @@ Global Rules
 Workspace Rules
       ↓
 Task Rules
-```
+``` qq
 
 Priority:
 

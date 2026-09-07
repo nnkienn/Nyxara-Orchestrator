@@ -85,6 +85,17 @@
       || (projection.executorTasks || []).length > 0 || (projection.validation && projection.validation.steps || []).length > 0 || (projection.tools && projection.tools.byName || []).length > 0;
   };
   const hasTaskPerformance = (task) => hasPerformance(task.performanceSummary) || !!task.usageSummary && Object.values(task.usageSummary).some((value) => value !== null && value !== undefined);
+  const hasProviderUsage = (value) => {
+    if (!value) return false;
+    const overview = value.overview || value;
+    if (Number(overview.providerCalls) > 0) return true;
+    if ([overview.inputTokens, overview.cacheReadTokens, overview.cacheWriteTokens, overview.outputTokens, overview.processedTokens, overview.totalTokens].some((metric) => typeof metric === "number" && metric > 0)) return true;
+    return (value.roles || []).some((role) => Number(role.calls) > 0);
+  };
+  const canViewPerformance = (projection, outcome) => outcome === "rejected" ? hasProviderUsage(projection) : hasPerformance(projection);
+  const canViewTaskPerformance = (task) => outcomeOf(task) === "rejected"
+    ? hasProviderUsage(task.performanceSummary || task.usageSummary)
+    : hasTaskPerformance(task);
 
   function relativeTime(timestamp) {
     const elapsed = Math.max(0, Date.now() - Date.parse(timestamp));
@@ -308,10 +319,12 @@
     const list = node("datalist"); const listId = `nyxara-models-${++modelSuggestionSequence}`; list.setAttribute("id", listId); modelInput.setAttribute("list", listId);
     const render = () => {
       list.replaceChildren();
-      const provider = projection.providers.find((item) => item.id === providerControl.value);
+      // Use current state projection if in settings, otherwise use passed projection
+      const currentProjection = (state && state.settings && state.settings.projection) ? state.settings.projection : projection;
+      const provider = currentProjection.providers.find((item) => item.id === providerControl.value);
       (provider && provider.models || []).forEach((model) => { const option = node("option"); option.value = model.id; if (model.name !== model.id) option.setAttribute("label", model.name); list.append(option); });
     };
-    providerControl.addEventListener("change", () => { const provider = projection.providers.find((item) => item.id === providerControl.value); modelInput.value = provider && provider.defaultModel || ""; if (typeof modelInput.dispatchEvent === "function" && typeof Event === "function") modelInput.dispatchEvent(new Event("input")); render(); });
+    providerControl.addEventListener("change", () => { const currentProjection = (state && state.settings && state.settings.projection) ? state.settings.projection : projection; const provider = currentProjection.providers.find((item) => item.id === providerControl.value); modelInput.value = provider && provider.defaultModel || ""; if (typeof modelInput.dispatchEvent === "function" && typeof Event === "function") modelInput.dispatchEvent(new Event("input")); render(); });
     host.append(list); render(); return host;
   }
 
@@ -420,7 +433,7 @@
     else if (section === "validation") { const value = card("Validation Pipeline"); projection.validation.steps.forEach((step) => value.append(labeledValue(step.kind, step.policy))); value.append(labeledValue("Fail Fast", projection.validation.failFast ? "Enabled" : "Disabled")); timeline.append(value); }
     else if (section === "review") { const p = projection.review; const value = card("Reviewer"); value.append(labeledValue("Assignment", p.reviewer.providerName ? `${p.reviewer.providerName} / ${p.reviewer.modelId}` : "Unconfigured"), booleanRow("Engineering Rules Applied", p.rulesApplied), booleanRow("Validation Failure Forces Fail", p.validationFailuresForceFail), booleanRow("Bounded Evidence", p.boundedEvidence), booleanRow("Targeted Context Expansion", p.targetedContextExpansion)); timeline.append(value); }
     else if (section === "repair") { const p = projection.repair; const value = card("Automatic Repair"); value.append(booleanRow("Enabled", p.automatic), booleanRow("Validation First", p.validationFirst), booleanRow("Planner Replan", p.plannerReplan), booleanRow("Context Reuse", p.contextReuse), labeledValue("Model Assignment", `Uses ${p.usesRole}`), labeledValue("Maximum Cycles", p.maximumCycles)); timeline.append(value); }
-    else if (section === "usage") { const p = projection.usage; const value = card("Usage & Performance"); value.append(labeledValue("Token Reporting", p.tokenReporting), labeledValue("Usage Estimates", p.usageEstimates), labeledValue("Cost", p.cost), labeledValue("Task Performance", p.taskPerformance), labeledValue("Execution Profiles", p.executionProfiles), labeledValue("Automatic Optimization", p.automaticOptimization)); timeline.append(value); }
+    else if (section === "usage") { const p = projection.usage; const value = card("Usage & Performance"); value.append(labeledValue("Token Reporting", p.tokenReporting), labeledValue("Cache Token Reporting", p.cacheTokenReporting), labeledValue("Provider-Reported Cost", p.providerReportedCost), labeledValue("Local Task Performance History", p.localTaskPerformanceHistory), labeledValue("Execution Profile Attribution", p.executionProfileAttribution), labeledValue("Automatic Optimization", p.automaticOptimization)); timeline.append(value); }
     else if (section === "privacy") { const p = projection.privacy; const value = card("Privacy & Storage"); [["Credentials", p.credentials], ["Task History", p.taskHistory], ["Cloud Sync", p.cloudSync], ["Nyxara Account", p.account], ["Telemetry", p.telemetry], ["Provider Requests", p.providerRequests]].forEach(([key, val]) => value.append(labeledValue(key, val))); timeline.append(value); }
     else if (section === "advanced") { const p = projection.advanced; const value = card("Supported Technical Configuration"); [["Manual Model ID", p.manualModelId], ["Custom Endpoints", p.customEndpoints], ["Role Routing", p.roleRouting], ["Execution Profiles", "Capability-driven per role/model"], ["Diagnostics", p.diagnosticState]].forEach(([key, val]) => value.append(labeledValue(key, val))); timeline.append(value, node("p", "muted", "Automatic routing, Budget Engine, Skills, MCP, Hooks, Plugins, and Marketplace are not available in this phase.")); }
   }
@@ -584,7 +597,7 @@
     }
     if (terminalHistoryStatus(task.status) && task.id !== history.activeTaskId) {
       const actions = node("div", "history-detail-actions");
-      if (outcome !== "rejected" && hasTaskPerformance(task)) actions.append(button("View Performance", "secondary", "openPerformance", { taskId: task.id }));
+      if (canViewTaskPerformance(task)) actions.append(button("View Performance", "secondary", "openPerformance", { taskId: task.id }));
       actions.append(button("Edit Requirement", "secondary", "editRequirement", { taskId: task.id }));
       actions.append(button("Delete Task", "danger", "deleteTask", { taskId: task.id }));
       if (!history.activeTaskId) actions.append(button("New Task", "primary", "newTask"));
@@ -804,6 +817,7 @@
       value.append(node("p", "", "No repository changes were made."));
       const actions = [];
       if (state.plan) actions.push(expandButton("View Plan", "secondary", liveDisclosureKey("plan")));
+      if (canViewPerformance(state.performance, outcome)) actions.push(button("View Performance", "secondary", "openPerformance"));
       actions.push(button("Edit Requirement", "secondary", "editRequirement"), button("New Task", "primary", "newTask"));
       addActions(value, actions);
       timeline.append(value);
@@ -832,7 +846,7 @@
     ]);
     const actions = [];
     if (hasTerminalDetails(stages)) actions.push(expandButton("View Details", "secondary", liveDisclosureKey("terminal-details")));
-    if (hasPerformance(state.performance)) actions.push(button("View Performance", "secondary", "openPerformance"));
+    if (canViewPerformance(state.performance, outcome)) actions.push(button("View Performance", "secondary", "openPerformance"));
     if (outcome === "failed" && state.prompt) actions.push(button("Try Again", "primary", "retryPlanning"), button("Choose Model", "secondary", "openSettingsSection", { section: "modelsRoles" }));
     actions.push(button("New Task", completed ? "primary" : "secondary", "newTask"));
     addActions(value, actions);
@@ -900,21 +914,18 @@
 
   function rolePerformance(role, title) {
     const value = card(title || friendly(role.role), "performance-section");
-    metricRows(value, [
-      ["Provider", role.providerName || role.providerId || "-"],
-      ["Provider Configuration", role.providerConfigId || "-"],
-      ["Adapter", role.providerId || "-"],
-    ]);
+    metricRows(value, [["Provider", role.providerName || role.providerId || "-"]]);
     modelRows(value, role);
     metricRows(value, [
-      ["Execution", role.executionProfileLabel || "-"],
+      ["Execution Profile", role.executionProfileLabel || "-"],
       ["Calls", formatNumber(role.calls)],
       ["Input", role.inputTokens == null ? "-" : `${formatNumber(role.inputTokens)} tokens`],
+      ["Cache Read", role.cacheReadTokens == null ? "-" : `${formatNumber(role.cacheReadTokens)} tokens`],
+      ["Cache Write", role.cacheWriteTokens == null ? "-" : `${formatNumber(role.cacheWriteTokens)} tokens`],
       ["Output", role.outputTokens == null ? "-" : `${formatNumber(role.outputTokens)} tokens`],
-      ["Total", role.totalTokens == null ? "-" : `${formatNumber(role.totalTokens)} tokens`],
       ["Provider Time", formatDuration(role.providerDurationMs)],
-      ["Usage Source", role.usageSource ? friendly(role.usageSource) : "-"],
     ]);
+    if (role.role === "repair") value.append(node("p", "muted performance-note", "Uses Executor profile."));
     return value;
   }
 
@@ -923,44 +934,50 @@
   }
 
   function activePerformanceRole(role) {
-    return [role.providerConfigId, role.providerId, role.requestedModelId, role.resolvedModelId, role.executionProfileLabel, role.totalTokens, role.providerDurationMs].some(hasValue) || Number(role.calls) > 0;
+    return [role.providerConfigId, role.providerId, role.requestedModelId, role.resolvedModelId, role.executionProfileLabel, role.inputTokens, role.cacheReadTokens, role.cacheWriteTokens, role.outputTokens, role.providerDurationMs].some(hasValue) || Number(role.calls) > 0;
   }
 
   function performanceDisclosure(title, className) {
     const value = node("details", `performance-disclosure${className ? ` ${className}` : ""}`);
-    value.append(node("summary", "performance-disclosure-title", title));
+    const summary = node("summary", "performance-disclosure-title", title);
+    summary.setAttribute("aria-expanded", "false");
+    summary.addEventListener("click", () => summary.setAttribute("aria-expanded", String(!value.open)));
+    value.addEventListener("toggle", () => summary.setAttribute("aria-expanded", String(!!value.open)));
+    value.append(summary);
     return value;
   }
 
-  function metricTiles(entries) {
-    const value = node("div", "performance-tiles");
-    entries.forEach(([label, metric]) => {
-      const tile = node("div", "performance-tile");
-      tile.append(node("span", "performance-tile-value", metric), node("span", "performance-tile-label", label));
-      value.append(tile);
-    });
-    return value;
+  function hasAnyMetric(source, keys) {
+    return !!source && keys.some((key) => hasValue(source[key]));
   }
 
-  function compactRoleRow(role) {
-    const value = node("div", "performance-role-row");
-    const copy = node("div", "performance-role-copy");
-    const provider = role.providerName || role.providerId || "Unknown provider";
-    const modelName = role.resolvedModelId || role.requestedModelId || "Unknown model";
-    copy.append(node("strong", "", friendly(role.role)), node("span", "muted", `${provider} · ${modelName}`));
-    const metrics = [role.totalTokens == null ? null : `${formatNumber(role.totalTokens)} tok`, role.providerDurationMs == null ? null : formatDuration(role.providerDurationMs)].filter(Boolean).join(" · ") || "-";
-    value.append(copy, node("span", "performance-role-metric", metrics));
-    return value;
+  function hasRepairEvidence(repair) {
+    return !!repair && (Number(repair.cycles) > 0 || Number(repair.providerCalls) > 0 || hasAnyMetric(repair, ["durationMs", "inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens", "providerDurationMs"]));
   }
 
-  function availableMetricRows(host, entries) {
-    entries.filter(([, value]) => value !== null && value !== undefined && value !== "-").forEach(([label, value]) => host.append(labeledValue(label, value)));
+  function reviewPerformance(review) {
+    const role = review.role || {};
+    const value = performanceDisclosure("Review");
+    metricRows(value, [["Status", review.status ? friendly(review.status) : "-"], ["Duration", formatDuration(review.durationMs)], ["Provider", role.providerName || role.providerId || "-"]]);
+    modelRows(value, role);
+    metricRows(value, [
+      ["Execution Profile", role.executionProfileLabel || "-"],
+      ["Calls", formatNumber(role.calls)],
+      ["Input", role.inputTokens == null ? "-" : `${formatNumber(role.inputTokens)} tokens`],
+      ["Cache Read", role.cacheReadTokens == null ? "-" : `${formatNumber(role.cacheReadTokens)} tokens`],
+      ["Cache Write", role.cacheWriteTokens == null ? "-" : `${formatNumber(role.cacheWriteTokens)} tokens`],
+      ["Output", role.outputTokens == null ? "-" : `${formatNumber(role.outputTokens)} tokens`],
+      ...(hasValue(role.processedTokens) ? [["Processed", `${formatNumber(role.processedTokens)} tokens`]] : []),
+    ]);
+    return value;
   }
 
   function renderPerformance() {
     const view = state.performanceView;
     const heading = node("div", "history-screen-heading performance-heading");
-    heading.append(button("←", "icon-button", "closePerformance"), node("h1", "", "Performance"));
+    const back = button("←", "icon-button", "closePerformance");
+    back.setAttribute("aria-label", "Back to task");
+    heading.append(back, node("h1", "", "Performance"));
     timeline.append(heading);
     if (!view || !view.projection) {
       timeline.append(node("p", "muted performance-empty", "Detailed performance was not recorded for this task."));
@@ -968,57 +985,81 @@
     }
     const projection = view.projection;
     const overview = projection.overview;
+    const providerCostAmount = projection.cost.source === "provider_reported" ? projection.cost.amount : null;
+    const providerCostCurrency = providerCostAmount == null ? null : projection.cost.currency;
     if (["aborted", "interrupted"].includes(view.taskStatus)) timeline.append(node("p", "partial-note", `Partial metrics · ${friendly(view.taskStatus)}`));
     else if (view.taskStatus === "failed") timeline.append(node("p", "partial-note", "Task failed · recorded metrics"));
     if (projection.detailLevel === "legacy") {
-      const legacy = card("Available", "performance-section");
+      const legacy = card("Overview", "performance-section");
       legacy.append(node("p", "muted", "Detailed performance was not recorded for this task."));
-      metricRows(legacy, [["Total Tokens", overview.totalTokens == null ? "-" : `${formatNumber(overview.totalTokens)} tokens`], ["Duration", formatDuration(overview.workflowDurationMs)], ["Model Calls", formatNumber(overview.providerCalls)], ["Tool Calls", formatNumber(overview.toolCalls)], ["Repair Cycles", formatNumber(overview.repairCycles)]]);
+      metricRows(legacy, [["Input Tokens", formatNumber(overview.inputTokens)], ["Cache Read", formatNumber(overview.cacheReadTokens)], ["Cache Write", formatNumber(overview.cacheWriteTokens)], ["Output Tokens", formatNumber(overview.outputTokens)], ["Processed Tokens", formatNumber(overview.processedTokens ?? overview.totalTokens)], ["Workflow Duration", formatDuration(overview.workflowDurationMs)], ["Provider Calls", formatNumber(overview.providerCalls)], ["Tool Calls", formatNumber(overview.toolCalls)], ["Repair Cycles", formatNumber(overview.repairCycles)]]);
       timeline.append(legacy);
       return;
     }
 
-    const overviewCard = card("Summary", "performance-section performance-overview");
-    overviewCard.append(metricTiles([["Tokens", formatNumber(overview.totalTokens)], ["Time", formatDuration(overview.workflowDurationMs == null ? projection.latency.totalProviderDurationMs : overview.workflowDurationMs)], ["Model calls", formatNumber(overview.providerCalls)], ["Cost", formatCost(overview.cost, overview.currency)]]));
-    const status = [overview.validationStatus ? `Validation ${friendly(overview.validationStatus)}` : null, overview.reviewStatus ? `Review ${friendly(overview.reviewStatus)}` : null, overview.repairCycles ? `${formatNumber(overview.repairCycles)} repair cycle${overview.repairCycles === 1 ? "" : "s"}` : null].filter(Boolean);
-    if (status.length) overviewCard.append(node("div", "performance-status-line", status.join(" · ")));
+    const overviewCard = card("Overview", "performance-section performance-overview");
+    metricRows(overviewCard, [
+      ["Input Tokens", formatNumber(overview.inputTokens)],
+      ["Cache Read", formatNumber(overview.cacheReadTokens)],
+      ["Cache Write", formatNumber(overview.cacheWriteTokens)],
+      ["Output Tokens", formatNumber(overview.outputTokens)],
+      ...(hasValue(overview.processedTokens) ? [["Processed Tokens", formatNumber(overview.processedTokens)]] : []),
+      ["Workflow Duration", formatDuration(overview.workflowDurationMs)],
+      ["Provider Calls", formatNumber(overview.providerCalls)],
+      ["Tool Calls", formatNumber(overview.toolCalls)],
+      ["Repair Cycles", formatNumber(overview.repairCycles)],
+      ["Usage Source", overview.usageSource ? friendly(overview.usageSource) : "-"],
+      ["Validation Status", overview.validationStatus ? friendly(overview.validationStatus) : "-"],
+      ["Review Status", overview.reviewStatus ? friendly(overview.reviewStatus) : "-"],
+      ["Cost", formatCost(providerCostAmount, providerCostCurrency)],
+    ]);
     timeline.append(overviewCard);
 
     const activeRoles = projection.roles.filter(activePerformanceRole);
     if (activeRoles.length) {
-      const roles = card("Models used", "performance-section performance-roles");
-      activeRoles.forEach((role) => roles.append(compactRoleRow(role)));
+      const roles = performanceDisclosure("Models & Roles");
+      activeRoles.forEach((role) => roles.append(rolePerformance(role)));
       timeline.append(roles);
-
-      const modelDetails = performanceDisclosure("Model details");
-      activeRoles.forEach((role) => modelDetails.append(rolePerformance(role)));
-      timeline.append(modelDetails);
     }
 
-    if (projection.executorTasks.length) {
-      const tasks = performanceDisclosure(`Task breakdown · ${projection.executorTasks.length}`);
-      projection.executorTasks.forEach((task, index) => { const value = card(task.title || `Task ${index + 1}`, "performance-section"); metricRows(value, [["Task ID", task.taskId], ["Input", task.inputTokens == null ? "-" : `${formatNumber(task.inputTokens)} tokens`], ["Output", task.outputTokens == null ? "-" : `${formatNumber(task.outputTokens)} tokens`], ["Total", task.totalTokens == null ? "-" : `${formatNumber(task.totalTokens)} tokens`], ["Provider Time", formatDuration(task.providerDurationMs)], ["Provider Calls", formatNumber(task.providerCalls)], ["Tool Calls", formatNumber(task.toolCalls)], ["Tool Time", formatDuration(task.toolDurationMs)]]); tasks.append(value); });
-      timeline.append(tasks);
+    if (hasAnyMetric(projection.latency, ["workflowDurationMs", "toolDurationMs", "validationDurationMs", "reviewDurationMs", "repairDurationMs", "localOrchestrationDurationMs"]) || Object.values(projection.latency.providerByRole || {}).some(hasValue)) {
+      const latency = performanceDisclosure("Latency");
+      latency.append(node("p", "muted performance-note", "Measured durations may overlap; these rows are not a summed workflow total."));
+      metricRows(latency, [["Workflow", formatDuration(projection.latency.workflowDurationMs)], ["Planner Provider Time", formatDuration(projection.latency.providerByRole.planner)], ["Executor Provider Time", formatDuration(projection.latency.providerByRole.executor)], ["Reviewer Provider Time", formatDuration(projection.latency.providerByRole.reviewer)], ["Repair Provider Time", formatDuration(projection.latency.providerByRole.repair)], ["Tools", formatDuration(projection.latency.toolDurationMs)], ["Validation", formatDuration(projection.latency.validationDurationMs)], ["Review", formatDuration(projection.latency.reviewDurationMs)], ["Repair", formatDuration(projection.latency.repairDurationMs)], ["Local Orchestration", formatDuration(projection.latency.localOrchestrationDurationMs)]]);
+      timeline.append(latency);
     }
 
-    const latency = performanceDisclosure("Timing");
-    latency.append(node("p", "muted", "Measured durations may overlap and are not presented as a stacked total."));
-    availableMetricRows(latency, [["Workflow Total", formatDuration(projection.latency.workflowDurationMs)], ["Provider Time", formatDuration(projection.latency.totalProviderDurationMs)], ["Planner", formatDuration(projection.latency.providerByRole.planner)], ["Executor", formatDuration(projection.latency.providerByRole.executor)], ["Reviewer", formatDuration(projection.latency.providerByRole.reviewer)], ["Repair", formatDuration(projection.latency.providerByRole.repair)], ["Tools", formatDuration(projection.latency.toolDurationMs)], ["Validation", formatDuration(projection.latency.validationDurationMs)], ["Review", formatDuration(projection.latency.reviewDurationMs)], ["Local Orchestration", formatDuration(projection.latency.localOrchestrationDurationMs)]]);
-    if (latency.children.length > 2 || projection.latency.workflowDurationMs != null || projection.latency.totalProviderDurationMs != null) timeline.append(latency);
+    if (hasAnyMetric(projection.context, ["planningContextMode", "files", "bytes", "truncated", "targetedExpansions"])) {
+      const context = performanceDisclosure("Context");
+      metricRows(context, [["Planning Context Mode", projection.context.planningContextMode ? friendly(projection.context.planningContextMode) : "-"], ["Files", formatNumber(projection.context.files)], ["Size", formatBytes(projection.context.bytes)], ["Truncated", projection.context.truncated == null ? "-" : projection.context.truncated ? "Yes" : "No"], ["Targeted Expansions", formatNumber(projection.context.targetedExpansions)]]);
+      timeline.append(context);
+    }
 
-    const activity = performanceDisclosure("Context & tools");
-    availableMetricRows(activity, [["Context Files", formatNumber(projection.context.files)], ["Context Size", formatBytes(projection.context.bytes)], ["Context Truncated", projection.context.truncated == null ? "-" : projection.context.truncated ? "Yes" : "No"], ["Context Expansions", projection.context.targetedExpansions ? formatNumber(projection.context.targetedExpansions) : "-"], ["Tools Requested", formatNumber(projection.tools.requestedByModel)], ["Tools Executed", formatNumber(projection.tools.executed)], ["Tools Successful", formatNumber(projection.tools.successful)], ["Tools Failed", formatNumber(projection.tools.failed)], ["Tools Invalid", formatNumber(projection.tools.invalid)], ["Tool Time", formatDuration(projection.tools.durationMs)]]);
-    if (projection.tools.byName.length) { activity.append(node("h3", "performance-subheading", "Tool calls")); projection.tools.byName.forEach((entry) => activity.append(labeledValue(entry.name, formatNumber(entry.count)))); }
-    if (activity.children.length > 1) timeline.append(activity);
+    if (hasAnyMetric(projection.tools, ["requestedByModel", "executed", "successful", "failed", "invalid", "durationMs"]) || projection.tools.byName.length) {
+      const tools = performanceDisclosure("Tools");
+      metricRows(tools, [["Requested", formatNumber(projection.tools.requestedByModel)], ["Executed", formatNumber(projection.tools.executed)], ["Successful", formatNumber(projection.tools.successful)], ["Failed", formatNumber(projection.tools.failed)], ["Invalid", formatNumber(projection.tools.invalid)], ["Duration", formatDuration(projection.tools.durationMs)]]);
+      if (projection.tools.byName.length) { tools.append(node("h3", "performance-subheading", "By Name")); projection.tools.byName.forEach((entry) => tools.append(labeledValue(entry.name, formatNumber(entry.count)))); }
+      timeline.append(tools);
+    }
 
-    const quality = performanceDisclosure("Quality & repair");
-    availableMetricRows(quality, [["Validation", projection.validation.status ? friendly(projection.validation.status) : "-"], ["Validation Time", formatDuration(projection.validation.durationMs)], ["Review", projection.review.status ? friendly(projection.review.status) : "-"], ["Review Time", formatDuration(projection.review.durationMs)], ["Review Context Expansions", projection.review.contextExpansions ? formatNumber(projection.review.contextExpansions) : "-"], ["Repair Cycles", projection.repair.cycles ? formatNumber(projection.repair.cycles) : "-"], ["Repair Time", formatDuration(projection.repair.durationMs)], ["Repair Tokens", formatNumber(projection.repair.totalTokens)], ["Repair Execution", projection.repair.executionProfileLabel ? `Uses Executor · ${projection.repair.executionProfileLabel}` : "-"]]);
-    projection.validation.steps.forEach((step) => { const row = node("div", "step"); row.append(node("span", "", friendly(step.name)), node("span", ["failed", "timed_out", "errored"].includes(step.status) ? "failed" : step.status === "passed" ? "passed" : "muted", `${friendly(step.status)}${step.durationMs == null ? "" : ` · ${formatDuration(step.durationMs)}`}`)); quality.append(row); });
-    if (quality.children.length > 1) timeline.append(quality);
+    if (projection.validation.status || hasValue(projection.validation.durationMs) || projection.validation.steps.length) {
+      const validation = performanceDisclosure("Validation");
+      metricRows(validation, [["Overall Status", projection.validation.status ? friendly(projection.validation.status) : "-"], ["Duration", formatDuration(projection.validation.durationMs)]]);
+      projection.validation.steps.forEach((step) => { const row = node("div", "step"); row.append(node("span", "", friendly(step.name)), node("span", ["failed", "timed_out", "errored"].includes(step.status) ? "failed" : step.status === "passed" ? "passed" : "muted", `${friendly(step.status)}${step.durationMs == null ? "" : ` · ${formatDuration(step.durationMs)}`}`)); validation.append(row); });
+      timeline.append(validation);
+    }
 
-    const usage = performanceDisclosure("Token & cost details");
-    availableMetricRows(usage, [["Input Tokens", formatNumber(overview.inputTokens)], ["Output Tokens", formatNumber(overview.outputTokens)], ["Total Tokens", formatNumber(overview.totalTokens)], ["Usage Source", overview.usageSource ? friendly(overview.usageSource) : "-"], ["Cost", formatCost(projection.cost.amount, projection.cost.currency)], ["Cost Source", projection.cost.source && projection.cost.source !== "unavailable" ? friendly(projection.cost.source) : "-"]]);
-    if (usage.children.length > 1) timeline.append(usage);
+    if (projection.review.status || hasValue(projection.review.durationMs) || activePerformanceRole(projection.review.role || {})) timeline.append(reviewPerformance(projection.review));
+
+    if (hasRepairEvidence(projection.repair)) {
+      const repair = performanceDisclosure("Repair");
+      metricRows(repair, [["Cycles", formatNumber(projection.repair.cycles)], ["Duration", formatDuration(projection.repair.durationMs)], ["Provider Calls", formatNumber(projection.repair.providerCalls)], ["Input", projection.repair.inputTokens == null ? "-" : `${formatNumber(projection.repair.inputTokens)} tokens`], ["Cache Read", projection.repair.cacheReadTokens == null ? "-" : `${formatNumber(projection.repair.cacheReadTokens)} tokens`], ["Cache Write", projection.repair.cacheWriteTokens == null ? "-" : `${formatNumber(projection.repair.cacheWriteTokens)} tokens`], ["Output", projection.repair.outputTokens == null ? "-" : `${formatNumber(projection.repair.outputTokens)} tokens`], ["Provider Time", formatDuration(projection.repair.providerDurationMs)], ["Execution Profile", projection.repair.executionProfileLabel ? `Uses Executor · ${projection.repair.executionProfileLabel}` : "Uses Executor"]]);
+      timeline.append(repair);
+    }
+
+    const cost = performanceDisclosure("Cost");
+    metricRows(cost, [["Cost", formatCost(providerCostAmount, providerCostCurrency)], ["Source", providerCostAmount == null ? "-" : "Provider Reported"]]);
+    timeline.append(cost);
   }
 
   function renderModelSelector() {

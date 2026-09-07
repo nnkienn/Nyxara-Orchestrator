@@ -102,10 +102,11 @@ describe("VS Code provider onboarding and command safety", () => {
   it("opens and closes live Performance from terminal Core usage with no provider/model/repository/process/timer work", async () => {
     vi.useFakeTimers(); mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "route/gpt" }]);
     const session = fakeSession(true); session.snapshot = { workflowId: "terminal", status: "completed", tasks: [], usage: terminalUsage }; session.result = { status: "completed", changedFiles: [], durationMs: 80, repairCycles: 0, usage: terminalUsage };
-    activateFake(session); const view = resolveRegisteredWebview();
+    mock.workspaceFolders.push({ name: "One", uri: { fsPath: "/one" } }, { name: "Two", uri: { fsPath: "/two" } });
+    const { secrets } = activateFake(session); const view = resolveRegisteredWebview();
     view.receive({ type: "openPerformance" }); await vi.advanceTimersByTimeAsync(0); await Promise.resolve();
     expect(view.posted.at(-1)).toMatchObject({ type: "performanceProjection", state: { performanceView: { source: "live", taskStatus: "completed", projection: { overview: { totalTokens: 10 } } } } });
-    expect(session.core.listModels).not.toHaveBeenCalled(); expect(session.core.createPlan).not.toHaveBeenCalled(); expect(session.core.runApprovedPlan).not.toHaveBeenCalled(); expect(session.core.startWorkflow).not.toHaveBeenCalled(); expect(mock.pickCalls).toHaveLength(0); expect(vi.getTimerCount()).toBe(0);
+    expect(session.core.listModels).not.toHaveBeenCalled(); expect(session.core.createPlan).not.toHaveBeenCalled(); expect(session.core.runApprovedPlan).not.toHaveBeenCalled(); expect(session.core.startWorkflow).not.toHaveBeenCalled(); expect(mock.pickCalls).toHaveLength(0); expect(mock.taskExecutions).toHaveLength(0); expect(mock.terminals).toHaveLength(0); expect(secrets.get).not.toHaveBeenCalled(); expect((await import("vscode")).commands.executeCommand).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
     view.receive({ type: "closePerformance" }); await vi.advanceTimersByTimeAsync(0); await Promise.resolve(); expect(view.posted.at(-1)?.state.performanceView).toBeUndefined();
     vi.useRealTimers();
   });

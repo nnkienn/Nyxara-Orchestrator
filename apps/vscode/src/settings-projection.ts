@@ -44,11 +44,11 @@ export interface SettingsProjection {
   readonly repair: { readonly automatic: true; readonly validationFirst: true; readonly plannerReplan: false; readonly contextReuse: true; readonly usesRole: "Executor"; readonly maximumCycles: number };
   readonly usage: {
     readonly tokenReporting: "Provider-reported when available";
-    readonly usageEstimates: "Provenance retained";
-    readonly cost: "Provider-reported only / existing provenance";
-    readonly taskPerformance: "Stored locally";
-    readonly executionProfiles: "Attributed per role/model";
-    readonly automaticOptimization: "Not enabled";
+    readonly cacheTokenReporting: "Provider-reported when available";
+    readonly providerReportedCost: "Existing provider provenance only";
+    readonly localTaskPerformanceHistory: "Stored locally";
+    readonly executionProfileAttribution: "Attributed per role/model";
+    readonly automaticOptimization: "Off";
   };
   readonly history: { readonly storage: "Local"; readonly retention: number; readonly count: number; readonly choices: readonly number[] };
   readonly workspace: { readonly available: boolean; readonly multiple: boolean; readonly currentWorkspace?: string; readonly selectedRoot?: string; readonly roots: readonly { readonly id: string; readonly label: string }[]; readonly planningProfile: string; readonly rulesCount: number };
@@ -125,7 +125,7 @@ export function buildSettingsProjection(input: SettingsProjectionInput): Setting
     validation: { failFast: true, steps: ["Typecheck", "Lint", "Tests", "Build"].map((kind) => ({ kind, policy: "Required when available" as const })) },
     review: { reviewer, rulesApplied: true, validationFailuresForceFail: true, boundedEvidence: true, targetedContextExpansion: true, maxContextFiles: DEFAULT_REVIEW_EVIDENCE_BUDGET.maxContextFiles },
     repair: { automatic: true, validationFirst: true, plannerReplan: false, contextReuse: true, usesRole: "Executor", maximumCycles: DEFAULT_REPAIR_LIMITS.maxRepairCycles },
-    usage: { tokenReporting: "Provider-reported when available", usageEstimates: "Provenance retained", cost: "Provider-reported only / existing provenance", taskPerformance: "Stored locally", executionProfiles: "Attributed per role/model", automaticOptimization: "Not enabled" },
+    usage: { tokenReporting: "Provider-reported when available", cacheTokenReporting: "Provider-reported when available", providerReportedCost: "Existing provider provenance only", localTaskPerformanceHistory: "Stored locally", executionProfileAttribution: "Attributed per role/model", automaticOptimization: "Off" },
     history: { storage: "Local", retention: input.historyRetention, count: input.historyCount, choices: [20, 50, 100] },
     workspace: { available: roots.length > 0, multiple: roots.length > 1, ...(selectedRoot ? { currentWorkspace: selectedRoot.label, selectedRoot: selectedRoot.id } : {}), roots, planningProfile: input.selectedPlanningProfile, rulesCount: rules.filter((rule) => rule.enabled).length },
     privacy: { credentials: "VS Code SecretStorage", taskHistory: "Local", cloudSync: "Off", account: "Not required", telemetry: "None", providerRequests: "Sent directly to configured providers" },

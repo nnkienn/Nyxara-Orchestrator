@@ -36,7 +36,7 @@ describe("Settings authoritative projection", () => {
   });
 
   it("projects local Usage & Performance policy without optimization or a pricing engine", () => {
-    expect(projection().usage).toEqual({ tokenReporting: "Provider-reported when available", usageEstimates: "Provenance retained", cost: "Provider-reported only / existing provenance", taskPerformance: "Stored locally", executionProfiles: "Attributed per role/model", automaticOptimization: "Not enabled" });
+    expect(projection().usage).toEqual({ tokenReporting: "Provider-reported when available", cacheTokenReporting: "Provider-reported when available", providerReportedCost: "Existing provider provenance only", localTaskPerformanceHistory: "Stored locally", executionProfileAttribution: "Attributed per role/model", automaticOptimization: "Off" });
   });
 
   it("exposes safe permission policy without an allow-all state", () => {

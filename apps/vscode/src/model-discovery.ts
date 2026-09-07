@@ -65,7 +65,9 @@ export class ProviderModelDiscovery {
     this.onChange?.(providerConfigId, "loading");
     try {
       const discovered = await discover();
+      console.log(`[Model Discovery] Provider ${providerConfigId}: Raw discovered models: ${discovered.length}`);
       const models = sanitizeModels(discovered);
+      console.log(`[Model Discovery] Provider ${providerConfigId}: After sanitization: ${models.length}`);
       const catalog: StoredCatalog = { providerConfigId, models, lastRefreshedAt: this.now().toISOString() };
       this.catalogs.set(providerConfigId, catalog);
       this.runtime.set(providerConfigId, { status: "loaded" });
@@ -105,8 +107,12 @@ export class ProviderModelDiscovery {
 export function sanitizeModels(values: readonly ModelInfo[]): SafeModelInfo[] {
   const result: SafeModelInfo[] = [];
   const seen = new Set<string>();
+  let skipped = 0;
   for (const value of values.slice(0, MAX_MODELS)) {
-    if (typeof value?.id !== "string" || !value.id || value.id.length > MAX_TEXT || seen.has(value.id)) continue;
+    if (typeof value?.id !== "string" || !value.id || value.id.length > MAX_TEXT || seen.has(value.id)) {
+      skipped++;
+      continue;
+    }
     seen.add(value.id);
     const capabilities = sanitizeCapabilities(value.capabilities);
     result.push({
@@ -116,6 +122,7 @@ export function sanitizeModels(values: readonly ModelInfo[]): SafeModelInfo[] {
       ...(capabilities ? { capabilities } : {}),
     });
   }
+  if (skipped > 0) console.log(`[sanitizeModels] Skipped ${skipped} invalid/duplicate models out of ${values.length} total`);
   return result;
 }
 

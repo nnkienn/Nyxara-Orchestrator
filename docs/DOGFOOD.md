@@ -98,32 +98,284 @@ If VS Code reloads while a workflow is non-terminal, the old projection is marke
 
 ## Performance
 
-Terminal success, failure, and aborted task cards offer **View Performance** whenever authoritative usage exists. The view stays inside Nyxara and reads only the completed Core usage projection or its bounded local history copy. Opening it does not call a provider, refresh models, scan the repository, build context, run Git, or start background polling.
+Completed, failed, aborted, and interrupted task cards offer **View Performance** whenever authoritative usage exists. A rejected task offers it only when real provider usage was recorded. The view stays inside Nyxara and reads only the completed Core usage projection or its bounded local history copy. Opening it does not call a provider, refresh models, scan the repository, build context, run Git, or start background polling.
 
-Performance opens with four readable facts: total tokens, elapsed/provider time, model calls, and cost. **Models used** lists only roles that actually participated; roles that never ran do not occupy empty cards. Task breakdown, model identity/provenance, timing, context/tools, quality/repair, and token/cost provenance remain available in collapsed detail groups. Entirely unavailable groups are omitted, and unknown individual measurements remain **-** only where they add context. Measured durations can overlap, so child timings are not presented as a stacked total. No prompts, source, diffs, tool arguments/results, validation logs, provider responses, hidden reasoning, thinking signatures, credentials, or headers are stored in Performance history.
+Performance uses compact **Overview**, **Models & Roles**, **Latency**, **Context**, **Tools**, **Validation**, **Review**, **Repair**, and **Cost** sections. Roles that never ran and Repair without real evidence are omitted. Unknown values render as **-**, while an authoritative zero remains **0**. Measured durations can overlap, so child timings are not presented as a stacked total. No prompts, source, diffs, tool arguments/results, validation logs, provider responses, hidden reasoning, thinking signatures, credentials, or headers are stored in Performance history.
 
 Older alpha history remains readable. When it has only the previous compact summary, Nyxara states that detailed performance was not recorded and shows only the available totals. Historical Performance keeps safe provider display metadata, so it remains readable after Disconnect, Sign Out, or provider removal.
 
 Do not compare quality using token count alone. Token volume, latency, tool activity, and cost are factual observations rather than a quality or efficiency score. Nyxara does not auto-optimize models, reasoning, thinking, or provider routing.
 
+# 7-Day Real Dogfood — alpha.20
+
+This is an operational checklist and blank evidence template, not a test result. Use real repositories and real coding work, keep changes reviewable and reversible, and do not mark an item successful unless it was actually performed and observed. Never paste credentials, authorization headers, raw provider payloads, source, diffs, tool output, validation logs, hidden reasoning, or thinking signatures into this document.
+
+## Before Day 1
+
+- [ ] Confirm the installed extension is `nyxara-vscode@0.1.0-alpha.20` and reload VS Code.
+- [ ] Choose one or more real repositories where changes can be reviewed, reverted, and tested safely.
+- [ ] Record the starting Git state outside this document; do not attribute pre-existing changes to Nyxara.
+- [ ] Confirm each provider/account used is authorized for dogfood and note any provider limits.
+- [ ] Create a private daily log from the templates below. Keep secrets and raw payloads out of it.
+
+## Seven-day plan
+
+| Day | Focus |
+| --- | --- |
+| 1 | Basic onboarding, local request gates, and small tasks |
+| 2 | Targeted bug fixes, tests, permissions, and Simple-mode switching |
+| 3 | Normal feature work and Advanced role assignments |
+| 4 | Validation, review, repair, abort, and failure recovery |
+| 5 | Authentication, reload, history, and provider lifecycle |
+| 6 | Multi-file refactor and Performance observation |
+| 7 | Representative repeats and final assessment |
+
+### Day 1 — Basic onboarding and small tasks
+
+- [ ] Connect or verify one available browser/API/CLI-auth provider, explicitly run **Refresh Models**, and select a model in **Simple** mode.
+- [ ] Submit a greeting/trivial input and an underspecified request; confirm both are handled locally and do not start an inappropriate workflow.
+- [ ] Run one small real coding task and watch plan, live stage, elapsed time, streaming/fallback activity, validation, review, and terminal summary.
+- [ ] Reject one unsuitable plan, verify **Rejected** is not **Failed**, choose **Edit Requirement**, and submit the revised requirement as a new task.
+- [ ] Reopen the completed and rejected tasks from History; inspect historical Performance where provider usage exists.
+
+### Day 2 — Targeted bug fixes and tests
+
+- [ ] Fix one small real bug named by file, symbol, or narrow behavior; record whether targeted context was sufficient and bounded.
+- [ ] Run one real test-writing task and assess acceptance criteria, test quality, validation status, and review quality.
+- [ ] Exercise a legitimate permission prompt on a safe, reversible task; verify **Deny** and/or **Allow Once** affects only the pending action.
+- [ ] Switch provider/model in **Simple** mode and run another small task; verify the displayed and executed provider/model are the selections made.
+- [ ] Reopen both tasks from compact History and compare their persisted Performance without refreshing models.
+
+### Day 3 — Feature implementation and multi-model roles
+
+- [ ] Configure distinct Planner, Executor, and Reviewer assignments in **Advanced** mode, including execution profiles supported by those exact models.
+- [ ] Implement one normal, reviewable feature with a clear user-visible outcome and repository tests.
+- [ ] Verify Planner/Executor/Reviewer provider, requested/resolved model, and execution-profile attribution in Performance.
+- [ ] Record plan quality, role-language consistency, reviewer strictness, and any hard-coded-feeling plan structure without changing prompts.
+- [ ] Return to **Simple** mode and confirm it deliberately applies one provider/model/profile across the three configurable roles.
+
+### Day 4 — Failure, validation, review, repair, and abort
+
+- [ ] In a disposable branch or scratch repository, run a validation-failure exercise with a small safely seeded failing check; confirm the failure is identified without exposing raw logs.
+- [ ] Run a review-finding exercise against a reversible fixture with a clear enabled engineering constraint; record the finding, or explicitly record that Review missed it.
+- [ ] If validation or review triggers Repair, verify the cycle, Executor-profile reuse, revalidation, and final result; otherwise record “repair not observed” and retry on Day 7.
+- [ ] Abort one active, reversible task; verify the workflow stops, partial Performance is honest, and no fake resume is offered.
+- [ ] Inspect the repository and History afterward; confirm actual edits and terminal outcomes match what Nyxara reports.
+
+### Day 5 — Auth, reload, history, and provider lifecycle
+
+- [ ] Exercise browser or official CLI authentication where available; record cancellation/failure/retry behavior without recording credentials.
+- [ ] Reload VS Code, reopen recent tasks, and confirm completed/rejected/aborted/interrupted history remains readable and compact.
+- [ ] Open historical Performance before and after **Sign Out** or **Disconnect**; confirm it uses persisted data and makes no refresh/provider call.
+- [ ] Reconnect the provider, explicitly run **Refresh Models**, and verify cached/current model state and the selected model remain understandable.
+- [ ] If safe, remove a test provider configuration and confirm old task provider/model/profile summaries and Performance remain readable.
+
+### Day 6 — Larger refactor and Performance observation
+
+- [ ] Run one real multi-file refactor with explicit scope, invariants, and acceptance criteria.
+- [ ] Review context mode, file count, bytes, truncation, and targeted expansions; flag context that is excessive or insufficient.
+- [ ] Check live stage accuracy and provider-wait activity throughout the longer workflow; note every frozen-looking interval.
+- [ ] Inspect role, latency, tool, validation, review, repair, cache, and cost data for internal consistency without assuming durations sum.
+- [ ] Reopen the task from History after normal work or a VS Code reload and compare historical Performance with the terminal view.
+
+### Day 7 — Representative repeats and final assessment
+
+- [ ] Repeat one representative targeted task and one normal task using the most useful configuration from Days 1–6.
+- [ ] Retry the highest-severity or least-observed scenario, especially validation/review/repair, permission, auth, or provider switching.
+- [ ] Compare **Simple** and **Advanced** behavior only where both reflect real daily use; do not optimize from token count alone.
+- [ ] Audit seven days of History, Rejected versus Failed outcomes, hidden unexecuted stages, and historical Performance trustworthiness.
+- [ ] Complete the severity backlog, daily totals, unresolved-issue review, and **Final Dogfood Decision** below.
+
+## Per-task record
+
+Copy this block once for every real task. Use `-` for unavailable measurements and preserve an authoritative `0` as `0`.
+
+### Task record — __________
+
+- Task:
+- Date:
+- Provider / Model:
+- Planner / Executor / Reviewer configuration:
+- Outcome: [ ] PASS  [ ] FAIL  [ ] REJECTED  [ ] ABORTED
+
+Planning:
+
+- Context mode:
+- Files:
+- Bytes:
+- Planning time:
+- Planner tokens:
+
+Execution:
+
+- Provider calls:
+- Tool calls:
+- Executor tokens:
+- Execution time:
+
+Validation:
+
+- Result:
+- Duration:
+
+Review:
+
+- Result:
+- Duration:
+
+Repair:
+
+- Cycles:
+- Result:
+
+Total:
+
+- Input tokens:
+- Cache read:
+- Cache write:
+- Output tokens:
+- Processed tokens:
+- Workflow duration:
+- Provider-reported cost, if available:
+
+UX notes:
+
+- Confusing?
+- Looked frozen?
+- Too verbose?
+- Too many clicks?
+- Wrong stage?
+- Wrong language?
+- Plan quality?
+- Reviewer quality?
+
+- Issue severity: [ ] P0  [ ] P1  [ ] P2  [ ] P3  [ ] NONE
+- Notes:
+
+## Severity rules
+
+### P0 — Stop dogfood and secure the workspace
+
+- Data loss.
+- Credential or security leak.
+- Workspace escape.
+- Destructive action without the correct permission.
+- Unrecoverable corruption.
+
+### P1 — Core capability blocker
+
+- Core workflow cannot complete.
+- Authentication is unusable.
+- Wrong provider or model executes.
+- Approval or permission handling is broken.
+- Frequent crash or hang.
+- Severe incorrect context behavior.
+
+### P2 — Meaningful but recoverable problem
+
+- UX friction or misleading status.
+- Unnecessarily high token/context usage.
+- History or Performance inconsistency.
+- Recoverable provider issue.
+
+### P3 — Polish
+
+- Wording, visual spacing, or minor inconvenience.
+
+Use **NONE** when no issue was observed. Record evidence even when the task itself succeeds.
+
+## Feature freeze
+
+During these seven days, do not implement Skills, MCP, Hooks, Plugins, automatic routing, model recommendations, automatic optimization, a pricing engine, Marketplace features, or unrelated product work.
+
+Allowed fixes are P0, P1, and a very small obvious P2 only when it blocks meaningful dogfood. Keep every allowed fix narrow, add a regression test, and rerun the affected scenario. Put all other observations into **Dogfood Findings / Backlog**; do not “fix” Agent Language/Hard-Coded Behavior by adding more hard-coded prompts during dogfood.
+
+## Special things to watch
+
+### A. Context efficiency
+
+- Check that small tasks do not unexpectedly consume the full `8 files / 128 KB` context budget.
+- Record excessive context, missing relevant context, unnecessary targeted expansions, and truncation that harms the task.
+
+### B. Plan quality
+
+- Record too many/few tasks, wrong dependencies, irrelevant files, vague acceptance criteria, excessive verbosity, and rigidity inappropriate for the task type.
+
+### C. Agent language / hard-coded behavior
+
+- Record plan language that does not match the user, inconsistent reviewer language, wrong-language executor/user summaries, overly hard-coded plan formats, inappropriate reviewer strictness, and cases where Planner detail should differ.
+- Collect evidence for the future Agent Behavior Profiles phase. Do not add hard-coded prompt fixes during this run.
+
+### D. Live UX
+
+- Check stage accuracy, elapsed timer behavior, visible streaming/fallback activity, and every provider wait that looks frozen.
+
+### E. Tokens
+
+- Check token fields for internal consistency. For Claude especially, verify that cache read/write values look plausible and distinguish unavailable from zero.
+
+### F. Reject / History
+
+- Verify Rejected is distinct from Failed, unexecuted stages stay hidden, rows stay compact, and old tasks reopen correctly.
+
+### G. Performance
+
+- Record whether Performance is understandable, internally consistent, useful, and not overwhelming. Never treat overlapping durations as an exact sum or infer cost from tokens.
+
+## Daily summary
+
+Complete one copy at the end of each day.
+
+### Day ___ summary
+
+- Tasks run:
+- Successful:
+- Failed:
+- Rejected:
+- Aborted:
+- P0:
+- P1:
+- P2:
+- P3:
+- Worst UX issue:
+- Highest-token task:
+- Slowest task:
+- Best workflow:
+- Unexpected behavior:
+
+## Dogfood Findings / Backlog
+
+Do not include secrets or raw payloads. Link to a private issue with sanitized reproduction steps when more detail is needed.
+
+| Date | Task | Severity | Finding and evidence | Disposition |
+| --- | --- | --- | --- | --- |
+|  |  |  |  |  |
+
 ## Reporting issues
 
 Record the command, workspace type, requested role model IDs, visible error, expected/actual behavior, and severity. Never include API keys, tokens, cookies, authorization headers, or secret-bearing URLs.
 
-### Daily log template
-
-- Date:
-- Workspace type:
-- Task:
-- Provider/model roles:
-- Outcome:
-- Validation:
-- Review:
-- Repair cycles:
-- Approx duration:
-- UX issue:
-- Provider issue:
-- Bug:
-- Severity: P0 / P1 / P2 / P3
-
 Skills, MCP, Hooks, Plugins, Marketplace, cloud sync, accounts/billing, pricing and budgets, automatic routing/tuning, graph UI, parallel execution, persistent workflow resume, and remote daemons remain deferred.
+
+# Final Dogfood Decision
+
+- [ ] Any P0 unresolved?
+- [ ] Any P1 unresolved?
+- [ ] Any credential/security concern?
+- [ ] Any workspace safety issue?
+- [ ] Any provider/model correctness issue?
+- [ ] Any workflow blocker?
+- [ ] Context usage reasonable?
+- [ ] Planner quality acceptable?
+- [ ] Review quality acceptable?
+- [ ] Repair useful?
+- [ ] History trustworthy?
+- [ ] Performance trustworthy?
+- [ ] UX understandable without developer knowledge?
+- [ ] Would I personally use Nyxara daily?
+
+DOGFOOD RESULT: __________ (`PASS` / `FAIL`)
+
+READY FOR AGENT BEHAVIOR PROFILES: __________ (`YES` / `NO`)
+
+READY FOR MARKETPLACE READINESS: __________ (`YES` / `NO`)
