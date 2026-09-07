@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { PROVIDER_DEFINITIONS, knownModelExecutionCapability, providerDefinition, type ProviderDefinition } from "@nyxara/providers";
 import { PROVIDER_DEFAULT_EXECUTION, assertExecutionOptionsSupported, type ExecutionOptions } from "@nyxara/provider-sdk";
 import { NyxaraSession } from "./session.js";
+import { WORKFLOW_SETTING, mergeWorkflowSettings, resolveWorkflowSettings, validateWorkflowSettingsPatch } from "./workflow-settings.js";
 import { safeErrorMessage } from "./projection.js";
 import { DEFAULT_PROVIDER_SETTING, LEGACY_SECRET_KEY, PROVIDER_CONFIGS_SETTING, defaultProviderId, providerSecretKey, readPersistedExecution, readProviderConfigs, roleExecutionSetting, type ProviderConfig } from "./provider-config.js";
 import { NyxaraWorkspaceViewProvider } from "./webview-view.js";
@@ -12,6 +13,7 @@ import { TERMINAL_TASK_SESSION_STATUSES, projectTaskSession, safeWorkspaceIdenti
 import { buildSanitizedDiagnostics, buildSettingsProjection, type SettingsProjection, type SettingsSection } from "./settings-projection.js";
 import { AuthSessionController, DEFAULT_AUTH_TIMEOUT_MS } from "./auth-session.js";
 import { ProviderModelDiscovery } from "./model-discovery.js";
+import { ProviderCliSessionStore, type CliSessionEvidence } from "./provider-connection-state.js";
 
 type Role = "planner" | "executor" | "reviewer";
 const ROLES: readonly Role[] = ["planner", "executor", "reviewer"];
@@ -56,7 +58,9 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   const setting = <T>(key: string, fallback: T): T => vscode.workspace.getConfiguration().get(key, fallback);
   let providerConfigs = readProviderConfigs(setting);
   let selectedProviderId = defaultProviderId(providerConfigs, setting(DEFAULT_PROVIDER_SETTING, ""));
-  const session = injectedSession ?? new NyxaraSession(context, output, providerConfigs);
+  const readWorkflowSettings = () => resolveWorkflowSettings(setting<unknown>(WORKFLOW_SETTING, {}));
+  const session = injectedSession ?? new NyxaraSession(context, output, providerConfigs, undefined, readWorkflowSettings);
+  let workflowSettingsUpdate: Promise<void> = Promise.resolve();
   const version = (context as any).extension?.packageJSON?.version ?? "unknown";
   const selectedProvider = () => providerConfigs.find((config) => config.id === selectedProviderId);
   const roleExecution = (role: Role) => readPersistedExecution(setting<unknown>(roleExecutionSetting(role), undefined));
@@ -90,6 +94,19 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   let settingsDiagnostics: Readonly<Record<string, unknown>> | undefined;
   let selectedWorkspaceRootId = setting("nyxara.workspace.selectedRoot", "");
   const testedProviderIds = new Set<string>();
+  const failedProviderIds = new Set<string>();
+  const cliSessions = new ProviderCliSessionStore((context as any).globalState);
+  const clearProviderVerification = (providerConfigId: string): void => {
+    testedProviderIds.delete(providerConfigId); failedProviderIds.delete(providerConfigId);
+  };
+  const rememberCliSession = async (config: ProviderConfig, state: CliSessionEvidence["state"]): Promise<void> => {
+    try { await cliSessions.record(config, state); }
+    catch { output.appendLine("CLI session evidence could not be saved locally. Reload will use the last saved state."); }
+  };
+  const markProviderVerified = async (config: ProviderConfig): Promise<void> => {
+    testedProviderIds.add(config.id); failedProviderIds.delete(config.id);
+    if (config.authStrategy === "subscription_cli" && config.type !== "gemini-cli") await rememberCliSession(config, "present");
+  };
   const authSessions = new AuthSessionController();
   const modelDiscovery = new ProviderModelDiscovery((context as any).globalState);
   const authExecutions = new Map<string, { readonly sessionId: string; readonly execution?: { terminate(): void }; readonly timeout: ReturnType<typeof setTimeout>; readonly dispose?: () => void }>();
@@ -175,7 +192,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   const refreshSettingsProjection = async (): Promise<void> => {
     const credentials = new Map<string, boolean>();
     await Promise.all(providerConfigs.map(async (config) => {
-      if (config.authStrategy !== "api_key") { credentials.set(config.id, false); return; }
+      if (!providerDefinition(config.catalogId ?? config.type).onboarding.authMethods.includes("api_key")) { credentials.set(config.id, false); return; }
       const scoped = await context.secrets.get(providerSecretKey(config.id));
       const legacy = !scoped && config.id === "openai-compatible" ? await context.secrets.get(LEGACY_SECRET_KEY) : undefined;
       credentials.set(config.id, Boolean(scoped || legacy));
@@ -184,7 +201,9 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     const pairs = ROLES.map((role) => `${setting(`nyxara.${role}.provider`, "")}\0${setting(`nyxara.${role}.model`, "")}`).filter((pair) => pair !== "\0");
     const configuredMode = setting<string>("nyxara.modelMode", "");
     settingsProjection = buildSettingsProjection({
+      workflowSettings: readWorkflowSettings(),
       version, providers: providerConfigs, ...(selectedProviderId ? { defaultProviderId: selectedProviderId } : {}), credentialStored: credentials,
+      cliSessionEvidence: new Map(providerConfigs.flatMap((config) => { const evidence = cliSessions.get(config); return evidence ? [[config.id, evidence] as const] : []; })), failedProviderIds,
       roles: ROLES.map((role) => { const execution = roleExecution(role); return { role, ...(setting(`nyxara.${role}.provider`, "") ? { providerConfigId: setting(`nyxara.${role}.provider`, "") } : {}), ...(setting(`nyxara.${role}.model`, "") ? { modelId: setting(`nyxara.${role}.model`, "") } : {}), executionOptions: execution.executionOptions, ...(execution.malformed ? { executionMalformed: true } : {}) }; }),
       providerCapabilities: new Map(session.core.listProviders().map((provider: any) => [provider.id, provider.capabilities])),
       modelCapabilities: new Map(ROLES.flatMap((role) => { const providerId = setting(`nyxara.${role}.provider`, ""); const modelId = setting(`nyxara.${role}.model`, ""); if (!providerId || !modelId) return []; const cached = modelDiscovery.capabilities(providerId, modelId); const capabilities = cached ?? (typeof (session.core as any).getModelCapabilities === "function" ? session.core.getModelCapabilities(providerId, modelId) : undefined); return capabilities ? [[`${providerId}\0${modelId}`, capabilities] as const] : []; })),
@@ -292,24 +311,37 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       case "openSettingsSection": settingsSection = message.section; selectedSettingsProviderId = message.providerConfigId; settingsDiagnostics = undefined; await refreshSettingsProjection(); webview.refresh("settingsProjection"); return;
       case "searchSettings": return;
       case "connectProvider": await connectProvider(); await refreshSettingsProjection(); webview.refresh(settingsSection === "modelsRoles" ? "settingsProjection" : "providerConfigs"); return;
-      case "testProvider": { const config = requireProviderConfig(message.providerConfigId); await testProvider(config); await refreshSettingsProjection(); webview.refresh("providerStatusChanged"); return; }
+      case "testProvider": { const config = requireProviderConfig(message.providerConfigId); await testProvider(config); return; }
       case "refreshModels": { const config = requireProviderConfig(message.providerConfigId); await refreshProviderModels(config); return; }
       case "startBrowserAuth": { const config = requireProviderConfig(message.providerConfigId); await startCliBrowserAuth(config, false); return; }
       case "cancelBrowserAuth": { await cancelBrowserAuth(message.providerConfigId, message.sessionId); return; }
-      case "updateCredential": await updateProviderCredential(requireProviderConfig(message.providerConfigId)); await refreshSettingsProjection(); webview.refresh("providerStatusChanged"); return;
+      case "updateCredential": await updateProviderCredential(requireProviderConfig(message.providerConfigId)); return;
       case "updateProviderMetadata": {
         const config = requireProviderConfig(message.providerConfigId); const definition = providerDefinition(config.catalogId ?? config.type);
         if (definition.onboarding.category === "official" || definition.cli) throw new Error("Official provider endpoints cannot be overridden.");
         let endpoint: URL; try { endpoint = new URL(message.endpoint); } catch { throw new Error("Invalid endpoint."); }
         if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error("Invalid endpoint. Use HTTP or HTTPS.");
         const edited = { ...config, displayName: message.displayName, baseUrl: endpoint.toString().replace(/\/$/, "") };
-        const nextProviders = providerConfigs.map((candidate) => candidate.id === config.id ? edited : candidate); await update(PROVIDER_CONFIGS_SETTING, nextProviders); providerConfigs = nextProviders; session.upsertProvider(edited); testedProviderIds.delete(config.id); await refreshSettingsProjection(); webview.refresh("providerConfigs"); return;
+        const nextProviders = providerConfigs.map((candidate) => candidate.id === config.id ? edited : candidate); await update(PROVIDER_CONFIGS_SETTING, nextProviders); providerConfigs = nextProviders; session.upsertProvider(edited); clearProviderVerification(config.id); await refreshSettingsProjection(); webview.refresh("providerConfigs"); return;
       }
       case "signOutProvider": await signOutProvider(requireProviderConfig(message.providerConfigId)); await refreshSettingsProjection(); webview.refresh("providerStatusChanged"); return;
       case "removeProvider": await removeProvider(requireProviderConfig(message.providerConfigId)); selectedSettingsProviderId = undefined; settingsSection = "aiProviders"; await refreshSettingsProjection(); webview.refresh("providerConfigs"); return;
       case "setDefaultProvider": await setDefaultProvider(requireProviderConfig(message.providerConfigId)); await refreshSettingsProjection(); webview.refresh("providerConfigs"); return;
       case "setDefaultModel": await applySimpleModel(requireProviderConfig(message.providerConfigId).id, message.modelId, message.executionOptions); await refreshSettingsProjection(); webview.refresh("roleAssignmentsChanged"); return;
       case "updateRoleAssignments": await applyRoleAssignments(message.assignments); await refreshSettingsProjection(); webview.refresh("roleAssignmentsChanged"); return;
+      case "updateWorkflowSettings": {
+        const patch = validateWorkflowSettingsPatch(message.settings);
+        workflowSettingsUpdate = workflowSettingsUpdate.catch(() => {}).then(async () => {
+          try {
+            const next = mergeWorkflowSettings(readWorkflowSettings(), patch);
+            const inspection = vscode.workspace.getConfiguration().inspect?.(WORKFLOW_SETTING);
+            await updateSettingsAtomic([[WORKFLOW_SETTING, next]], inspection?.workspaceValue === undefined);
+          } finally {
+            await refreshSettingsProjection(); webview.refresh("settingsProjection");
+          }
+        });
+        await workflowSettingsUpdate; return;
+      }
       case "updatePlanningProfile": {
         if (!session.core.listPlanningProfiles().some((profile: any) => profile.id === message.profileId)) throw new Error("Selected planning profile is unavailable.");
         await update("nyxara.planningProfile", message.profileId); await refreshSettingsProjection(); webview.refresh("planningProfiles"); return;
@@ -464,14 +496,14 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     authExecutions.clear();
   } });
 
-  const update = (key: string, value: unknown) => vscode.workspace.getConfiguration().update(key, value, true);
-  const updateSettingsAtomic = async (entries: readonly (readonly [string, unknown])[]): Promise<void> => {
+  const update = (key: string, value: unknown, global = true) => vscode.workspace.getConfiguration().update(key, value, global);
+  const updateSettingsAtomic = async (entries: readonly (readonly [string, unknown])[], global = true): Promise<void> => {
     const previous = entries.map(([key]) => [key, setting<unknown>(key, undefined)] as const);
     let committed = 0;
     try {
-      for (const [key, value] of entries) { await update(key, value); committed += 1; }
+      for (const [key, value] of entries) { await update(key, value, global); committed += 1; }
     } catch (error) {
-      for (let index = committed - 1; index >= 0; index -= 1) await update(previous[index]![0], previous[index]![1]);
+      for (let index = committed - 1; index >= 0; index -= 1) await update(previous[index]![0], previous[index]![1], global);
       throw error;
     }
   };
@@ -515,31 +547,42 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     const active = session.snapshot && !["completed", "failed", "aborted"].includes(session.snapshot.status);
     if (active && activeWorkflowProviderIds.has(config.id)) throw new Error(`${config.displayName} is in use by the active workflow. Abort or finish it before signing out or removing it.`);
   };
-  const updateProviderCredential = async (config: ProviderConfig): Promise<void> => {
+  const updateProviderCredential = async (config: ProviderConfig, verify = true): Promise<void> => {
     const definition = providerDefinition(config.catalogId ?? config.type);
     if (config.authStrategy === "subscription_cli") {
       await startCliBrowserAuth(config, false);
       return;
     }
-    if (config.authStrategy !== "api_key") throw new Error("This provider does not use a stored credential.");
-    const credential = await vscode.window.showInputBox({ prompt: `${config.displayName} new API key (stored securely)`, password: true, ignoreFocusOut: true });
+    if (!definition.onboarding.authMethods.includes("api_key")) throw new Error("This provider does not support API keys.");
+    const credential = await vscode.window.showInputBox({ title: `${config.displayName} API Key`, prompt: `${config.displayName} new API key (stored securely)`, password: true, ignoreFocusOut: true });
     if (credential === undefined) return;
     if (!credential.trim()) throw new Error("A non-empty credential is required.");
     const previousCredential = await context.secrets.get(providerSecretKey(config.id));
     await context.secrets.store(providerSecretKey(config.id), credential.trim());
-    const reconnected = { ...config, signedOut: false };
+    const reconnected: ProviderConfig = { ...config, authStrategy: "api_key", signedOut: false };
     providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? reconnected : candidate);
-    session.upsertProvider(reconnected); testedProviderIds.delete(config.id); await persistProviders();
-    session.configureAgents(agentSetting);
-    if (definition.onboarding.modelDiscovery) {
-      try { await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id)); testedProviderIds.add(config.id); }
+    try {
+      try { await persistProviders(); }
       catch (error) {
-        if (isAuthenticationFailure(error)) {
-          if (previousCredential) await context.secrets.store(providerSecretKey(config.id), previousCredential); else await context.secrets.delete(providerSecretKey(config.id));
-          providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? config : candidate); session.upsertProvider(config); await persistProviders(); throw error;
-        }
-        void vscode.window.showWarningMessage("Credential updated. Models could not be loaded. Use Refresh Models or enter a model ID.");
+        if (previousCredential) await context.secrets.store(providerSecretKey(config.id), previousCredential); else await context.secrets.delete(providerSecretKey(config.id));
+        providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? config : candidate);
+        throw error;
       }
+      session.upsertProvider(reconnected); clearProviderVerification(config.id);
+      session.configureAgents(agentSetting);
+      if (verify && definition.onboarding.modelDiscovery) {
+        try { await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id)); await markProviderVerified(reconnected); }
+        catch (error) {
+          failedProviderIds.add(config.id);
+          if (isAuthenticationFailure(error)) {
+            if (previousCredential) await context.secrets.store(providerSecretKey(config.id), previousCredential); else await context.secrets.delete(providerSecretKey(config.id));
+            providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? config : candidate); session.upsertProvider(config); await persistProviders(); session.configureAgents(agentSetting); throw error;
+          }
+          void vscode.window.showWarningMessage("Credential updated. Models could not be loaded. Use Refresh Models or enter a model ID.");
+        }
+      }
+    } finally {
+      await refreshSettingsProjection(); webview.refresh("providerStatusChanged");
     }
   };
   const signOutProvider = async (config: ProviderConfig): Promise<void> => {
@@ -555,9 +598,10 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     if (confirmed !== label) return;
     await context.secrets.delete(providerSecretKey(config.id));
     if (config.id === "openai-compatible") await context.secrets.delete(LEGACY_SECRET_KEY);
-    testedProviderIds.delete(config.id); providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? { ...candidate, signedOut: true } : candidate);
+    clearProviderVerification(config.id); providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? { ...candidate, signedOut: true } : candidate);
     modelDiscovery.markCached(config.id);
     await persistProviders();
+    try { await cliSessions.clear(config.id); } catch { output.appendLine("CLI session evidence cleanup could not be saved."); }
     if (used.length) session.configureAgents(agentSetting, new Set(providerConfigs.filter((candidate) => !candidate.signedOut && candidate.id !== config.id).map((candidate) => candidate.id)));
   };
   const removeProvider = async (config: ProviderConfig): Promise<void> => {
@@ -573,7 +617,8 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     await context.secrets.delete(providerSecretKey(config.id));
     if (config.id === "openai-compatible") await context.secrets.delete(LEGACY_SECRET_KEY);
     try { await modelDiscovery.clear(config.id); } catch (error) { output.appendLine(`model cache cleanup: ${safeErrorMessage(error)}`); }
-    providerConfigs = nextProviders; selectedProviderId = nextDefault; testedProviderIds.delete(config.id); session.removeProvider(config.id); session.configureAgents(agentSetting);
+    try { await cliSessions.clear(config.id); } catch { output.appendLine("CLI session evidence cleanup could not be saved."); }
+    providerConfigs = nextProviders; selectedProviderId = nextDefault; clearProviderVerification(config.id); session.removeProvider(config.id); session.configureAgents(agentSetting);
   };
   const applyRoleAssignments = async (assignments: readonly { readonly role: Role; readonly providerConfigId: string; readonly modelId: string; readonly executionOptions: ExecutionOptions }[]): Promise<void> => {
     if (assignments.length !== ROLES.length || new Set(assignments.map((assignment) => assignment.role)).size !== ROLES.length) throw new Error("Role configuration is incomplete.");
@@ -657,7 +702,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     const models = await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id));
       output.appendLine(`[Model Refresh] Discovery complete: ${models.length} models`);
       output.appendLine(`[Model Refresh] Model IDs: ${models.map(m => m.id).join(", ")}`);
-    testedProviderIds.add(config.id);
+    await markProviderVerified(config);
       const stateBeforeProjection = modelDiscovery.state(config.id);
       output.appendLine(`[Model Refresh] State before projection: status=${stateBeforeProjection.status}, models=${stateBeforeProjection.models.length}`);
     await refreshSettingsProjection(); webview.refresh("capabilitiesUpdated");
@@ -710,12 +755,14 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
           if (isNew) session.removeProvider(config.id); else session.upsertProvider(config);
           temporarilyRegistered = false; throw error;
         }
-        temporarilyRegistered = false; testedProviderIds.add(config.id); session.configureAgents(agentSetting);
+        temporarilyRegistered = false; clearProviderVerification(config.id);
+        if (!discoveryFailed) await markProviderVerified(connected);
+        session.configureAgents(agentSetting);
       });
       settingsSection = "modelsRoles"; selectedSettingsProviderId = undefined;
       await refreshSettingsProjection(); webview.refresh("authCompleted");
-      void vscode.window.showInformationMessage(`Connected to ${config.displayName}. Choose a model and execution setting in Nyxara to finish setup.`);
-      if (discoveryFailed) void vscode.window.showWarningMessage("Connected. Models could not be loaded. Use Refresh Models or enter a model ID.");
+      void vscode.window.showInformationMessage(`Sign-in completed for ${config.displayName}. Choose a model and execution setting in Nyxara to finish setup.`);
+      if (discoveryFailed) void vscode.window.showWarningMessage("Sign-in completed. Models could not be loaded. Use Refresh Models or enter a model ID.");
     } catch (error) {
       if (temporarilyRegistered) session.removeProvider(config.id);
       await refreshSettingsProjection(); webview.refresh("authFailed");
@@ -773,18 +820,31 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     void vscode.window.showInformationMessage("Browser sign-in cancelled. Existing provider authentication was preserved.");
   };
   const testProvider = async (config: ProviderConfig): Promise<void> => {
-    testedProviderIds.delete(config.id);
-    if (config.signedOut) throw new Error(`${config.displayName} is signed out. Reconnect it before testing.`);
-    if (config.authStrategy === "api_key" && !(await context.secrets.get(providerSecretKey(config.id))) && !(config.id === "openai-compatible" && await context.secrets.get(LEGACY_SECRET_KEY))) throw Object.assign(new Error("Provider credential is missing"), { code: "authentication_error" });
-    void vscode.window.showInformationMessage(`Testing ${config.displayName}... This uses model discovery and does not generate text.`);
-    const definition = providerDefinition(config.catalogId ?? config.type);
-    const models = definition.onboarding.modelDiscovery
-      ? await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id))
-      : await session.core.listModels(config.id);
-    const configuredModel = config.modelId || (setting("nyxara.planner.provider", "") === config.id ? setting("nyxara.planner.model", "") : "");
-    if (definition.onboarding.modelDiscovery && configuredModel && !models.some((model: any) => model.id === configuredModel)) throw Object.assign(new Error(`Configured model is not available: ${configuredModel}`), { code: "invalid_model" });
-    testedProviderIds.add(config.id);
-    void vscode.window.showInformationMessage(`Connected to ${config.displayName}. ${models.length} model${models.length === 1 ? "" : "s"} available.`);
+    clearProviderVerification(config.id);
+    try {
+      if (config.signedOut) throw new Error(`${config.displayName} is signed out. Reconnect it before testing.`);
+      if (config.authStrategy === "api_key" && !(await context.secrets.get(providerSecretKey(config.id))) && !(config.id === "openai-compatible" && await context.secrets.get(LEGACY_SECRET_KEY))) throw Object.assign(new Error("Provider credential is missing"), { code: "authentication_error" });
+      void vscode.window.showInformationMessage(`Testing ${config.displayName}... This uses the existing provider metadata/auth contract and does not generate text.`);
+      const definition = providerDefinition(config.catalogId ?? config.type);
+      const models = definition.onboarding.modelDiscovery
+        ? await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id))
+        : await session.core.listModels(config.id);
+      const configuredModel = config.modelId || (setting("nyxara.planner.provider", "") === config.id ? setting("nyxara.planner.model", "") : "");
+      if (definition.onboarding.modelDiscovery && configuredModel && !models.some((model: any) => model.id === configuredModel)) throw Object.assign(new Error(`Configured model is not available: ${configuredModel}`), { code: "invalid_model" });
+      await markProviderVerified(config);
+      void vscode.window.showInformationMessage(config.authStrategy === "subscription_cli"
+        ? config.type === "gemini-cli" ? `${config.displayName} CLI is available. Account session and live network status are not verified.` : `${config.displayName} account session verified locally. Live network status is not verified.`
+        : `Connected to ${config.displayName}. ${models.length} model${models.length === 1 ? "" : "s"} available.`);
+    } catch (error) {
+      if (!config.signedOut) {
+        failedProviderIds.add(config.id);
+        if (isAuthenticationFailure(error)) await rememberCliSession(config, "missing");
+        else if ((error as { code?: unknown } | undefined)?.code === "provider_not_installed") await rememberCliSession(config, "unavailable");
+      }
+      throw error;
+    } finally {
+      await refreshSettingsProjection(); webview.refresh("providerStatusChanged");
+    }
   };
   const connectProvider = async (): Promise<void> => {
     const picked = await vscode.window.showQuickPick(PROVIDER_DEFINITIONS.map((definition) => ({ label: definition.displayName, description: definition.description, definition })), { placeHolder: "Choose AI provider" });
@@ -812,9 +872,10 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     if (definition.onboarding.authMethods.includes("api_key")) {
       await offerApiKeyPage(definition);
       const apiKeyRequired = !definition.onboarding.authMethods.includes("none") && !definition.onboarding.authMethods.includes("local");
-      apiKey = await vscode.window.showInputBox({ prompt: apiKeyRequired ? `${definition.displayName} API key (stored securely)` : "API key (optional; stored securely)", password: true, ignoreFocusOut: true });
+      apiKey = await vscode.window.showInputBox({ title: `${displayName} API Key`, prompt: apiKeyRequired ? `${definition.displayName} API key (stored securely)` : "API key (leave blank only if this gateway does not require authentication)", password: true, ignoreFocusOut: true });
       if (apiKeyRequired && !apiKey?.trim()) return;
       if (apiKey === undefined) return;
+      apiKey = apiKey.trim();
     }
     const id = makeProviderId(definition.id);
     if (!baseUrl && !definition.cli) return;
@@ -857,9 +918,16 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
           session.upsertProvider(configured); await persistProviders();
         }
       }
-      testedProviderIds.add(config.id);
+      await markProviderVerified(config);
     } catch (error) {
       if (isAuthenticationFailure(error)) {
+        if (definition.onboarding.authMethods.includes("api_key") && (definition.onboarding.authMethods.includes("none") || definition.onboarding.authMethods.includes("local"))) {
+          failedProviderIds.add(config.id);
+          settingsSection = "aiProviders"; selectedSettingsProviderId = config.id;
+          await refreshSettingsProjection(); webview.refresh("providerStatusChanged");
+          void vscode.window.showWarningMessage("Gateway authentication failed. Configuration kept. Use Add API Key or Update API Key in Provider Details to enter this gateway's credential.");
+          return;
+        }
         providerConfigs = providerConfigs.filter((candidate) => candidate.id !== id); selectedProviderId = defaultProviderId(providerConfigs, ""); session.removeProvider(id);
         await context.secrets.delete(providerSecretKey(id)); try { await modelDiscovery.clear(id); } catch { /* safe best-effort cache cleanup */ } await persistProviders(); throw error;
       }
@@ -868,7 +936,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       return;
     }
     settingsSection = "modelsRoles"; selectedSettingsProviderId = undefined; await refreshSettingsProjection(); webview.refresh("modelsLoaded");
-    void vscode.window.showInformationMessage("Provider connected ✓ Choose a model and execution setting in Nyxara.");
+    void vscode.window.showInformationMessage(config.authStrategy === "subscription_cli" ? "CLI setup verified ✓ Choose a model and execution setting in Nyxara." : "Provider connected ✓ Choose a model and execution setting in Nyxara.");
   };
   const configureRoleModels = async (): Promise<void> => {
     if (providerConfigs.length === 0) { await connectProvider(); return; }
@@ -917,7 +985,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       const name = await vscode.window.showInputBox({ prompt: "Display name", value: config.displayName, ignoreFocusOut: true }); if (!name?.trim()) return;
       const baseUrl = await vscode.window.showInputBox({ prompt: "Base URL", value: config.baseUrl, ignoreFocusOut: true }); if (!baseUrl?.trim()) return;
       const edited = { ...config, displayName: name.trim(), baseUrl: baseUrl.trim() };
-      session.upsertProvider(edited); providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? edited : candidate); await persistProviders();
+      session.upsertProvider(edited); providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? edited : candidate); await persistProviders(); clearProviderVerification(config.id); await refreshSettingsProjection();
     } else if (action.action === "roles") await configureRoleModels();
     else if (action.action === "signout") await signOutProvider(config);
     else if (action.action === "remove") await removeProvider(config);
@@ -964,8 +1032,8 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   register("nyxara.abort", () => { session.abort(); void vscode.window.showInformationMessage("Workflow aborted; existing repository changes remain."); });
   register("nyxara.allowOnce", async () => { const pending = session.snapshot?.pendingPermission; if (pending) await session.resolvePermission(pending.id, "allow"); });
   register("nyxara.denyPermission", async () => { const pending = session.snapshot?.pendingPermission; if (pending) await session.resolvePermission(pending.id, "deny"); });
-  register("nyxara.setApiKey", async () => { const config = selectedProvider(); if (!config) { await connectProvider(); return; } const value = await vscode.window.showInputBox({ prompt: `${config.displayName} API key (stored securely)`, password: true, ignoreFocusOut: true }); if (value) await context.secrets.store(providerSecretKey(config.id), value); });
-  output.appendLine("Nyxara extension activated");
+  register("nyxara.setApiKey", async () => { const config = selectedProvider(); if (!config) { await connectProvider(); return; } if (!providerDefinition(config.catalogId ?? config.type).onboarding.authMethods.includes("api_key")) throw new Error("This provider does not support API keys."); await updateProviderCredential(config, false); });
+  output.appendLine(`Nyxara extension activated (v${version})`);
 }
 
 export async function deactivate(): Promise<void> { await activeHistoryStore?.flush(); activeHistoryStore = undefined; }

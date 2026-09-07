@@ -9,6 +9,17 @@ const state = (overrides: Partial<WorkspaceViewState> = {}): WorkspaceViewState 
 const performance = buildPerformanceProjection({ usage: { workflowId: "w", planner: { role: "planner", providerConfigId: "removed-provider", providerId: "openai", requestedModelId: "route/gpt", resolvedModelId: "gpt", executionProfileSummary: { kind: "provider_default" }, calls: 1, inputTokens: 8, outputTokens: 2, totalTokens: 10, usageSource: "provider_reported", providerDurationMs: 50 }, executor: { role: "executor", calls: 0 }, reviewer: { role: "reviewer", calls: 0 }, repair: { role: "repair", calls: 0 }, tasks: [], totalProviderCalls: 1, totalInputTokens: 8, totalOutputTokens: 2, totalTokens: 10, totalProviderDurationMs: 50, totalToolCalls: 0, usageSource: "provider_reported", providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable", totalDurationMs: 80, repairCycles: 0 } as any, providers: [{ id: "removed-provider", displayName: "OpenAI Work" }], terminalStatus: "completed" });
 
 describe("TaskSession projection", () => {
+  it("preserves every grouped criterion through history save and reload", () => {
+    const criteria = Array.from({ length: 8 }, (_, index) => `Original check ${index + 1}`);
+    const grouped = [`${criteria[0]}\n${criteria[1]}`, `${criteria[2]}\n${criteria[3]}`, ...criteria.slice(4)];
+    const projected = projectTaskSession(base, state({
+      plan: { id: "p", objective: "Objective", tasks: [{ id: "T7", title: "Verify", description: "Check metrics", dependencies: [], acceptanceCriteria: grouped }], risks: [] },
+      workflow: { id: "w", status: "awaiting_plan_approval", stage: "Awaiting Approval", active: true, approvalStatus: "draft", tasks: [] },
+    }));
+    const restored = sanitizeTaskSession(JSON.parse(JSON.stringify(projected)));
+    expect(restored?.planSummary?.approvalStatus).toBe("draft");
+    expect(restored?.planSummary?.tasks[0]?.acceptanceCriteria.flatMap(criterion => criterion.split("\n"))).toEqual(criteria);
+  });
   it.each([
     ["planning", "planning"], ["awaiting_plan_approval", "awaiting_approval"], ["executing", "executing"], ["validating", "validating"], ["reviewing", "reviewing"], ["repairing", "repairing"], ["waiting_for_permission", "waiting_for_permission"], ["paused", "paused"], ["completed", "completed"], ["failed", "failed"], ["aborted", "aborted"],
   ])("maps authoritative Core %s to history %s", (core, expected) => expect(taskSessionStatus(core)).toBe(expected));
@@ -31,6 +42,26 @@ describe("TaskSession projection", () => {
     expect(projected.usageSummary).toEqual({ inputTokens: 8, outputTokens: 2, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: 10, providerCalls: 1, toolCalls: 0, workflowDurationMs: 80, repairCycles: 0 });
     expect(projected.performanceSummary?.roles[0]).toMatchObject({ providerConfigId: "removed-provider", providerName: "OpenAI Work", requestedModelId: "route/gpt", resolvedModelId: "gpt" });
     expect(JSON.stringify(projected)).not.toContain("not persisted");
+  });
+
+  it("uses authoritative failed Validation even when all steps were skipped", () => {
+    const projected = projectTaskSession(base, state({
+      workflow: { id: "w", status: "failed", stage: "Failed", active: false, tasks: [], occurredStages: ["validation"] },
+      validation: [{ kind: "typecheck", status: "skipped", durationMs: 0 }],
+      performance: { ...performance, validation: { status: "failed", durationMs: 77, steps: [] } },
+    }));
+    expect(projected.validationSummary?.status).toBe("failed");
+  });
+
+  it("never turns skipped-only Validation into a pass without authoritative evidence", () => {
+    expect(projectTaskSession(base, state({ validation: [{ kind: "typecheck", status: "skipped" }] })).validationSummary?.status).toBe("unavailable");
+  });
+
+  it("corrects legacy skipped-only pass summaries from persisted authoritative failure on reload", () => {
+    const saved = { ...base, status: "failed", validationSummary: { status: "passed", steps: [{ name: "typecheck", status: "skipped", durationMs: 0 }] }, performanceSummary: { ...performance, validation: { status: "failed", durationMs: 77, steps: [] } } };
+    expect(sanitizeTaskSession(JSON.parse(JSON.stringify(saved)))?.validationSummary?.status).toBe("failed");
+    expect(saved.validationSummary.status).toBe("passed");
+    expect(sanitizeTaskSession({ ...saved, performanceSummary: undefined })?.validationSummary?.status).toBe("unavailable");
   });
 
   it("keeps unavailable authoritative usage null and does not independently calculate it", () => {

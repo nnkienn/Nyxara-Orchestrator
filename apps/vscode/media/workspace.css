@@ -73,6 +73,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .discovered-model-picker > .settings-input { margin-top: 6px; }
 .model-picker-status { margin: 6px 0 0; overflow-wrap: anywhere; }
 .field-label { display: block; margin: 8px 0 3px; color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 600; }
+.workflow-controls { margin-top: 8px; }
+.workflow-controls > summary { cursor: pointer; font-weight: 600; }
+.workflow-setting { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; min-width: 0; }
+.workflow-setting > span { min-width: 0; overflow-wrap: anywhere; }
+.workflow-setting > .settings-input { width: 100px; max-width: 45%; flex-shrink: 0; }
+.workflow-setting > input[type="checkbox"] { width: 16px; height: 16px; margin: 0; flex-shrink: 0; }
 .mode-tabs { display: flex; gap: 5px; margin-bottom: 10px; }
 .role-config { margin: 9px 0; padding-top: 4px; border-top: 1px solid var(--vscode-widget-border); }
 .execution-config { display: grid; gap: 6px; margin-top: 8px; }

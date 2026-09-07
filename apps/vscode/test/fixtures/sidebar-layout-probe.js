@@ -10,6 +10,7 @@ window.addEventListener("load", () => {
         select.value = "manual"; select.dispatchEvent(new Event("change"));
       }
       const timeline = document.getElementById("timeline");
+      if (scenario.state.settings.section === "workflow") timeline.querySelectorAll(".workflow-controls").forEach((details) => { details.open = true; });
       const outsideViewport = [];
       const outsideContainer = [];
       const invisibleControls = [];
@@ -27,7 +28,9 @@ window.addEventListener("load", () => {
           const right = parentBounds.left + parent.clientLeft + parent.clientWidth - parseFloat(parentStyle.paddingRight);
           const left = parentBounds.left + parent.clientLeft + parseFloat(parentStyle.paddingLeft);
           if (bounds.left < left - 1 || bounds.right > right + 1) outsideContainer.push(describe(element));
-          if (element.matches("input, select, textarea") && bounds.width < right - left - 1) undersizedFields.push(describe(element));
+          const compactWorkflowField = parent.classList.contains("workflow-setting");
+          const minimumWidth = compactWorkflowField ? element.type === "checkbox" ? 12 : 60 : right - left - 1;
+          if (element.matches("input, select, textarea") && bounds.width < minimumWidth) undersizedFields.push(describe(element));
         }
       }
       for (const element of [timeline, ...timeline.querySelectorAll(".card, .role-config, .execution-config, .settings-row, .settings-list, .settings-actions, .settings-value, .discovered-model-picker, p")]) {
@@ -47,6 +50,7 @@ window.addEventListener("load", () => {
         selectedIds: [...timeline.querySelectorAll(".model-select")].map((select) => select.value),
         settingsColumns: timeline.querySelector(".settings-value") ? getComputedStyle(timeline.querySelector(".settings-value")).gridTemplateColumns.split(" ").length : null,
         clippedCards: [...timeline.querySelectorAll(".card")].filter((element) => ["hidden", "clip"].includes(getComputedStyle(element).overflowX)).length,
+        apiKeyActions: [...timeline.querySelectorAll("button")].filter((element) => visible(element) && /^(Add|Update) API Key$/.test(element.textContent)).map((element) => element.textContent),
       });
     } catch (error) {
       results.push({ name: scenario.name, width: innerWidth, error: String(error.stack || error) });

@@ -1,6 +1,22 @@
 import type { ModelToolDefinition } from "@nyxara/provider-sdk";
+import { MAX_COMMAND_TIMEOUT_MS, MAX_COMMAND_OUTPUT_BYTES } from "@nyxara/tools";
 
 export const EXECUTOR_TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
+  {
+    name: "run_command",
+    description: "Run a task command in the workspace root with separate arguments, no shell, and Core permission checks. Defaults: 30-second timeout, 256 KiB output. Set timeoutMs explicitly for longer scripts. Executable plus arguments must fit 16 KiB. Use script paths relative to the workspace root; no cwd override.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        command: { type: "string", minLength: 1 },
+        args: { type: "array", items: { type: "string" } },
+        timeoutMs: { type: "integer", minimum: 1, maximum: MAX_COMMAND_TIMEOUT_MS },
+        maxOutputBytes: { type: "integer", minimum: 1, maximum: MAX_COMMAND_OUTPUT_BYTES },
+      },
+      required: ["command"],
+      additionalProperties: false,
+    },
+  },
   {
     name: "list_directory",
     description: "List bounded entries beneath a workspace directory.",

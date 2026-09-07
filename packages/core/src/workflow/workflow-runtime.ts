@@ -1,7 +1,10 @@
 import type { ContextBundle } from "../context/context.types.js";
 import type { ExecutionPlan } from "../planner/planner.types.js";
 import type { TaskGraph } from "../planner/task-graph.js";
-import type { AutonomousWorkflowResult, WorkflowRunOutcome } from "../orchestrator/orchestrator.types.js";
+import type { AutonomousWorkflowResult, RunTaskPipelineInput, WorkflowRunOutcome } from "../orchestrator/orchestrator.types.js";
+
+export const DEFAULT_ALLOW_REPAIR = true;
+export type WorkflowPipelineConfig = Pick<RunTaskPipelineInput, "validation" | "repairLimits" | "reviewerLimits">;
 
 export interface WorkflowRuntime {
   readonly workflowId: string;
@@ -17,6 +20,7 @@ export interface WorkflowRuntime {
   readonly startedAt: string;
   readonly startedMs: number;
   readonly allowRepair: boolean;
+  readonly pipelineConfig: WorkflowPipelineConfig;
   readonly abortController: AbortController;
   readonly subscribers: Set<(outcome: WorkflowRunOutcome) => void>;
   pauseGate?: { readonly promise: Promise<void>; readonly release: () => void };

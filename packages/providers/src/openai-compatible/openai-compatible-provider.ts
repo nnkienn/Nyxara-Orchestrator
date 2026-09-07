@@ -22,6 +22,8 @@ import { consumeSse, parseSseJson } from "../sse.js";
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_PROVIDER_ID = "openai-compatible";
 const DEFAULT_DISPLAY_NAME = "OpenAI Compatible";
+const MODEL_DISCOVERY_TIMEOUT_MS = 30_000;
+const GENERATION_TIMEOUT_MS = 300_000;
 
 export interface OpenAICompatibleProviderConfig {
   readonly id?: string;
@@ -32,6 +34,7 @@ export interface OpenAICompatibleProviderConfig {
   readonly credentialStore?: CredentialStore;
   readonly credentialKey?: string;
   readonly credentialRequired?: boolean;
+  readonly streaming?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   /** Stable catalog/provider identity, distinct from the local configuration ID. */
   readonly providerId?: string;
@@ -74,9 +77,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       modelDiscovery: true,
       textGeneration: true,
       toolCalling: true,
-      // Generic compatible gateways do not all implement the OpenAI stream
-      // contract. Only the official OpenAI catalog identity opts in.
-      progressStreaming: this.providerId === "openai",
+      progressStreaming: this.config.streaming === undefined ? this.providerId === "openai" : this.config.streaming === true,
     };
   }
 
@@ -121,7 +122,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ...(request.responseFormat === "json" ? { response_format: { type: "json_object" } } : {}),
       ...(executionOptions.kind === "openai_reasoning" ? { reasoning_effort: executionOptions.effort } : {}),
     };
-    if (request.onProgress && this.capabilities().progressStreaming) {
+    if (this.capabilities().progressStreaming && (request.onProgress || this.config.streaming === true)) {
       return this.generateStreaming(request, body);
     }
     const payload = await this.request(
@@ -164,21 +165,27 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   private async generateStreaming(request: GenerateRequest, body: UnknownRecord): Promise<GenerateResponse> {
     request.onProgress?.({ phase: "request_started" });
-    const response = await this.requestResponse("/chat/completions", {
+    return this.requestResponse("/chat/completions", {
       method: "POST",
       headers: { Accept: "text/event-stream" },
       body: JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } }),
       ...(request.signal ? { signal: request.signal } : {}),
-    }, "generate");
+    }, "generate", (response) => this.readStreamingResponse(response, request));
+  }
+
+  private async readStreamingResponse(response: Response, request: GenerateRequest): Promise<GenerateResponse> {
     let id: string | undefined;
     let model = request.model;
     let text = "";
     let finishReason: string | undefined;
+    let completed = false;
     let usage: GenerateUsage | undefined;
     let responseStarted = false;
     let receiving = false;
     const calls = new Map<number, { id: string; name: string; arguments: string }>();
     try { await consumeSse(response, this.id, (data) => {
+      if (completed) return;
+      if (data === "[DONE]") { completed = true; return; }
       const event = parseSseJson(data, this.id);
       if (!event) return;
       if (isRecord(event.error)) throw this.invalidResponse("Provider stream failed");
@@ -201,10 +208,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
         calls.set(raw.index, current);
         if (typeof fn.name === "string" && fn.name && current.name === fn.name) request.onProgress?.({ phase: "tool_call_requested", toolName: safeToolName(fn.name) });
       }
-      if (!receiving && (typeof delta.content === "string" || Array.isArray(delta.tool_calls))) {
+      if (!receiving && ((typeof delta.content === "string" && delta.content.length > 0) || (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0))) {
         receiving = true; request.onProgress?.({ phase: "output_receiving" });
       }
     }); } catch (error) { throw streamError(error, this.id); }
+    if (!completed && !finishReason) throw this.invalidResponse("Provider stream ended before completion");
     const toolCalls = this.normalizeToolCalls([...calls.values()].map((call) => ({ id: call.id, function: { name: call.name, arguments: call.arguments } })));
     if (!text && toolCalls.length === 0) throw this.invalidResponse("Provider returned no text content");
     request.onProgress?.({ phase: "request_completed" });
@@ -279,12 +287,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
     init: RequestInit,
     operation: Operation,
   ): Promise<unknown> {
-    const response = await this.requestResponse(path, init, operation);
-    try { return await response.json(); }
-    catch { throw this.invalidResponse("Provider returned invalid JSON"); }
+    return this.requestResponse(path, init, operation, async (response) => {
+      try { return await response.json(); }
+      catch { throw this.invalidResponse("Provider returned invalid JSON"); }
+    });
   }
 
-  private async requestResponse(path: string, init: RequestInit, operation: Operation): Promise<Response> {
+  private async requestResponse<T>(path: string, init: RequestInit, operation: Operation, read: (response: Response) => Promise<T>): Promise<T> {
+    init.signal?.throwIfAborted();
     const headers = new Headers(this.headers);
     headers.set("Accept", "application/json");
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
@@ -298,29 +308,51 @@ export class OpenAICompatibleProvider implements ModelProvider {
       headers.set("Authorization", `Bearer ${apiKey}`);
     }
 
-    let response: Response;
+    const timeoutMs = operation === "generate" ? GENERATION_TIMEOUT_MS : MODEL_DISCOVERY_TIMEOUT_MS;
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(init.signal?.reason);
+    if (init.signal?.aborted) abortFromCaller();
+    else init.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    const timeoutReason = new DOMException("Provider request deadline exceeded", "TimeoutError");
+    const timeout = setTimeout(() => controller.abort(timeoutReason), timeoutMs);
+    timeout.unref?.();
 
     try {
-      response = await this.fetchImplementation(`${this.baseUrl}${path}`, {
-        ...init,
-        headers,
-        signal: init.signal ?? AbortSignal.timeout(30_000),
-      });
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") throw error;
-      if (error instanceof Error && error.name === "TimeoutError") {
-        throw new ProviderError("Provider request timed out", { code: "timeout_error", providerId: this.id });
+      controller.signal.throwIfAborted();
+      let response: Response;
+      try {
+        response = await this.fetchImplementation(`${this.baseUrl}${path}`, {
+          ...init,
+          headers,
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (controller.signal.aborted || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))) throw error;
+        throw new ProviderError("Unable to reach the model provider", {
+          code: "network_error",
+          providerId: this.id,
+        });
       }
-      throw new ProviderError("Unable to reach the model provider", {
-        code: "network_error",
-        providerId: this.id,
-      });
-    }
 
-    if (!response.ok) {
-      throw this.httpError(response.status, operation);
+      controller.signal.throwIfAborted();
+      if (!response.ok) throw this.httpError(response.status, operation);
+      const result = await read(response);
+      controller.signal.throwIfAborted();
+      return result;
+    } catch (error) {
+      if (controller.signal.aborted) {
+        if (controller.signal.reason !== timeoutReason) throw controller.signal.reason;
+        const label = operation === "generate" ? "generation" : "model discovery";
+        throw new ProviderError(`Provider ${label} request timed out after ${timeoutMs / 1_000}s (${path})`, { code: "timeout_error", providerId: this.id });
+      }
+      if (error instanceof Error && error.name === "TimeoutError") {
+        throw new ProviderError(`Provider request timed out (${path})`, { code: "timeout_error", providerId: this.id });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      init.signal?.removeEventListener("abort", abortFromCaller);
     }
-    return response;
   }
 
   private async resolveApiKey(): Promise<string | undefined> {

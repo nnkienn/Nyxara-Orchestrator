@@ -13,23 +13,56 @@ export function parseAndNormalizePlanDraft(text: string): unknown {
 }
 
 function parseJsonValue(text: string): unknown {
-  const trimmed = text.trim();
-  const unfenced = trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  for (const candidate of [unfenced, firstJsonObject(unfenced)]) {
-    if (!candidate) continue;
-    try { return JSON.parse(candidate); } catch { /* try the bounded extraction */ }
+  const trimmed = stripLeadingThinkingBlocks(text.trim());
+  try { return JSON.parse(trimmed); } catch {}
+
+  const fences = [...trimmed.matchAll(/^[ \t]*```(?:json)?[ \t]*\r?\n([\s\S]*?)^[ \t]*```[ \t]*\r?$/gmi)];
+  if (fences.length > 0) {
+    if (fences.length === 1) {
+      try { return JSON.parse(fences[0]![1]!); } catch {}
+    }
+    throw parseError();
   }
-  throw new PlannerError("plan_parse_error", "Planner response did not contain a valid JSON object");
+
+  const parsed: unknown[] = [];
+  const plans: unknown[] = [];
+  for (const candidate of jsonObjects(trimmed)) {
+    let value: unknown;
+    try { value = JSON.parse(candidate); } catch { continue; }
+    parsed.push(value);
+    const normalized = normalizeDraft(value);
+    if (record(normalized) && (normalized.tasks !== undefined || normalized.objective !== undefined)) plans.push(value);
+  }
+  if (plans.length === 1) return plans[0];
+  if (plans.length === 0 && parsed.length === 1) return parsed[0];
+  throw parseError();
 }
 
-function firstJsonObject(value: string): string | undefined {
-  const start = value.indexOf("{");
-  if (start < 0) return undefined;
+function stripLeadingThinkingBlocks(text: string): string {
+  let remaining = text;
+  while (/^<(think|thinking)>/i.test(remaining)) {
+    const block = remaining.match(/^<(think|thinking)>[\s\S]*?<\/\1>\s*/i);
+    if (!block) throw parseError();
+    remaining = remaining.slice(block[0].length);
+  }
+  return remaining;
+}
+
+function parseError(): PlannerError {
+  return new PlannerError("plan_parse_error", "Planner response did not contain one unambiguous valid plan JSON object");
+}
+
+function* jsonObjects(value: string): Generator<string> {
+  let start: number | undefined;
   let depth = 0;
   let quoted = false;
   let escaped = false;
-  for (let index = start; index < value.length; index += 1) {
+  for (let index = 0; index < value.length; index += 1) {
     const character = value[index];
+    if (start === undefined) {
+      if (character === "{") { start = index; depth = 1; }
+      continue;
+    }
     if (quoted) {
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
@@ -38,9 +71,11 @@ function firstJsonObject(value: string): string | undefined {
     }
     if (character === '"') quoted = true;
     else if (character === "{") depth += 1;
-    else if (character === "}" && --depth === 0) return value.slice(start, index + 1);
+    else if (character === "}" && --depth === 0) {
+      yield value.slice(start, index + 1);
+      start = undefined;
+    }
   }
-  return undefined;
 }
 
 function normalizeDraft(value: unknown): unknown {

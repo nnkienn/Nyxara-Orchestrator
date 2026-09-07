@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildSanitizedDiagnostics, buildSettingsProjection, providerStatus } from "../src/settings-projection.js";
+import { resolveWorkflowSettings } from "../src/workflow-settings.js";
 
 const openai = { id: "openai-work", catalogId: "openai", type: "openai" as const, displayName: "OpenAI Work", modelId: "gpt-work", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" as const, createdAt: "2026-09-04T00:00:00.000Z" };
 const local = { id: "ollama", type: "ollama" as const, displayName: "Ollama Local", modelId: "local-model", baseUrl: "http://localhost:11434/v1", authStrategy: "local" as const };
@@ -14,13 +15,53 @@ function projection(overrides: Record<string, unknown> = {}) {
   } as any);
 }
 
+describe("workflow configuration projection", () => {
+  it("projects persisted effective values immediately and keeps other sections unchanged", () => {
+    const original = projection();
+    const workflowSettings = resolveWorkflowSettings({ allowRepair: false, repairLimits: { maxRepairCycles: 4 }, validation: { failFast: false, lint: { enabled: false } }, reviewerLimits: { maxReviewerTurns: 3 } });
+    const updated = projection({ workflowSettings });
+    expect(updated.workflow.settings).toEqual(workflowSettings);
+    expect(updated.workflow.controls.find((control) => control.label === "Maximum Repair Cycles")?.value).toBe(4);
+    expect(updated.workflow).toMatchObject({ planApproval: "Required", pauseResume: "Supported", automaticRepair: "Disabled" });
+    expect(updated.repair).toMatchObject({ automatic: false, maximumCycles: 4 });
+    expect(updated.validation).toMatchObject({ failFast: false });
+    expect(updated.validation.steps.find((step) => step.kind === "Lint")?.policy).toBe("Disabled");
+    for (const key of ["providers", "roles", "permissions", "planning", "rules", "context", "usage", "history", "privacy", "workspace"] as const) expect(updated[key]).toEqual(original[key]);
+  });
+});
+
 describe("Settings authoritative projection", () => {
   it("projects multiple provider instances, lifecycle states, defaults, and mixed role assignments without secrets", () => {
-    const value = projection(); expect(value.providers.map((provider) => provider.id)).toEqual(["openai-work", "ollama"]); expect(value.providers[0]).toMatchObject({ displayName: "OpenAI Work", status: "Connected", credentialStored: true, lifecycleAction: "Disconnect", isDefault: true }); expect(value.providers[1]).toMatchObject({ status: "Connection unknown", lifecycleAction: "Remove Provider" }); expect(value.roles.map((role) => [role.role, role.providerConfigId, role.modelId])).toEqual([["planner", "openai-work", "gpt-work"], ["executor", "ollama", "local-model"], ["reviewer", "openai-work", "gpt-review"]]); expect(JSON.stringify(value)).not.toContain("apiKey");
+    const value = projection(); expect(value.providers.map((provider) => provider.id)).toEqual(["openai-work", "ollama"]); expect(value.providers[0]).toMatchObject({ displayName: "OpenAI Work", status: "Connected", liveStatus: "verified", credentialStored: true, lifecycleAction: "Disconnect", isDefault: true }); expect(value.providers[1]).toMatchObject({ status: "Configured", liveStatus: "not_verified", lifecycleAction: "Remove Provider" }); expect(value.roles.map((role) => [role.role, role.providerConfigId, role.modelId])).toEqual([["planner", "openai-work", "gpt-work"], ["executor", "ollama", "local-model"], ["reviewer", "openai-work", "gpt-review"]]); expect(JSON.stringify(value)).not.toContain("apiKey");
   });
 
   it("does not claim connected from config or credential presence alone", () => {
-    expect(providerStatus(openai, false)).toBe("Credential missing"); expect(providerStatus(openai, true)).toBe("Connection unknown"); expect(providerStatus(openai, true, true)).toBe("Connected"); expect(providerStatus(local, false)).toBe("Connection unknown"); expect(providerStatus(local, false, true)).toBe("Local available"); expect(providerStatus({ ...openai, signedOut: true }, true, true)).toBe("Signed out");
+    expect(providerStatus(openai, false)).toBe("Credential missing"); expect(providerStatus(openai, true)).toBe("Credential present"); expect(providerStatus(openai, true, true)).toBe("Connected"); expect(providerStatus(local, false)).toBe("Configured"); expect(providerStatus(local, false, true)).toBe("Local available"); expect(providerStatus({ ...openai, signedOut: true }, true, true)).toBe("Signed out");
+  });
+
+  it("keeps registration availability separate from stored authentication and live checks", () => {
+    const value = projection({ providerCapabilities: new Map(), testedProviderIds: new Set([openai.id]) });
+    expect(value.providers[0]).toMatchObject({ status: "Unavailable", credentialStored: true, liveStatus: "not_verified" });
+    expect(value.providers[0]?.authentication).toContain("SecretStorage");
+    expect(value.providers[0]?.connectionMessage).toContain("Live status not yet verified");
+  });
+
+  it("projects recorded CLI session evidence as historical and never network Connected", () => {
+    const cli = { id: "codex", type: "codex-cli", displayName: "Codex", authStrategy: "subscription_cli" };
+    const evidence = { providerConfigId: cli.id, adapterId: cli.type, state: "present", checkedAt: "2026-09-07T00:00:00.000Z" };
+    const value = projection({ providers: [cli], cliSessionEvidence: new Map([[cli.id, evidence]]), testedProviderIds: new Set() });
+    expect(value.providers[0]).toMatchObject({ status: "Session recorded", liveStatus: "not_verified", credentialStored: false, sessionLastCheckedAt: evidence.checkedAt });
+    expect(value.providers[0]?.authentication).toContain("last confirmed");
+    expect(value.providers[0]?.authentication).toContain("Not rechecked on reload");
+    const tested = projection({ providers: [cli], cliSessionEvidence: new Map([[cli.id, evidence]]), testedProviderIds: new Set([cli.id]) });
+    expect(tested.providers[0]).toMatchObject({ status: "Session verified", liveStatus: "not_verified" });
+    expect(tested.providers[0]?.connectionMessage).toContain("verified locally");
+  });
+
+  it("does not infer authentication or live verification from cached models", () => {
+    const cli = { id: "codex", type: "codex-cli", displayName: "Codex", authStrategy: "subscription_cli" };
+    const value = projection({ providers: [cli, openai], credentialStored: new Map(), testedProviderIds: new Set(), modelStates: new Map([cli, openai].map((provider) => [provider.id, { providerConfigId: provider.id, status: "cached", models: [{ id: "cached-model", name: "Cached" }] }])) });
+    expect(value.providers.map((provider) => [provider.status, provider.liveStatus])).toEqual([["CLI configured", "not_verified"], ["Credential missing", "not_verified"]]);
   });
 
   it("marks signed-out role references unavailable without rerouting them", () => {

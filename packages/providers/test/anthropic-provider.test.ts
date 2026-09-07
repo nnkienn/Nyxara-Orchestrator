@@ -162,10 +162,11 @@ describe("AnthropicProvider", () => {
     }));
     const waiting = new AnthropicProvider({ credentialStore: credentials("fake"), fetch: waitingFetch as any });
     const pending = waiting.generate({ model: "claude", prompt: "x", onProgress: vi.fn(), signal: controller.signal });
-    await vi.waitFor(() => expect(receivedSignal).toBe(controller.signal));
+    await vi.waitFor(() => expect(receivedSignal).toBeInstanceOf(AbortSignal));
     controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    expect(receivedSignal).toBe(controller.signal);
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(receivedSignal?.reason).toBe(controller.signal.reason);
   });
 });
 

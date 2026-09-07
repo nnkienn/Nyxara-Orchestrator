@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { buildSettingsProjection } from "../src/settings-projection.js";
+import { resolveWorkflowSettings, workflowControls } from "../src/workflow-settings.js";
 
 type Listener = (event: any) => void;
 
@@ -17,6 +18,7 @@ class FakeElement {
   type = "";
   disabled = false;
   selected = false;
+  checked = false;
   scrollTop = 0;
   scrollHeight = 200;
   clientHeight = 200;
@@ -122,6 +124,64 @@ const awaiting = { id: "w", status: "awaiting_plan_approval", stage: "Awaiting a
 const settingsProjection = buildSettingsProjection({ version: "0.1.0-alpha.9", providers: [{ id: "work", catalogId: "openai", type: "openai", displayName: "OpenAI Work", modelId: "gpt-5.1", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" }], defaultProviderId: "work", credentialStored: new Map([["work", true]]), testedProviderIds: new Set(["work"]), modelMode: "simple", roles: [{ role: "planner", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "reviewer", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }], selectedPlanningProfile: "default", planningProfiles: [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }], engineeringRules: [{ id: "avoid-secret-exposure", name: "Avoid secret exposure", description: "Protect secrets", scope: "global", severity: "error", enabled: true }], historyRetention: 50, historyCount: 4, workspaceFolders: [{ id: "root-0", label: "Project" }], selectedWorkspaceRootId: "root-0" } as any);
 
 describe("Nyxara browser runtime", () => {
+  it("renders current workflow controls separately from fixed capabilities, without timers or requests", () => {
+    const runtime = harness();
+    const settings = resolveWorkflowSettings({ allowRepair: false, repairLimits: { maxRepairCycles: 5 }, validation: { test: { enabled: false, timeoutMs: 12345 } } });
+    const projection = { ...settingsProjection, workflow: { ...settingsProjection.workflow, settings, controls: workflowControls(settings) } };
+    runtime.emit(baseState({ settings: { section: "workflow", projection } }));
+    const nodes = runtime.elements.get("timeline")!.descendants();
+    const field = (label: string) => nodes.find((item) => item.attributes.get("aria-label") === label)!;
+    expect(field("Automatic Repair").type).toBe("checkbox");
+    expect(field("Automatic Repair").checked).toBe(false);
+    expect(field("Maximum Repair Cycles").type).toBe("number");
+    expect(field("Maximum Repair Cycles").value).toBe("5");
+    expect(field("Tests Validation").checked).toBe(false);
+    expect(field("Test Timeout (ms)").value).toBe("12345");
+    expect(runtime.text()).toContain("Workflow Settings");
+    expect(runtime.text()).toContain("Current Capabilities");
+    expect(runtime.text()).toContain("Plan ApprovalRequired");
+    expect(runtime.text()).toContain("Applies to new tasks only");
+    const capabilities = nodes.find((item) => item.tagName === "section" && item.children[0]?.allText() === "Current Capabilities")!;
+    expect(capabilities).toBeDefined();
+    expect(capabilities.descendants().some((item) => ["input", "select", "button"].includes(item.tagName))).toBe(false);
+    expect(nodes.filter((item) => item.tagName === "input").some((item) => /approval|permission|pause|profile|model/i.test(item.attributes.get("aria-label") ?? ""))).toBe(false);
+    expect(runtime.messages).toEqual([{ type: "ready" }]);
+    expect(runtime.timers.size).toBe(0);
+    runtime.advance(86400000);
+    expect(runtime.messages).toEqual([{ type: "ready" }]);
+  });
+
+  it("posts typed workflow changes and displays the authoritative acknowledgement", () => {
+    const runtime = harness();
+    const emit = (projection = settingsProjection) => runtime.emit(baseState({ settings: { section: "workflow", projection } }));
+    const field = (label: string) => runtime.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === label)!;
+    emit();
+    field("Maximum Repair Cycles").value = "4";
+    field("Maximum Repair Cycles").dispatch("change");
+    expect(runtime.messages.at(-1)).toEqual({ type: "updateWorkflowSettings", settings: { repairLimits: { maxRepairCycles: 4 } } });
+    expect(field("Maximum Repair Cycles").disabled).toBe(true);
+    const settings = resolveWorkflowSettings({ repairLimits: { maxRepairCycles: 4 } });
+    emit({ ...settingsProjection, workflow: { ...settingsProjection.workflow, settings, controls: workflowControls(settings) } });
+    expect(field("Maximum Repair Cycles").value).toBe("4");
+    expect(field("Maximum Repair Cycles").disabled).toBe(false);
+    field("Automatic Repair").checked = false;
+    field("Automatic Repair").dispatch("change");
+    expect(runtime.messages.at(-1)).toEqual({ type: "updateWorkflowSettings", settings: { allowRepair: false } });
+    emit();
+    const count = runtime.messages.length;
+    field("Maximum Repair Cycles").value = "6";
+    field("Maximum Repair Cycles").dispatch("change");
+    expect(runtime.messages).toHaveLength(count);
+    expect(field("Maximum Repair Cycles").value).toBe("3");
+  });
+
+  it.each(["workflow", "approval", "validation", "review", "repair", "pause", "resume"])("finds Workflow through visible search term %s", (query) => {
+    const runtime = harness();
+    runtime.emit(baseState({ settings: { section: "home", projection: settingsProjection } }));
+    const search = runtime.elements.get("timeline")!.descendants().find((item) => item.className === "settings-search")!;
+    search.value = query; search.dispatch("input");
+    expect(runtime.text()).toContain("Workflow");
+  });
   it("scopes responsive layout to Settings and removes it from other screens", () => {
     const h = harness();
     const timeline = h.elements.get("timeline")!;
@@ -205,6 +265,17 @@ describe("Nyxara browser runtime", () => {
     expect(h.messages.slice(-2)).toEqual([{ type: "approvePlan" }, { type: "rejectPlan" }]);
   });
 
+  it("shows every original check in grouped criteria before explicit approval", () => {
+    const h = harness();
+    const criteria = Array.from({ length: 8 }, (_, index) => `Original check ${index + 1}`);
+    const grouped = [`${criteria[0]}\n${criteria[1]}`, `${criteria[2]}\n${criteria[3]}`, ...criteria.slice(4)];
+    h.emit(baseState({ plan: { ...plan, tasks: [{ ...plan.tasks[0], acceptanceCriteria: grouped }] }, workflow: awaiting }));
+    for (const criterion of criteria) expect(h.text()).toContain(criterion);
+    expect(h.messages.some(message => message.type === "approvePlan")).toBe(false);
+    h.findButton("Approve & Run")?.dispatch("click");
+    expect(h.messages.at(-1)).toEqual({ type: "approvePlan" });
+  });
+
   it.each([
     ["executing", "Executing"], ["validating", "Validating"], ["reviewing", "Reviewing"], ["repairing", "Repairing"], ["paused", "Paused"],
   ])("renders %s workflow status and task progress", (status, stage) => {
@@ -236,6 +307,16 @@ describe("Nyxara browser runtime", () => {
     h.findButton("Allow Once")?.dispatch("click");
     h.findButton("Deny")?.dispatch("click");
     expect(h.messages.slice(-2)).toEqual([{ type: "allowPermission", requestId: "permission/exact" }, { type: "denyPermission", requestId: "permission/exact" }]);
+  });
+
+  it("renders the full command as text before allowing a process", () => {
+    const h = harness();
+    const command = JSON.stringify(["python3", "apps/web/scripts/planet-compare.py", "<script>not executable</script>", "x".repeat(800)]);
+    h.emit(baseState({ plan, workflow: { id: "w", status: "waiting_for_permission", stage: "Waiting for Permission", active: true, tasks: [], permission: { id: "command/exact", action: "run_command", reason: "Review this local process", command, cwd: "/workspace" } } }));
+    expect(h.text()).toContain(command);
+    expect(h.text()).toContain("/workspace");
+    h.findButton("Allow Once")?.dispatch("click");
+    expect(h.messages.at(-1)).toEqual({ type: "allowPermission", requestId: "command/exact" });
   });
 
   it("renders compact completed, failed and aborted summaries with authoritative usage and New Task", () => {
@@ -846,7 +927,66 @@ describe("Nyxara browser runtime", () => {
   });
 
   it("renders provider details with separate Disconnect and Remove Provider actions and never a stored key", () => {
-    const h = harness(); h.emit(baseState({ settings: { section: "aiProviders", providerConfigId: "work", projection: settingsProjection } }), "providerConfigs"); expect(h.text()).toContain("Provider Details"); expect(h.text()).toContain("Credential stored securely"); expect(h.text()).toContain("Disconnect"); expect(h.text()).toContain("Remove Provider"); expect(h.text()).toContain("Configure Models & Roles"); expect(h.text()).not.toContain("Choose discovered model"); expect(h.text()).not.toContain("Change Model"); expect(h.text()).not.toContain("sk-"); h.findButton("Test Connection")?.dispatch("click"); expect(h.messages.at(-1)).toEqual({ type: "testProvider", providerConfigId: "work" });
+    const h = harness(); h.emit(baseState({ settings: { section: "aiProviders", providerConfigId: "work", projection: settingsProjection } }), "providerConfigs"); expect(h.text()).toContain("Provider Details"); expect(h.text()).toContain("Credential present in VS Code SecretStorage"); expect(h.text()).toContain("Live connection verified in this extension session."); expect(h.text()).toContain("Disconnect"); expect(h.text()).toContain("Remove Provider"); expect(h.text()).toContain("Configure Models & Roles"); expect(h.text()).not.toContain("Choose discovered model"); expect(h.text()).not.toContain("Change Model"); expect(h.text()).not.toContain("sk-"); h.findButton("Test Connection")?.dispatch("click"); expect(h.messages.at(-1)).toEqual({ type: "testProvider", providerConfigId: "work" });
+  });
+
+  it.each(["none", "local"] as const)("offers Add API Key for a key-capable gateway currently using %s auth", (authStrategy) => {
+    const runtime = harness();
+    const provider = { ...settingsProjection.providers[0]!, displayName: "9Router", authStrategy, authMethods: ["api_key", authStrategy] as any, credentialStored: false, status: "Configured" as const, liveStatus: "failed" as const, authentication: "No API key configured. Use Add API Key if this gateway requires authentication.", lifecycleAction: "Remove Provider" as const };
+    runtime.emit(baseState({ settings: { section: "aiProviders", providerConfigId: provider.id, projection: { ...settingsProjection, providers: [provider] } } }));
+    const action = runtime.findButton("Add API Key");
+    expect(action).toBeDefined();
+    expect(runtime.text()).toContain("No API key configured");
+    expect(runtime.messages).toEqual([{ type: "ready" }]);
+    action!.dispatch("click");
+    expect(runtime.messages.at(-1)).toEqual({ type: "updateCredential", providerConfigId: provider.id });
+    expect(runtime.timers.size).toBe(0);
+  });
+
+  it("offers Update API Key without revealing or pre-filling a stored credential", () => {
+    const runtime = harness();
+    runtime.emit(baseState({ settings: { section: "aiProviders", providerConfigId: "work", projection: settingsProjection } }));
+    expect(runtime.findButton("Add API Key")).toBeUndefined();
+    runtime.findButton("Update API Key")!.dispatch("click");
+    expect(runtime.messages.at(-1)).toEqual({ type: "updateCredential", providerConfigId: "work" });
+    expect(runtime.elements.get("timeline")!.descendants().some((item) => item.tagName === "input" && item.type === "password")).toBe(false);
+  });
+
+  it.each([{ authMethods: ["subscription_cli"] }, { authMethods: ["local", "none"] }])("does not render an API key action for unsupported auth methods %j", ({ authMethods }) => {
+    const runtime = harness();
+    const provider = { ...settingsProjection.providers[0]!, authMethods: authMethods as any, credentialStored: false };
+    runtime.emit(baseState({ settings: { section: "aiProviders", providerConfigId: provider.id, projection: { ...settingsProjection, providers: [provider] } } }));
+    expect(runtime.findButton("Add API Key")).toBeUndefined();
+    expect(runtime.findButton("Update API Key")).toBeUndefined();
+  });
+
+  it("renders local reload evidence separately from live status and tests only on click", () => {
+    const h = harness();
+    const provider = { ...settingsProjection.providers[0]!, status: "Credential present" as const, liveStatus: "not_verified" as const, connectionMessage: "Live status not yet verified. Use Test Connection to verify explicitly." };
+    const projection = { ...settingsProjection, providers: [provider] };
+    const initialMessages = h.messages.length;
+    h.emit(baseState({ settings: { section: "aiProviders", providerConfigId: provider.id, projection } }), "settingsProjection");
+    expect(h.text()).toContain("Credential present");
+    expect(h.text()).toContain("Live status not yet verified");
+    expect(h.text()).not.toContain("Connected");
+    expect(h.text()).not.toContain("Connection unknown");
+    expect(h.messages).toHaveLength(initialMessages);
+    h.findButton("Test Connection")?.dispatch("click");
+    expect(h.messages.at(-1)).toEqual({ type: "testProvider", providerConfigId: provider.id });
+    h.emit(baseState({ settings: { section: "aiProviders", providerConfigId: provider.id, projection: settingsProjection } }), "providerStatusChanged");
+    expect(h.text()).toContain("Connected");
+    expect(h.text()).toContain("Live connection verified");
+  });
+
+  it("shows restored CLI evidence as a last-confirmed session, not a current network fact", () => {
+    const h = harness();
+    const provider = { ...settingsProjection.providers[0]!, adapterId: "codex-cli", authStrategy: "subscription_cli" as const, status: "Session recorded" as const, credentialStored: false, authentication: "Official CLI session last confirmed: 2026-09-07T00:00:00.000Z. Not rechecked on reload.", liveStatus: "not_verified" as const, connectionMessage: "Live status not yet verified. Use Test Connection to verify explicitly." };
+    h.emit(baseState({ settings: { section: "aiProviders", providerConfigId: provider.id, projection: { ...settingsProjection, providers: [provider] } } }), "settingsProjection");
+    expect(h.text()).toContain("Session recorded");
+    expect(h.text()).toContain("Not rechecked on reload");
+    expect(h.text()).toContain("Live status not yet verified");
+    expect(h.text()).not.toContain("Connected");
+    expect(h.text()).not.toContain("Credential present in VS Code SecretStorage");
   });
 
   it("renders Settings projections without prompts, raw responses, source, or tool output", () => {

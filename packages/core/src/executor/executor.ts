@@ -137,7 +137,7 @@ export class Executor {
       const conversation: ModelConversationMessage[] = [];
       const callIds = new Set<string>();
       const changedPaths = new Set<string>();
-      const unresolvedToolErrors = new Map<string, string>();
+      const unresolvedToolErrors = new Map<string, { tool: string; code: string }>();
       let toolCallCount = 0;
       let successfulToolCalls = 0;
       let failedToolCalls = 0;
@@ -205,8 +205,8 @@ export class Executor {
                   summary: "Executor stopped with unresolved tool failures",
                   unresolvedIssues: [
                     ...(modelDecision.unresolvedIssues ?? []),
-                    ...[...unresolvedToolErrors].map(
-                      ([tool, code]) => `${tool} failed with ${code}`,
+                    ...[...unresolvedToolErrors.values()].map(
+                      ({ tool, code }) => `${tool} failed with ${code}`,
                     ),
                   ],
                 }
@@ -243,6 +243,9 @@ export class Executor {
               providerId: model.providerId,
               modelId: model.modelId,
               code: "executor_error",
+              toolCalls: result.toolCalls,
+              ...(result.toolDurationMs !== undefined ? { toolDurationMs: result.toolDurationMs } : {}),
+              ...(runInput.workflowId ? { workflowId: runInput.workflowId, successfulToolCalls: result.successfulToolCalls, failedToolCalls: result.failedToolCalls, invalidToolCalls: result.invalidToolCalls, toolCallsByName: result.toolCallsByName } : {}),
             });
           }
           return result;
@@ -286,12 +289,14 @@ export class Executor {
             limits.maxToolResultBytes,
           );
           toolDurationMs += Math.max(0, performance.now() - toolStarted);
+          const errorKey = call.name === "run_command" && isRecord(call.arguments)
+            ? JSON.stringify([call.name, call.arguments.command, call.arguments.args ?? []]) : call.name;
           if (outcome.result.error) {
             failedToolCalls += 1;
-            unresolvedToolErrors.set(call.name, outcome.result.error.code);
+            unresolvedToolErrors.set(errorKey, { tool: call.name, code: outcome.result.error.code });
           } else {
             successfulToolCalls += 1;
-            unresolvedToolErrors.delete(call.name);
+            unresolvedToolErrors.delete(errorKey);
           }
           outcome.changedPaths.forEach((path) => changedPaths.add(path));
           conversation.push({ role: "tool", toolResult: outcome.result });
@@ -345,21 +350,44 @@ export class Executor {
       );
     }
 
+    let changedPaths: readonly string[] = [];
     try {
-      const output = await this.tools.execute<Record<string, unknown>, unknown>(
-        call.name,
-        call.arguments,
-        context,
-      );
+      const before = call.name === "run_command" ? await this.commandEvidence(context) : undefined;
+      let output: unknown;
+      let permissionDenied = false;
+      try {
+        output = await this.tools.execute<Record<string, unknown>, unknown>(
+          call.name,
+          call.arguments,
+          context,
+        );
+      } catch (error: unknown) {
+        permissionDenied = error instanceof NyxaraToolError && isSecurityError(error.code);
+        throw error;
+      } finally {
+        if (before && !permissionDenied && !context.signal?.aborted) {
+          const after = await this.commandEvidence(context);
+          changedPaths = [...new Set([
+            ...changedStatusPaths(before.status, after.status),
+            ...changedDiffPaths(before.diff, after.diff),
+          ])];
+        }
+      }
+      if (context.signal?.aborted) throw new ExecutorError("executor_aborted", "Executor run was aborted");
+      const commandExitCode = isRecord(output) && typeof output.exitCode === "number" ? output.exitCode : null;
+      const commandFailed = call.name === "run_command" && commandExitCode !== 0;
+      const boundedOutput = boundToolResult(output, maxResultBytes);
       return {
         result: {
           callId: call.id,
           name: call.name,
-          result: boundToolResult(output, maxResultBytes),
+          result: boundedOutput,
+          ...(commandFailed ? { error: { code: "command_failed", message: `Command exited unsuccessfully (exit code ${commandExitCode ?? "unavailable"}). Bounded output: ${JSON.stringify(boundedOutput)}` } } : {}),
         },
-        changedPaths: extractChangedPaths(output),
+        changedPaths: [...changedPaths, ...extractChangedPaths(output)],
       };
     } catch (error: unknown) {
+      if (context.signal?.aborted) throw new ExecutorError("executor_aborted", "Executor run was aborted");
       if (error instanceof ToolRegistryError) {
         throw new ExecutorError("executor_error", "Executor requested an unknown tool");
       }
@@ -386,8 +414,19 @@ export class Executor {
               : "Tool execution failed",
         },
       };
-      return { result, changedPaths: [] };
+      return { result, changedPaths };
     }
+  }
+
+  private async commandEvidence(context: ToolContext): Promise<{ status: GitStatusResult; diff: GitDiffResult }> {
+    const [status, diff] = await Promise.all([
+      this.tools.execute<Record<string, never>, GitStatusResult>("git_status", {}, context),
+      this.tools.execute<{ maxBytes: number }, GitDiffResult>("git_diff", { maxBytes: EXECUTION_DIFF_MAX_BYTES }, context),
+    ]);
+    if (!status.isRepository || !diff.isRepository || status.truncated || diff.truncated) {
+      throw new NyxaraToolError("tool_error", "Complete bounded Git evidence is required for a command", "run_command");
+    }
+    return { status, diff };
   }
 
   private parseDecision(text: string): ExecutionDecision {
@@ -548,6 +587,18 @@ function changedStatusPaths(
   return [...new Set([...initialState.keys(), ...finalState.keys()])].filter(
     (path) => initialState.get(path) !== finalState.get(path),
   );
+}
+
+function changedDiffPaths(initial: GitDiffResult, final: GitDiffResult): string[] {
+  const sections = (diff: string): Map<string, string> => new Map(
+    diff.split(/(?=^diff --git )/m).flatMap((section) => {
+      const path = /^diff --git a\/.+ b\/(.+)$/m.exec(section)?.[1];
+      return path ? [[path, section] as const] : [];
+    }),
+  );
+  const before = sections(initial.diff);
+  const after = sections(final.diff);
+  return [...new Set([...before.keys(), ...after.keys()])].filter((path) => before.get(path) !== after.get(path));
 }
 
 function isSecurityError(code: string): boolean {

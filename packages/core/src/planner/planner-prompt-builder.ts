@@ -2,10 +2,10 @@ import type { PlannerInput } from "./planner.types.js";
 import { compilePlanningProfile } from "./planning-profile-compiler.js";
 import { DEFAULT_PLANNING_PROFILE, type PlanningProfile } from "./planning-profile.js";
 import { compileEngineeringRules, type ResolvedRuleSet } from "../rules/engineering-rule.js";
-import { DEFAULT_PLAN_STRUCTURE_BOUNDS } from "./plan-validator.js";
+import { DEFAULT_PLAN_STRUCTURE_BOUNDS, type PlanStructureBounds } from "./plan-validator.js";
 
 export class PlannerPromptBuilder {
-  build(input: PlannerInput, profile: PlanningProfile = DEFAULT_PLANNING_PROFILE, engineeringRules?: ResolvedRuleSet): string {
+  build(input: PlannerInput, profile: PlanningProfile = DEFAULT_PLANNING_PROFILE, engineeringRules?: ResolvedRuleSet, bounds: PlanStructureBounds = DEFAULT_PLAN_STRUCTURE_BOUNDS): string {
     const files = input.context.files
       .map(
         (file) =>
@@ -22,8 +22,10 @@ export class PlannerPromptBuilder {
       "Create an implementation plan only. Do not modify files, execute code, or claim work is complete.",
       "Use only the bounded repository context below. Avoid unrelated work.",
       "Define executable tasks, explicit dependencies, acceptance criteria, relevant files, and obvious risks.",
-      `Keep the plan concise: at most ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxTasks} tasks, ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxAcceptanceCriteriaPerTask} acceptance criteria per task, ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxRisks} risks, and ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxAssumptions} assumptions.`,
-      `Keep each title within ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxTitleCharacters} characters and each task description within ${DEFAULT_PLAN_STRUCTURE_BOUNDS.maxDescriptionCharacters} characters.`,
+      `Keep the plan concise: at most ${bounds.maxTasks} tasks, ${bounds.maxAcceptanceCriteriaPerTask} acceptance criteria per task, ${bounds.maxRisks} risks, and ${bounds.maxAssumptions} assumptions.`,
+      `Hard character limits: objective ${bounds.maxObjectiveCharacters}, summary ${bounds.maxSummaryCharacters}, task title ${bounds.maxTitleCharacters}, task description ${bounds.maxDescriptionCharacters}, each acceptance criterion ${bounds.maxAcceptanceCriterionCharacters}.`,
+      `Each task may list at most ${bounds.maxRelevantFilesPerTask} relevant files. Each risk description and mitigation must fit ${bounds.maxRiskDescriptionCharacters} and ${bounds.maxRiskMitigationCharacters} characters respectively; each assumption must fit ${bounds.maxAssumptionCharacters} characters.`,
+      "These are acceptance limits, not style suggestions. Preserve every requested check; group related checks concisely instead of adding redundant criteria or tasks.",
       "Return one JSON object only. Do not use Markdown fences or explanatory prose.",
       "",
       "Architecture boundaries:",
@@ -75,6 +77,10 @@ export class PlannerPromptBuilder {
       `Working tree diff:\n${input.context.git.diff.diff || "(no working tree diff)"}`,
       "",
       `Relevant files:\n${files || "(no relevant files found)"}`,
+      "",
+      `Before returning JSON, count every task's acceptanceCriteria: 1–${bounds.maxAcceptanceCriteriaPerTask} entries, each at most ${bounds.maxAcceptanceCriterionCharacters} characters. Keep all requirements, task dependencies, and numeric thresholds intact.`,
+      "Final response contract: return exactly one complete JSON object matching the required shape above, without analysis, Markdown, or implementation results.",
+      "Describe requested commands, screenshots, and reports as tasks or acceptance criteria; do not execute or produce them during planning.",
     ].join("\n");
   }
 }

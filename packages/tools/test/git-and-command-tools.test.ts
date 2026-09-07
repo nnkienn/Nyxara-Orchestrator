@@ -112,6 +112,23 @@ describe("run_command", () => {
     expect(output.truncated).toBe(true);
   });
 
+  it.each([
+    null, [], {}, { command: 42 }, { command: "" }, { command: "node", args: "--version" },
+    { command: "node", args: [42] }, { command: "node", timeoutMs: NaN },
+    { command: "node", timeoutMs: Infinity }, { command: "node", timeoutMs: 1.5 },
+    { command: "node", timeoutMs: 0 }, { command: "node", timeoutMs: 1800001 },
+    { command: "node", maxOutputBytes: 1048577 }, { command: "node", maxOutputBytes: -1 },
+    { command: "node", shell: true }, { command: "node", cwd: "/" }, { command: "node\u0000" },
+    { command: "node", args: ["x".repeat(16 * 1024)] }, { command: "node", args: new Array(1) },
+  ])("rejects malformed command input before permission or execution: %j", async (input) => {
+    const run = vi.fn();
+    const evaluate = vi.fn(async () => "allow" as const);
+    const registry = createDefaultToolRegistry({ executionRuntime: { run }, permissionEngine: { evaluate } });
+    await expect(registry.execute("run_command", input, { workspaceRoot: workspace })).rejects.toMatchObject({ code: "tool_error" });
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("enforces command timeouts", async () => {
     const registry = createDefaultToolRegistry({
       permissionEngine: new DefaultPermissionEngine({ unknownCommand: "allow" }),

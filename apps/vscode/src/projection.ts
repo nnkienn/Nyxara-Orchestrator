@@ -100,12 +100,18 @@ export function friendlyErrorMessage(error: unknown): string {
       return `${detail}The model returned an invalid plan. Try again or choose another model.`;
     }
     case "plan_parse_error": return "The model response did not contain valid plan JSON. Try again or choose another model.";
+    case "plan_response_empty": return "The provider returned an empty Planner response. No plan was accepted. Try again or choose another model.";
+    case "plan_response_truncated": return "The provider stopped at its output limit before completing the plan. No plan was accepted. Narrow the requirement or choose another model.";
     case "permission_denied": return "Permission denied.";
     case "validation_failed": return "Validation failed.";
     case "review_failed": return "Review failed.";
     case "aborted": return "Workflow aborted.";
     case "plan_rejected": return "No changes were made.";
-    case "plan_bounds_exceeded": return "The model returned an oversized plan. Try again or narrow the requirement.";
+    case "plan_bounds_exceeded": {
+      const detail = typeof record?.message === "string" && record.message.startsWith("Planner returned ") && /beyond the supported bound \(\d+ > \d+\)$/.test(record.message)
+        ? record.message : "Planner exceeded the supported plan limits";
+      return safeErrorMessage(new Error(`${detail}. No plan was accepted. Retry planning or choose another model.`));
+    }
   }
   if (typeof record?.message === "string") return safeErrorMessage(new Error(record.message));
   return safeErrorMessage(error);

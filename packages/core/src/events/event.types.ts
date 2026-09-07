@@ -219,6 +219,7 @@ export interface PlannerCompletedEvent {
   readonly providerId: string;
   readonly modelId: string;
   readonly taskCount: number;
+  readonly acceptanceCriteriaGrouping?: { readonly tasks: number; readonly originalCriteria: number; readonly groupedCriteria: number };
 }
 
 export interface PlannerFailedEvent {
@@ -272,7 +273,7 @@ export interface ExecutorCompletedEvent {
   readonly toolCallsByName?: Readonly<Record<string, number>>;
 }
 
-export interface ExecutorFailedEvent {
+export interface ExecutorFailedEvent extends Partial<Pick<ExecutorCompletedEvent, "workflowId" | "toolCalls" | "toolDurationMs" | "successfulToolCalls" | "failedToolCalls" | "invalidToolCalls" | "toolCallsByName">> {
   readonly taskId: string;
   readonly providerId: string;
   readonly modelId: string;

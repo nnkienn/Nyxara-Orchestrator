@@ -30,6 +30,7 @@ const DEFAULT_TIMEOUTS: Readonly<Record<ValidationKind, number>> = {
   build: 300_000,
 };
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
+export const DEFAULT_VALIDATION_ENABLED = true;
 
 interface PackageMetadata {
   readonly packageManager?: unknown;
@@ -142,7 +143,7 @@ function resolveStep(
   packageManager: PackageManager | null,
   scripts: Readonly<Record<string, string>>,
 ): ResolvedValidationStep {
-  const enabled = configured?.enabled ?? true;
+  const enabled = configured?.enabled ?? DEFAULT_VALIDATION_ENABLED;
   const timeoutMs = configured?.timeoutMs ?? DEFAULT_TIMEOUTS[kind];
   const maxOutputBytes =
     configured?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;

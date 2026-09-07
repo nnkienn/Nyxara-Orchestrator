@@ -12,6 +12,30 @@ It builds the required packages, runs the deterministic VS Code checks, derives 
 
 The extension manifest at `apps/vscode/package.json` is the single source of truth for the local dogfood version. **Nyxara: About** and the sidebar show that installed manifest version with the **Local Dogfood** label. Use F5 only for development/debugging in an Extension Development Host; use the VSIX for daily dogfood.
 
+## Slow compatible gateways
+
+OpenAI-compatible adapters allow up to **5 minutes per generation request**, including response-body consumption, while model discovery remains bounded at **30 seconds**. This avoids applying the discovery budget to a queued or non-streaming gateway response. A caller cancellation still interrupts the request; the VS Code Abort action now forwards cancellation into Planner generation and regeneration. There are no automatic retries, idle timers, speculative streaming capabilities or new Workflow controls. The existing approval, execution, validation, review and repair engine is unchanged.
+
+Timeout errors now name the operation and endpoint, distinguishing `/models` discovery from `/chat/completions` generation. An upstream/gateway HTTP 502 is still reported as HTTP 502; this client-side change cannot override the router's own timeout or guarantee upstream availability. A successful model-list check is not a successful generation test.
+
+To verify with a real task after installing the update: finish/abort any existing workflow, reload the window, submit the actual coding requirement rather than a blank measurement template, and observe the stage/elapsed display. Generic compatible gateways remain non-streaming unless explicitly configured as described below. A failed task may still have unavailable usage/context metrics; do not fill missing tokens or provider cost with zero. The deterministic regression tests use delayed mock transports and do not send a paid provider request.
+
+## Verified gateway streaming
+
+For a verified Chat Completions SSE endpoint, set `"streaming": true` on that existing entry in `nyxara.providerConfigs`. This is a provider transport option, not a Workflow setting. Missing values preserve the existing defaults: official OpenAI supports streaming progress; generic compatible gateways remain non-streaming. The flag is not inferred from a gateway name, URL, or model. Only actual booleans are retained from persisted configuration. Finish any active task and reload the window after changing this advanced provider option.
+
+An opted-in compatible adapter requests SSE even without a progress callback. Core Planner, Executor, and Reviewer receive the existing metadata-only progress events; empty deltas and reasoning-only content do not count as answer text. Token usage still comes only from the provider. Model IDs, execution options, approval, output budgets, and the five-minute generation deadline do not change. Abort interrupts a pending stream, a stream ending without a finish reason or `[DONE]` is rejected, and no automatic retry or fallback request is added.
+
+On September 7, 2026, a controlled two-request diagnostic through the same Responses-backed gateway route reproduced HTTP 200 with empty text and no usage in non-streaming mode, but valid JSON and provider usage in streaming mode. The installed router's generic non-streaming SSE collector reads Chat Completions deltas, which can discard Responses events. The client-side opt-in avoids that conversion path without modifying the router, weakening plan validation, or enabling streaming for unrelated provider configurations. This diagnostic is not a guarantee that a complete coding workflow or every upstream route will succeed.
+
+## Planner responses through compatible gateways
+
+Planner accepts a single complete JSON plan, including a JSON/plain Markdown fence after prose, or final JSON following a closed leading `<think>`/`<thinking>` block. Prose braces and metadata objects no longer hide a later plan. Multiple candidate plans or JSON fences are rejected as ambiguous. Malformed or incomplete JSON is not repaired, and the existing schema, graph, size bounds, and mandatory approval gate still apply. The prompt reiterates the plan-only response contract after repository context; unsupported JSON mode is not enabled by inference.
+
+An empty assistant response and an explicit provider output-limit stop (`length`, `max_tokens`, or `MAX_TOKENS`) now have distinct errors, rather than a generic JSON parse failure. Nyxara does not increase output limits, retry automatically, or accept an output-limit response as a completed plan. The Nyxara output channel records only completion counts, a known finish reason, provider duration, and context metrics for the active Planner request; it does not log response text, reasoning, credentials, or raw metadata. Unknown finish reasons remain `unknown`.
+
+The September 7 dogfood failure did not retain its raw response, so its exact upstream cause cannot be established retrospectively. Deterministic tests cover gateway envelopes through plan parsing and the VS Code approval boundary without contacting a real provider. Reload the window after installing, then manually retry the requirement to verify live behavior. A provider that returns no usable JSON can still fail safely; the new diagnostics distinguish that from a transport timeout or an output limit.
+
 ## Connect a provider
 
 Installation and activation do not need credentials and make no network, provider, repository, workflow, Git, process, or benchmark calls. On first run the Nyxara workspace shows **Connect an AI provider to start** and an inline **Connect Provider** action. Provider setup may still use native VS Code pickers in this phase; ordinary coding tasks do not.
@@ -31,7 +55,7 @@ Choose one of the adapters currently implemented:
 
 For official providers, **Open official API key page** launches the provider's own developer console in your default browser. Sign in there, create or copy a key, return to VS Code, and paste it into Nyxara. This shortcut is not OAuth: Nyxara never reads browser cookies, web sessions, desktop/CLI tokens, localStorage, or account passwords. Provider authentication is not a Nyxara account; Nyxara remains a local BYOK orchestration layer.
 
-Subscription CLI login is different: **Sign In with Browser** launches only the documented provider CLI login command as a visible VS Code task. The official CLI opens the browser and stores/refreshes its own session. While that active attempt runs, the sidebar shows **Waiting for browser sign-in…** and **Cancel**. A successful CLI process completion is checked through the provider-owned status contract and updates Nyxara to **Connected** immediately—no sidebar or VS Code reload is required. Nyxara then opens **Models & Roles** inside the sidebar with the discovered models so you choose the model and effort/thinking setting there; it does not silently accept the first model or open a VS Code top-bar model picker. Attempts are one-time and bounded; cancellation, denial, failure, and timeout preserve the previous Nyxara configuration. Nyxara never opens CLI credential files. **Test connection** runs only `codex login status`, `claude auth status`, or `gemini --version`; it does not call a model. If a CLI is missing, use **CLI installation help** and install it explicitly—Nyxara never performs a silent global install.
+Subscription CLI login is different: **Sign In with Browser** launches only the documented provider CLI login command as a visible VS Code task. The official CLI opens the browser and stores/refreshes its own session. While that active attempt runs, the sidebar shows **Waiting for browser sign-in…** and **Cancel**. After successful completion, the existing provider auth/metadata contract can update Nyxara to **Session verified** immediately—this verifies local CLI authentication, not live network connectivity. Nyxara then opens **Models & Roles** inside the sidebar with the discovered models so you choose the model and effort/thinking setting there; it does not silently accept the first model or open a VS Code top-bar model picker. Attempts are one-time and bounded; cancellation, denial, failure, and timeout preserve the previous Nyxara configuration. Nyxara never opens CLI credential files. **Test Connection** uses the existing non-generating provider path: `codex login status` or `claude auth status` followed by their supported catalog contract, or only `gemini --version` for Gemini CLI. The latter proves installation only, so it shows **CLI available**, not an authenticated session or **Connected**. If a CLI is missing, use **CLI installation help** and install it explicitly—Nyxara never performs a silent global install.
 
 CLI model turns run from a fresh temporary directory. Claude built-in tools are disabled; Codex is ephemeral/read-only and ignores project rules; Gemini runs in plan mode with no pre-approved tools. Models return tool requests to Nyxara, and Nyxara Core remains responsible for repository access, permissions, validation, and review.
 
@@ -60,7 +84,7 @@ Use **Settings → Models & Roles → Advanced** only when needed. Advanced mode
 
 Execution controls are model-specific and come from explicit discovery metadata first, then versioned adapter-maintained provider-contract metadata. Known OpenAI models may expose their supported reasoning-effort values. Known Claude models expose Anthropic thinking with a bounded token budget. Known Gemini models expose either a thinking budget or Gemini-native thinking levels. The sidebar consumes this projected schema and does not define reasoning/thinking values. Unknown/new models and generic OpenAI-compatible/local endpoints remain visible but show **Provider Default** only; transport compatibility does not imply reasoning support. If a saved choice is no longer supported after changing a provider or model, Nyxara marks it stale and requires **Use Provider Default** or another valid selection rather than silently translating it.
 
-Opening these settings never probes capabilities or refreshes models. **Refresh Models** makes one provider/account-scoped discovery request and updates the open sidebar immediately. A failed refresh preserves the last safe cache and offers manual model-ID entry. After an extension reload, cached models remain visible as **Cached** with their last refresh time, while connection status is honestly **Connection unknown** until an explicit test or refresh. There is no auth, model, capability, or provider-health polling. Execution profile summaries contain no prompts, native request payloads, credentials, or hidden reasoning. Nyxara does not automatically route models or tune reasoning/thinking settings.
+Opening these settings never probes capabilities or refreshes models. **Refresh Models** makes one provider/account-scoped discovery request and updates the open sidebar immediately. A failed refresh preserves the last safe cache and offers manual model-ID entry. After an extension reload, cached models remain visible as **Cached** with their last refresh time. Provider status separately restores **Credential present** from SecretStorage or **Session recorded** from saved CLI-local auth evidence; legacy CLI configurations without evidence show **CLI configured**. The connection detail says **Live status not yet verified**, never **Connected** solely from persistence. Saved CLI evidence includes its last-check time and explicitly is not rechecked on reload. Signed-out, missing-credential and unavailable states remain distinct. There is no auth, model, capability, or provider-health polling. Execution profile summaries contain no prompts, native request payloads, credentials, or hidden reasoning. Nyxara does not automatically route models or tune reasoning/thinking settings.
 
 ## Settings Center
 
@@ -95,6 +119,26 @@ Task history is stored only in VS Code's local extension storage. It defaults to
 Use **Delete Task** in a terminal task detail to remove only that local history record. Use **Clear History** on the History screen to remove terminal records while preserving an active task. Both actions require native confirmation and never touch repository files, provider configuration, or SecretStorage.
 
 If VS Code reloads while a workflow is non-terminal, the old projection is marked **Interrupted** because this version does not persist or fake workflow resume. Its timeline remains readable and explains that it cannot resume automatically. While an authoritative in-process workflow is active, it continues when History is open; choose the active row or **Return to Active Task** to navigate back without duplicating execution.
+
+## Planner bounds (alpha.33)
+
+Short criteria-list overflow can be grouped losslessly before approval: at most
+two adjacent checks per entry, with the existing entry and character bounds
+unchanged. Every check remains visible. Truly oversized plans still fail with a
+specific field/count diagnostic, without an automatic provider retry. See
+`docs/PLANNER_BOUNDS_AUDIT.md`. Reload the window after installation and confirm
+the activation log reports the new version before testing another task.
+
+## Executor command checks (alpha.32)
+
+Executor can call the existing permission-gated `run_command` for scripts required
+by an approved task. Inspect the complete executable/argv and working directory
+before **Allow Once**; this is a local process, not an isolated sandbox. Deny and
+Abort remain available. See `docs/EXECUTOR_COMMAND_AUDIT.md` for limits and tests.
+For a monorepo without root validation scripts, expect an actionable Validation
+failure, not a fabricated pass; select/configure validation deliberately before
+expecting a complete workflow. Reloaded History corrects the former skipped-only
+“passed” summary when authoritative failure evidence exists.
 
 ## Performance
 

@@ -1,4 +1,4 @@
-import { DEFAULT_REPAIR_LIMITS, DEFAULT_REVIEW_EVIDENCE_BUDGET, DEFAULT_TASK_CONTEXT_BUDGET } from "@nyxara/core";
+import { DEFAULT_REVIEW_EVIDENCE_BUDGET, DEFAULT_TASK_CONTEXT_BUDGET } from "@nyxara/core";
 import { knownModelExecutionCapability, providerDefinition } from "@nyxara/providers";
 import {
   PROVIDER_DEFAULT_EXECUTION,
@@ -14,9 +14,11 @@ import {
 import type { ProviderConfig } from "./provider-config.js";
 import type { ProviderModelState, SafeModelInfo } from "./model-discovery.js";
 import type { PendingAuthSession } from "./auth-session.js";
+import type { CliSessionEvidence } from "./provider-connection-state.js";
+import { resolveWorkflowSettings, workflowControls, type WorkflowControl, type WorkflowSettings } from "./workflow-settings.js";
 
 export type SettingsSection = "home" | "aiProviders" | "modelsRoles" | "workflow" | "planning" | "engineeringRules" | "permissions" | "context" | "validation" | "review" | "repair" | "usage" | "taskHistory" | "workspace" | "privacy" | "advanced" | "about";
-export type ProviderConnectionStatus = "Connected" | "Signed out" | "Credential missing" | "Unavailable" | "Local available" | "Connection unknown";
+export type ProviderConnectionStatus = "Connected" | "Signed out" | "Credential missing" | "Unavailable" | "Local available" | "Credential present" | "Session recorded" | "Session verified" | "CLI configured" | "CLI available" | "Configured";
 export interface SettingsRoleAssignment { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId?: string; readonly providerName?: string; readonly modelId?: string; readonly available: boolean; readonly status: "Configured" | "Signed out" | "Credential missing" | "Unavailable" | "Unconfigured"; readonly executionOptions: ExecutionOptions; readonly executionCapability?: ModelExecutionCapability; readonly executionProfileStatus: ExecutionProfileStatus }
 export interface ProviderConfigProjection {
   readonly id: string; readonly adapterId: string; readonly displayName: string; readonly providerName: string; readonly category: string; readonly authStrategy: ProviderConfig["authStrategy"];
@@ -24,6 +26,8 @@ export interface ProviderConfigProjection {
   readonly authMethods: readonly ProviderAuthMethod[]; readonly supportsBrowserAuth: boolean;
   readonly supportsModelDiscovery: boolean; readonly supportsManualModelId: boolean; readonly lifecycleAction: "Sign Out" | "Disconnect" | "Remove Provider"; readonly createdAt?: string;
   readonly lifecycleBlocked: boolean;
+  readonly authentication: string; readonly liveStatus: "verified" | "not_verified" | "failed"; readonly connectionMessage: string;
+  readonly sessionLastCheckedAt?: string;
   readonly models: readonly SafeModelInfo[]; readonly modelsStatus: ProviderModelState["status"]; readonly modelsMessage?: string; readonly modelsLastRefreshedAt?: string;
 }
 export interface SettingsProjection {
@@ -34,14 +38,14 @@ export interface SettingsProjection {
   readonly modelMode: "simple" | "advanced";
   readonly roles: readonly SettingsRoleAssignment[];
   readonly pendingAuth?: Pick<PendingAuthSession, "providerConfigId" | "sessionId" | "authMethod" | "expiresAt">;
-  readonly workflow: { readonly planApproval: "Required"; readonly afterApproval: "Automatic"; readonly pauseResume: "Supported"; readonly automaticRepair: "Enabled" };
+  readonly workflow: { readonly planApproval: "Required"; readonly afterApproval: "Automatic"; readonly pauseResume: "Supported"; readonly automaticRepair: "Enabled" | "Disabled"; readonly settings: WorkflowSettings; readonly controls: readonly WorkflowControl[] };
   readonly planning: { readonly selectedProfileId: string; readonly profiles: readonly { readonly id: string; readonly name: string; readonly locale?: string; readonly outputLanguage: string; readonly planStyle: string; readonly riskMode: string }[] };
   readonly rules: readonly { readonly id: string; readonly name: string; readonly description: string; readonly scope: string; readonly severity: string; readonly enabled: boolean }[];
   readonly permissions: { readonly automaticallyAllowed: readonly string[]; readonly askFirst: readonly string[]; readonly denied: readonly string[] };
   readonly context: { readonly strategy: "Automatic"; readonly repositoryContext: "On demand"; readonly targetedExpansion: "Enabled"; readonly bounded: "Enabled"; readonly maxTaskFiles: number; readonly maxTaskBytes: number };
-  readonly validation: { readonly failFast: true; readonly steps: readonly { readonly kind: string; readonly policy: "Required when available" }[] };
+  readonly validation: { readonly failFast: boolean; readonly steps: readonly { readonly kind: string; readonly policy: "Required when available" | "Disabled"; readonly timeoutMs: number }[] };
   readonly review: { readonly reviewer: SettingsRoleAssignment; readonly rulesApplied: true; readonly validationFailuresForceFail: true; readonly boundedEvidence: true; readonly targetedContextExpansion: true; readonly maxContextFiles: number };
-  readonly repair: { readonly automatic: true; readonly validationFirst: true; readonly plannerReplan: false; readonly contextReuse: true; readonly usesRole: "Executor"; readonly maximumCycles: number };
+  readonly repair: { readonly automatic: boolean; readonly validationFirst: true; readonly plannerReplan: false; readonly contextReuse: true; readonly usesRole: "Executor"; readonly maximumCycles: number };
   readonly usage: {
     readonly tokenReporting: "Provider-reported when available";
     readonly cacheTokenReporting: "Provider-reported when available";
@@ -58,33 +62,56 @@ export interface SettingsProjection {
 }
 
 export interface SettingsProjectionInput {
+  readonly workflowSettings?: WorkflowSettings;
   readonly version: string; readonly providers: readonly ProviderConfig[]; readonly defaultProviderId?: string; readonly credentialStored: ReadonlyMap<string, boolean>;
   readonly roles: readonly { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId?: string; readonly modelId?: string; readonly executionOptions?: ExecutionOptions; readonly executionMalformed?: boolean }[];
   readonly providerCapabilities?: ReadonlyMap<string, ProviderCapabilities>; readonly modelMode: "simple" | "advanced"; readonly selectedPlanningProfile: string;
   readonly modelCapabilities?: ReadonlyMap<string, ModelCapabilities>;
   readonly modelStates?: ReadonlyMap<string, ProviderModelState>; readonly pendingAuth?: PendingAuthSession;
+  readonly cliSessionEvidence?: ReadonlyMap<string, CliSessionEvidence>; readonly failedProviderIds?: ReadonlySet<string>;
   readonly planningProfiles: readonly any[]; readonly engineeringRules: readonly any[]; readonly historyRetention: number; readonly historyCount: number;
   readonly workspaceFolders: readonly { readonly id: string; readonly label: string }[]; readonly selectedWorkspaceRootId?: string; readonly testedProviderIds?: ReadonlySet<string>; readonly activeProviderIds?: ReadonlySet<string>;
 }
 
-export function providerStatus(config: ProviderConfig, credentialStored: boolean, tested = false): ProviderConnectionStatus {
+export function providerStatus(config: ProviderConfig, credentialStored: boolean, tested = false, session?: CliSessionEvidence): ProviderConnectionStatus {
   if (config.signedOut) return "Signed out";
   if (config.authStrategy === "api_key" && !credentialStored) return "Credential missing";
+  if (config.authStrategy === "subscription_cli") {
+    if (tested) return config.type === "gemini-cli" ? "CLI available" : "Session verified";
+    if (session?.state === "missing") return "Credential missing";
+    if (session?.state === "unavailable") return "Unavailable";
+    return session?.state === "present" ? "Session recorded" : "CLI configured";
+  }
   if (tested) return config.authStrategy === "local" ? "Local available" : "Connected";
-  return "Connection unknown";
+  return credentialStored ? "Credential present" : "Configured";
 }
 
 export function buildSettingsProjection(input: SettingsProjectionInput): SettingsProjection {
+  const workflowSettings = input.workflowSettings ?? resolveWorkflowSettings();
   const providers = input.providers.map((config): ProviderConfigProjection => {
     const definition = providerDefinition(config.catalogId ?? config.type);
     const credentialStored = input.credentialStored.get(config.id) === true;
     const registered = !input.providerCapabilities || input.providerCapabilities.has(config.id);
     const modelState = input.modelStates?.get(config.id);
     const providerManagedModel = config.authStrategy === "subscription_cli" && !definition.onboarding.modelDiscovery;
+    const session = input.cliSessionEvidence?.get(config.id);
+    const tested = input.testedProviderIds?.has(config.id) === true;
+    const status = config.signedOut ? "Signed out" : registered ? providerStatus(config, credentialStored, tested, session) : "Unavailable";
+    const liveStatus = input.failedProviderIds?.has(config.id) ? "failed" : status === "Connected" || status === "Local available" ? "verified" : "not_verified";
+    const authentication = config.signedOut ? "Signed out of this Nyxara configuration"
+      : config.authStrategy === "api_key" ? credentialStored ? "Credential present in VS Code SecretStorage" : "Credential missing from VS Code SecretStorage"
+      : config.authStrategy === "subscription_cli" ? session ? `Official CLI session ${session.state === "present" ? "last confirmed" : session.state === "missing" ? "missing at last check" : "unavailable at last check"}: ${session.checkedAt}. Not rechecked on reload.` : "Official CLI manages authentication; no saved session confirmation."
+      : definition.onboarding.authMethods.includes("api_key") ? credentialStored ? "Credential present in VS Code SecretStorage" : "No API key configured. Use Add API Key if this gateway requires authentication."
+      : "No credential required";
+    const connectionMessage = liveStatus === "verified" ? "Live connection verified in this extension session."
+      : liveStatus === "failed" ? "Last connection test failed. Use Test Connection to retry."
+      : tested && config.authStrategy === "subscription_cli" ? `${config.type === "gemini-cli" ? "CLI installation verified; account session cannot be verified by the supported contract." : "CLI account session verified locally."} Live network status not yet verified.`
+      : "Live status not yet verified. Use Test Connection to verify explicitly.";
     return {
       id: config.id, adapterId: config.type, displayName: config.displayName, providerName: definition.displayName, category: categoryLabel(definition.onboarding.category),
       authStrategy: config.authStrategy, endpoint: definition.onboarding.category === "official" ? "Official" : config.baseUrl ?? "Managed by official CLI",
-      ...(config.modelId ? { defaultModel: config.modelId } : {}), credentialStored, status: config.signedOut ? "Signed out" : registered ? providerStatus(config, credentialStored, input.testedProviderIds?.has(config.id)) : "Unavailable", isDefault: config.id === input.defaultProviderId,
+      ...(config.modelId ? { defaultModel: config.modelId } : {}), credentialStored, status, isDefault: config.id === input.defaultProviderId,
+      authentication, liveStatus, connectionMessage, ...(session ? { sessionLastCheckedAt: session.checkedAt } : {}),
       authMethods: [...definition.onboarding.authMethods], supportsBrowserAuth: definition.onboarding.authMethods.includes("subscription_cli"),
       supportsModelDiscovery: definition.onboarding.modelDiscovery, supportsManualModelId: definition.onboarding.manualModelId,
       lifecycleAction: config.authStrategy === "subscription_cli" ? "Sign Out" : config.authStrategy === "api_key" ? "Disconnect" : "Remove Provider", ...(config.createdAt ? { createdAt: config.createdAt } : {}),
@@ -118,13 +145,13 @@ export function buildSettingsProjection(input: SettingsProjectionInput): Setting
   return {
     version: input.version, providers, ...(selected ? { defaultProviderConfigId: selected.id } : {}), ...(selected?.defaultModel ? { defaultModel: selected.defaultModel } : {}), modelMode: input.modelMode, roles: projectedRoles,
     ...(input.pendingAuth ? { pendingAuth: { providerConfigId: input.pendingAuth.providerConfigId, sessionId: input.pendingAuth.sessionId, authMethod: input.pendingAuth.authMethod, expiresAt: input.pendingAuth.expiresAt } } : {}),
-    workflow: { planApproval: "Required", afterApproval: "Automatic", pauseResume: "Supported", automaticRepair: "Enabled" },
+    workflow: { planApproval: "Required", afterApproval: "Automatic", pauseResume: "Supported", automaticRepair: workflowSettings.allowRepair ? "Enabled" : "Disabled", settings: workflowSettings, controls: workflowControls(workflowSettings) },
     planning: { selectedProfileId: input.selectedPlanningProfile, profiles: planningProfiles }, rules,
     permissions: { automaticallyAllowed: ["Read workspace", "List and search repository", "Git status and diff", "Approved workspace edits", "Validation commands"], askFirst: ["Safe or unknown non-validation commands", "Large file writes", "Environment file writes"], denied: ["Outside workspace", "Credential file writes", "Delete workspace files", "Git push/reset/clean", "sudo", "Production deployment"] },
     context: { strategy: "Automatic", repositoryContext: "On demand", targetedExpansion: "Enabled", bounded: "Enabled", maxTaskFiles: DEFAULT_TASK_CONTEXT_BUDGET.maxFiles, maxTaskBytes: DEFAULT_TASK_CONTEXT_BUDGET.maxBytes },
-    validation: { failFast: true, steps: ["Typecheck", "Lint", "Tests", "Build"].map((kind) => ({ kind, policy: "Required when available" as const })) },
+    validation: { failFast: workflowSettings.validation.failFast, steps: ([ ["typecheck", "Typecheck"], ["lint", "Lint"], ["test", "Tests"], ["build", "Build"] ] as const).map(([key, kind]) => ({ kind, policy: workflowSettings.validation[key].enabled ? "Required when available" as const : "Disabled" as const, timeoutMs: workflowSettings.validation[key].timeoutMs })) },
     review: { reviewer, rulesApplied: true, validationFailuresForceFail: true, boundedEvidence: true, targetedContextExpansion: true, maxContextFiles: DEFAULT_REVIEW_EVIDENCE_BUDGET.maxContextFiles },
-    repair: { automatic: true, validationFirst: true, plannerReplan: false, contextReuse: true, usesRole: "Executor", maximumCycles: DEFAULT_REPAIR_LIMITS.maxRepairCycles },
+    repair: { automatic: workflowSettings.allowRepair, validationFirst: true, plannerReplan: false, contextReuse: true, usesRole: "Executor", maximumCycles: workflowSettings.repairLimits.maxRepairCycles },
     usage: { tokenReporting: "Provider-reported when available", cacheTokenReporting: "Provider-reported when available", providerReportedCost: "Existing provider provenance only", localTaskPerformanceHistory: "Stored locally", executionProfileAttribution: "Attributed per role/model", automaticOptimization: "Off" },
     history: { storage: "Local", retention: input.historyRetention, count: input.historyCount, choices: [20, 50, 100] },
     workspace: { available: roots.length > 0, multiple: roots.length > 1, ...(selectedRoot ? { currentWorkspace: selectedRoot.label, selectedRoot: selectedRoot.id } : {}), roots, planningProfile: input.selectedPlanningProfile, rulesCount: rules.filter((rule) => rule.enabled).length },

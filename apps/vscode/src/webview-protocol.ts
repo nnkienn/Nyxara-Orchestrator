@@ -1,6 +1,7 @@
 import type { WorkspaceViewState } from "./workspace-state.js";
 import type { SettingsSection } from "./settings-projection.js";
 import { PROVIDER_DEFAULT_EXECUTION, parseExecutionOptions, type ExecutionOptions } from "@nyxara/provider-sdk";
+import { validateWorkflowSettingsPatch, type WorkflowSettingsPatch } from "./workflow-settings.js";
 
 export const MAX_TASK_INPUT = 20_000;
 export const MAX_FIELD_INPUT = 2_048;
@@ -28,6 +29,7 @@ export type WebviewToExtensionMessage =
   | { readonly type: "setDefaultModel"; readonly providerConfigId: string; readonly modelId: string; readonly executionOptions: ExecutionOptions }
   | { readonly type: "updateRoleAssignments"; readonly assignments: readonly { readonly role: "planner" | "executor" | "reviewer"; readonly providerConfigId: string; readonly modelId: string; readonly executionOptions: ExecutionOptions }[] }
   | { readonly type: "updatePlanningProfile"; readonly profileId: string }
+  | { readonly type: "updateWorkflowSettings"; readonly settings: WorkflowSettingsPatch }
   | { readonly type: "updateHistoryRetention"; readonly retention: 20 | 50 | 100 }
   | { readonly type: "selectWorkspaceRoot"; readonly rootId: string }
   | { readonly type: "requestDiagnostics" }
@@ -124,6 +126,14 @@ export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage |
     case "cancelBrowserAuth": { const providerConfigId = text("providerConfigId", 200)?.trim(); const sessionId = text("sessionId", 200)?.trim(); return providerConfigId && sessionId ? { type: value.type, providerConfigId, sessionId } : undefined; }
     case "setDefaultModel": { const providerConfigId = text("providerConfigId", 200)?.trim(); const modelId = text("modelId")?.trim(); const executionOptions = value.executionOptions === undefined ? PROVIDER_DEFAULT_EXECUTION : parseExecutionOptions(value.executionOptions); return providerConfigId && modelId && executionOptions ? { type: value.type, providerConfigId, modelId, executionOptions } : undefined; }
     case "updateProviderMetadata": { const providerConfigId = text("providerConfigId", 200)?.trim(); const displayName = text("displayName", 100)?.trim(); const endpoint = text("endpoint")?.trim(); return providerConfigId && displayName && endpoint ? { type: value.type, providerConfigId, displayName, endpoint } : undefined; }
+    case "updateWorkflowSettings": {
+      if (Object.keys(value).some((key) => !["type", "settings"].includes(key))) return undefined;
+      try {
+        const settings = validateWorkflowSettingsPatch(value.settings);
+        if (Object.keys(settings).length === 0) return undefined;
+        return { type: value.type, settings };
+      } catch { return undefined; }
+    }
     case "updatePlanningProfile": { const profileId = text("profileId", 100)?.trim(); return profileId ? { type: value.type, profileId } : undefined; }
     case "updateHistoryRetention": return [20, 50, 100].includes(Number(value.retention)) ? { type: value.type, retention: Number(value.retention) as 20 | 50 | 100 } : undefined;
     case "selectWorkspaceRoot": { const rootId = text("rootId", 100)?.trim(); return rootId ? { type: value.type, rootId } : undefined; }

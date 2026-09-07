@@ -43,6 +43,10 @@ export class PlanValidator {
     private readonly bounds: PlanStructureBounds = DEFAULT_PLAN_STRUCTURE_BOUNDS,
   ) {}
 
+  get structureBounds(): PlanStructureBounds {
+    return this.bounds;
+  }
+
   validate(input: unknown): ExecutionPlan {
     const result = ExecutionPlanSchema.safeParse(input);
     if (!result.success) {

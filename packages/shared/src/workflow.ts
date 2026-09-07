@@ -157,6 +157,7 @@ export interface PendingWorkflowPermission {
   readonly taskId: string;
   readonly capability: string;
   readonly resource?: string;
+  readonly command?: { readonly command: string; readonly args: readonly string[]; readonly cwd: string };
   readonly reason?: string;
   readonly requestedAt: string;
 }

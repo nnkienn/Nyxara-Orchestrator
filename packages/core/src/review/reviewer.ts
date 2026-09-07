@@ -17,7 +17,7 @@ import type {
   ReviewerRunResult,
 } from "./reviewer.types.js";
 
-const DEFAULT_REVIEWER_LIMITS: ReviewerLimits = {
+export const DEFAULT_REVIEWER_LIMITS: ReviewerLimits = {
   maxReviewerTurns: 2,
   maxContextExpansions: 1,
 };
@@ -251,7 +251,7 @@ export class Reviewer {
   }
 }
 
-function resolveReviewerLimits(input?: Partial<ReviewerLimits>): ReviewerLimits {
+export function resolveReviewerLimits(input?: Partial<ReviewerLimits>): ReviewerLimits {
   const limits = { ...DEFAULT_REVIEWER_LIMITS, ...input };
   if (
     !Number.isInteger(limits.maxReviewerTurns) ||

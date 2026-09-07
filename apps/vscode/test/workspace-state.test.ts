@@ -18,6 +18,12 @@ const plan = {
 };
 
 describe("workspace Webview state projection", () => {
+  it("shows full command argv and cwd for one-time permission, including long arguments", () => {
+    const command = { command: "python3", args: ["apps/web/scripts/planet-compare.py", "x".repeat(800)], cwd: "/workspace" };
+    const state = build({ snapshot: { workflowId: "w", status: "waiting_for_permission", tasks: [], pendingPermission: { id: "permission-1", capability: "run_command", command } } });
+    expect(state.workflow?.permission).toMatchObject({ command: JSON.stringify([command.command, ...command.args]), cwd: "/workspace", reason: expect.stringContaining("not an isolated sandbox") });
+  });
+
   it("projects provider/model and detects advanced routing", () => {
     expect(build().providerLabel).toBe("Gateway · route/model");
     const advanced = build({ roles: [{ role: "planner", providerId: "gateway", modelId: "a" }, { role: "executor", providerId: "gateway", modelId: "b" }, { role: "reviewer", providerId: "gateway", modelId: "a" }] });

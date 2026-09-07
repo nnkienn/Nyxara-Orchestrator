@@ -1,6 +1,6 @@
 {
   "name": "nyxara-vscode",
-  "version": "0.1.0-alpha.24",
+  "version": "0.1.0-alpha.33",
   "publisher": "nyxara",
   "private": true,
   "description": "Thin VS Code client for Nyxara Orchestrator",
@@ -134,6 +134,54 @@
     "configuration": {
       "title": "Nyxara",
       "properties": {
+        "nyxara.workflow": {
+          "type": "object",
+          "scope": "window",
+          "default": {},
+          "additionalProperties": false,
+          "description": "Existing Core workflow options. Omitted values use Core defaults. Changes apply to new tasks, not the current plan or running workflow.",
+          "properties": {
+            "allowRepair": { "type": "boolean", "description": "Allow the existing automatic repair loop after validation or review failure." },
+            "repairLimits": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "maxRepairCycles": { "type": "integer", "minimum": 1, "maximum": 5 },
+                "maxExecutorAttemptsPerTask": { "type": "integer", "minimum": 1, "maximum": 5 },
+                "maxValidationAttempts": { "type": "integer", "minimum": 1 },
+                "maxReviewAttempts": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "validation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "failFast": { "type": "boolean" },
+                "typecheck": {
+                  "type": "object", "additionalProperties": false,
+                  "properties": { "enabled": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 1800000 } }
+                },
+                "lint": {
+                  "type": "object", "additionalProperties": false,
+                  "properties": { "enabled": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 1800000 } }
+                },
+                "test": {
+                  "type": "object", "additionalProperties": false,
+                  "properties": { "enabled": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 1800000 } }
+                },
+                "build": {
+                  "type": "object", "additionalProperties": false,
+                  "properties": { "enabled": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 1800000 } }
+                }
+              }
+            },
+            "reviewerLimits": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "maxReviewerTurns": { "type": "integer", "minimum": 1, "maximum": 4 } }
+            }
+          }
+        },
         "nyxara.provider": {
           "type": "string",
           "default": "",
@@ -144,7 +192,13 @@
           "default": [],
           "description": "Local non-secret provider configurations. Credentials remain in VS Code SecretStorage.",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "streaming": {
+                "type": "boolean",
+                "description": "Use Chat Completions SSE for this OpenAI-compatible provider. Enable only for a verified streaming endpoint; other compatible providers remain non-streaming by default."
+              }
+            }
           }
         },
         "nyxara.defaultProviderConfigId": {

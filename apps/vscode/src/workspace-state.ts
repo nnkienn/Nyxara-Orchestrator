@@ -70,7 +70,7 @@ export interface WorkspaceViewState {
     readonly progress?: { readonly completed: number; readonly total: number };
     readonly currentTaskId?: string;
     readonly tasks: readonly { readonly id: string; readonly title: string; readonly status: string }[];
-    readonly permission?: { readonly id: string; readonly action: string; readonly reason: string };
+    readonly permission?: { readonly id: string; readonly action: string; readonly reason: string; readonly command?: string; readonly cwd?: string };
     readonly error?: { readonly stage: string; readonly message: string };
   };
   readonly validation: readonly { readonly kind: string; readonly status: string; readonly durationMs?: number | null }[];
@@ -147,7 +147,12 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
     ...(snapshot.progress ? { progress: { completed: snapshot.progress.completed, total: snapshot.progress.total } } : {}),
     ...(snapshot.currentTaskId ? { currentTaskId: bounded(snapshot.currentTaskId, 200) } : {}),
     tasks: snapshot.tasks.slice(0, MAX_ITEMS).map((task) => ({ id: bounded(task.taskId, 200), title: plan?.tasks.find((item) => item.id === task.taskId)?.title ?? bounded(task.taskId, 200), status: task.executionStatus ?? "pending" })),
-    ...(snapshot.pendingPermission ? { permission: { id: bounded(snapshot.pendingPermission.id, 300), action: bounded([snapshot.pendingPermission.capability, snapshot.pendingPermission.resource].filter(Boolean).join(" · "), 300), reason: bounded(snapshot.pendingPermission.reason || "Nyxara needs permission to continue.", 500) } } : {}),
+    ...(snapshot.pendingPermission ? { permission: {
+      id: bounded(snapshot.pendingPermission.id, 300),
+      action: bounded([snapshot.pendingPermission.capability, snapshot.pendingPermission.resource].filter(Boolean).join(" · "), 300),
+      reason: bounded(snapshot.pendingPermission.reason || (snapshot.pendingPermission.command ? "Runs a local process, not an isolated sandbox. Review the executable and every argument before allowing once." : "Nyxara needs permission to continue."), 500),
+      ...(snapshot.pendingPermission.command ? { command: JSON.stringify([snapshot.pendingPermission.command.command, ...snapshot.pendingPermission.command.args]), cwd: snapshot.pendingPermission.command.cwd } : {}),
+    } } : {}),
     ...(snapshot.error && outcome !== "rejected" ? { error: { stage: workflowStage(snapshot), message: friendlyErrorMessage(snapshot.error) } } : {}),
   } : undefined;
   const completion = completionStatus ? {

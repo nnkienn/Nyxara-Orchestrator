@@ -9,6 +9,7 @@ import { PlanValidator } from "./plan-validator.js";
 import { PlannerError } from "./planner-error.js";
 import { PlannerPromptBuilder } from "./planner-prompt-builder.js";
 import { parseAndNormalizePlanDraft } from "./plan-draft-normalizer.js";
+import { groupPlanAcceptanceCriteria } from "./plan-criteria-normalizer.js";
 import {
   ExecutionPlanDraftSchema,
   normalizePlannerInput,
@@ -39,7 +40,7 @@ export class Planner {
       const provider = this.providers.get(model.providerId);
       const models = await provider.listModels();
       const selectedModel = this.requireModel(models, model.modelId);
-      const prompt = this.promptBuilder.build(input, planningProfile, runInput.engineeringRules);
+      const prompt = this.promptBuilder.build(input, planningProfile, runInput.engineeringRules, this.validator.structureBounds);
       const response = await this.generate(
         provider,
         prompt,
@@ -53,6 +54,12 @@ export class Planner {
         boundPlannerOutputTokens(runInput.maxOutputTokens),
         runInput.signal,
       );
+      if (["length", "max_tokens", "MAX_TOKENS"].includes(response.finishReason ?? "")) {
+        throw new PlannerError("plan_response_truncated", "Planner response reached the provider output limit; no plan was accepted");
+      }
+      if (!response.text.trim()) {
+        throw new PlannerError("plan_response_empty", "Planner received an empty assistant response; no plan was accepted");
+      }
       const parsed = parseAndNormalizePlanDraft(response.text);
 
       this.events.emit("plan.validation_started", {
@@ -61,6 +68,7 @@ export class Planner {
       });
 
       let plan: ExecutionPlan;
+      let acceptanceCriteriaGrouping: NyxaraEventMap["planner.completed"]["acceptanceCriteriaGrouping"];
       try {
         const draftResult = ExecutionPlanDraftSchema.safeParse(parsed);
         if (!draftResult.success) {
@@ -71,11 +79,21 @@ export class Planner {
             `Planner plan field ${location} is invalid${issue?.message ? `: ${issue.message}` : ""}`,
           );
         }
+        const normalized = groupPlanAcceptanceCriteria(draftResult.data, this.validator.structureBounds);
         plan = this.validator.validate({
-          ...draftResult.data,
+          ...normalized,
           id: randomUUID(),
           createdAt: new Date().toISOString(),
         });
+        const groupedTasks = normalized.tasks.flatMap((task, index) => {
+          const original = draftResult.data.tasks[index]!.acceptanceCriteria.length;
+          return original !== task.acceptanceCriteria.length ? [{ original, grouped: task.acceptanceCriteria.length }] : [];
+        });
+        if (groupedTasks.length > 0) acceptanceCriteriaGrouping = {
+          tasks: groupedTasks.length,
+          originalCriteria: groupedTasks.reduce((total, task) => total + task.original, 0),
+          groupedCriteria: groupedTasks.reduce((total, task) => total + task.grouped, 0),
+        };
       } catch (error: unknown) {
         this.events.emit("plan.validation_failed", {
           providerId: model.providerId,
@@ -94,6 +112,7 @@ export class Planner {
         providerId: model.providerId,
         modelId: model.modelId,
         taskCount: plan.tasks.length,
+        ...(acceptanceCriteriaGrouping ? { acceptanceCriteriaGrouping } : {}),
       });
       return plan;
     } catch (error: unknown) {

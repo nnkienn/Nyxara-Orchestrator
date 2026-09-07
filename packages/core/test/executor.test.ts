@@ -294,12 +294,92 @@ describe("Executor", () => {
     ).rejects.toMatchObject({ code: "model_turn_limit_exceeded" });
   });
 
+  it("advertises and executes a command only after permission, retaining Git evidence", async () => {
+    const command = { command: process.execPath, args: ["-e", "require('node:fs').writeFileSync('baseline.json', JSON.stringify({cwd:process.cwd()}))"], timeoutMs: 5000, maxOutputBytes: 1024 };
+    const resolvePermission = vi.fn(async () => "allow" as const);
+    const generate = vi.fn(async (request: GenerateRequest) => {
+      expect(request.tools?.find((tool) => tool.name === "run_command")).toBeDefined();
+      if (!request.conversation) return response({ toolCalls: [{ id: "baseline", name: "run_command", arguments: command }] });
+      expect(request.conversation.at(-1)).toMatchObject({ role: "tool", toolResult: { name: "run_command", result: { exitCode: 0 } } });
+      return response({ text: JSON.stringify({ status: "completed", summary: "Captured baseline" }) });
+    });
+    const executed = await orchestrator(generate).executeTask({ plan: executionPlan(), taskId: "T1", workspaceRoot: workspace, resolvePermission });
+    expect(resolvePermission).toHaveBeenCalledTimes(1);
+    expect(resolvePermission).toHaveBeenCalledWith(expect.objectContaining({ capability: "run_command", command: { ...command, cwd: workspace } }));
+    expect(executed.result).toMatchObject({ status: "completed", changedFiles: ["baseline.json"], successfulToolCalls: 1, toolCallsByName: { run_command: 1 } });
+    expect(JSON.parse(await readFile(join(workspace, "baseline.json"), "utf8"))).toEqual({ cwd: workspace });
+  });
+
+  it("derives command changes to an already-dirty tracked file without claiming unrelated changes", async () => {
+    await writeFile(join(workspace, "src/notification.ts"), "export const notifications = ['existing'];\n");
+    await writeFile(join(workspace, "unrelated.txt"), "user change");
+    const generate = vi.fn(async (request: GenerateRequest) => request.conversation
+      ? response({ text: JSON.stringify({ status: "completed", summary: "Updated assigned file" }) })
+      : response({ toolCalls: [{ id: "edit", name: "run_command", arguments: { command: process.execPath, args: ["-e", "require('node:fs').appendFileSync('src/notification.ts', 'export const page = 1;\\n')"] } }] }));
+    const executed = await orchestrator(generate).executeTask({ plan: executionPlan(), taskId: "T1", workspaceRoot: workspace, resolvePermission: async () => "allow" });
+    expect(executed.result.changedFiles).toEqual(["src/notification.ts"]);
+    await expect(readFile(join(workspace, "unrelated.txt"), "utf8")).resolves.toBe("user change");
+  });
+
+  it("does not accept claimed completion after a command exits nonzero", async () => {
+    const generate = vi.fn(async (request: GenerateRequest) => {
+      if (!request.conversation) return response({ toolCalls: [{ id: "failure", name: "run_command", arguments: { command: process.execPath, args: ["-e", "console.error('fixture failure'); process.exit(7)"] } }] });
+      expect(request.conversation.at(-1)).toMatchObject({ role: "tool", toolResult: { name: "run_command", error: { code: "command_failed", message: expect.stringContaining("fixture failure") } } });
+      return response({ text: JSON.stringify({ status: "completed", summary: "Claims success" }) });
+    });
+    const executed = await orchestrator(generate).executeTask({ plan: executionPlan(), taskId: "T1", workspaceRoot: workspace, resolvePermission: async () => "allow" });
+    expect(executed.result).toMatchObject({ status: "failed", failedToolCalls: 1, unresolvedIssues: ["run_command failed with command_failed"] });
+  });
+
+  it("keeps a failed command unresolved when a different command succeeds", async () => {
+    let turns = 0;
+    const generate = vi.fn(async () => {
+      turns += 1;
+      if (turns <= 2) return response({ toolCalls: [{ id: `command-${turns}`, name: "run_command", arguments: { command: process.execPath, args: turns === 1 ? ["-e", "process.exit(7)"] : ["--version"] } }] });
+      return response({ text: JSON.stringify({ status: "completed", summary: "Claims success after version check" }) });
+    });
+    const executed = await orchestrator(generate).executeTask({ plan: executionPlan(), taskId: "T1", workspaceRoot: workspace, resolvePermission: async () => "allow" });
+    expect(executed.result).toMatchObject({ status: "failed", failedToolCalls: 1, successfulToolCalls: 1, unresolvedIssues: ["run_command failed with command_failed"] });
+  });
+
+  it.each([0, 7])("executes the approved command through the real workflow permission gate only once (exit %s)", async (exitCode) => {
+    const generate = vi.fn(async (request: GenerateRequest) => request.conversation
+      ? response({ text: JSON.stringify({ status: "completed", summary: "Captured baseline" }) })
+      : response({ toolCalls: [{ id: "baseline", name: "run_command", arguments: { command: process.execPath, args: ["-e", `require('node:fs').writeFileSync('baseline.json','{}'); process.exit(${exitCode})`] } }] }));
+    const nyxara = orchestrator(generate);
+    const plan = executionPlan();
+    const workflow = nyxara.startWorkflow({ workspace, prompt: "Capture baseline" });
+    const core = nyxara as any;
+    core.planRuntime.register(plan, workflow.id);
+    core.workflowEngine.transition(workflow.id, "planning");
+    core.workflowEngine.transition(workflow.id, "awaiting_plan_approval", { planId: plan.id });
+    nyxara.approvePlan(workflow.id, plan.id);
+    const waiting = await nyxara.runApprovedPlan({ workflowId: workflow.id, planId: plan.id });
+    if (waiting.status !== "waiting_for_permission") throw new Error("expected permission");
+    expect(waiting.permission.command?.command).toBe(process.execPath);
+    await expect(readFile(join(workspace, "baseline.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    const finished = await nyxara.resolveWorkflowPermission({ workflowId: workflow.id, permissionRequestId: waiting.permission.id, decision: "allow" });
+    expect(finished).toMatchObject({ status: "failed", failure: { code: exitCode === 0 ? "no_validation_commands" : "executor_error" } });
+    expect(nyxara.getTaskExecutionStates(plan)[0]?.result?.status).toBe(exitCode === 0 ? "completed" : "failed");
+    expect(nyxara.getWorkflowSnapshot(workflow.id).usage).toMatchObject({ successfulToolCalls: exitCode === 0 ? 1 : 0, failedToolCalls: exitCode === 0 ? 0 : 1, toolCallsByName: { run_command: 1 } });
+    expect(generate).toHaveBeenCalledTimes(2);
+    await expect(readFile(join(workspace, "baseline.json"), "utf8")).resolves.toBe("{}");
+  });
+
+  it.each(["allowlist", "deny"])("never executes an unapproved command (%s)", async (decision) => {
+    const generate = vi.fn(async () => response({ toolCalls: [{ id: "denied", name: "run_command", arguments: { command: process.execPath, args: ["-e", "require('node:fs').writeFileSync('denied.txt', 'bad')"] } }] }));
+    await expect(orchestrator(generate).executeTask({ plan: executionPlan(), taskId: "T1", workspaceRoot: workspace, ...(decision === "deny" ? { resolvePermission: async () => "deny" as const } : {}) })).rejects.toMatchObject({ code: "executor_error" });
+    await expect(readFile(join(workspace, "denied.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["unknown tool", "unknown_tool", {}],
     ["sudo", "run_command", { command: "sudo", args: ["ls"] }],
     ["git push", "run_command", { command: "git", args: ["push"] }],
     ["destructive command", "run_command", { command: "rm", args: ["-rf", "/"] }],
-  ])("rejects %s requests outside the Executor tool allowlist", async (_label, name, args) => {
+    ["shell", "run_command", { command: "bash", args: ["-lc", "echo unsafe"] }],
+  ])("rejects %s through the tool allowlist or permission policy", async (_label, name, args) => {
     const generate = vi.fn(async () =>
       response({ toolCalls: [{ id: "unsafe", name, arguments: args }] }),
     );

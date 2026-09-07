@@ -16,6 +16,7 @@ export interface ProviderConfig {
   /** Last explicitly selected model for this local configuration. Non-secret. */
   readonly modelId?: string;
   readonly baseUrl?: string;
+  readonly streaming?: boolean;
   readonly authStrategy: "api_key" | "subscription_cli" | "local" | "none";
   readonly createdAt?: string;
   /** Local lifecycle marker for externally authenticated CLI providers. */
@@ -75,7 +76,7 @@ function parseProviderConfig(value: unknown): ProviderConfig[] {
   const authStrategy = value.authStrategy === "subscription" ? "subscription_cli" : value.authStrategy === "api_key" || value.authStrategy === "subscription_cli" || value.authStrategy === "local" || value.authStrategy === "none" ? value.authStrategy : definition.cli ? "subscription_cli" : definition.onboarding.category === "official" ? "api_key" : "none";
   const modelId = typeof value.modelId === "string" && value.modelId.trim() ? value.modelId.trim() : undefined;
   const createdAt = typeof value.createdAt === "string" && !Number.isNaN(Date.parse(value.createdAt)) ? value.createdAt : undefined;
-  return [{ id: value.id, ...(catalogId !== value.type ? { catalogId } : {}), type: value.type as ProviderAdapterType, displayName: typeof value.displayName === "string" && value.displayName.trim() ? value.displayName.trim() : definition.displayName, ...(modelId ? { modelId } : {}), ...(baseUrl ? { baseUrl } : {}), authStrategy, ...(createdAt ? { createdAt } : {}), ...(value.signedOut === true ? { signedOut: true } : {}) }];
+  return [{ id: value.id, ...(catalogId !== value.type ? { catalogId } : {}), type: value.type as ProviderAdapterType, displayName: typeof value.displayName === "string" && value.displayName.trim() ? value.displayName.trim() : definition.displayName, ...(modelId ? { modelId } : {}), ...(baseUrl ? { baseUrl } : {}), ...(typeof value.streaming === "boolean" ? { streaming: value.streaming } : {}), authStrategy, ...(createdAt ? { createdAt } : {}), ...(value.signedOut === true ? { signedOut: true } : {}) }];
 }
 
 export function createProvider(config: ProviderConfig, secrets: { get(key: string): Promise<string | undefined>; store(key: string, value: string): Promise<void>; delete(key: string): Promise<void> }) {
@@ -90,7 +91,7 @@ export function createProvider(config: ProviderConfig, secrets: { get(key: strin
   const providerId = config.catalogId ?? config.type;
   if (config.type === "anthropic") return new AnthropicProvider({ id: config.id, providerId, displayName: config.displayName, baseUrl: config.baseUrl, credentialStore, credentialKey });
   if (config.type === "gemini") return new GeminiProvider({ id: config.id, providerId, displayName: config.displayName, baseUrl: config.baseUrl, credentialStore, credentialKey });
-  return new OpenAICompatibleProvider({ id: config.id, providerId, displayName: config.displayName, baseUrl: config.baseUrl, credentialStore, credentialKey, credentialRequired: config.authStrategy === "api_key" });
+  return new OpenAICompatibleProvider({ id: config.id, providerId, displayName: config.displayName, baseUrl: config.baseUrl, ...(config.streaming !== undefined ? { streaming: config.streaming } : {}), credentialStore, credentialKey, credentialRequired: config.authStrategy === "api_key" });
 }
 
 export function defaultProviderId(configs: readonly ProviderConfig[], configuredId: string): string | undefined {

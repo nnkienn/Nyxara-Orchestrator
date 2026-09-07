@@ -237,7 +237,9 @@ export class AnthropicProvider implements ModelProvider {
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
     if (init.body) headers.set("Content-Type", "application/json");
     let response: Response;
-    try { response = await this.fetchImplementation(`${this.baseUrl}${path}`, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(30_000) }); }
+    const deadline = AbortSignal.timeout(30_000);
+    const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+    try { response = await this.fetchImplementation(`${this.baseUrl}${path}`, { ...init, headers, signal }); }
     catch (error) {
       if (error instanceof Error && error.name === "AbortError") throw error;
       if (error instanceof Error && error.name === "TimeoutError") throw new ProviderError("Provider request timed out", { code: "timeout_error", providerId: this.id });

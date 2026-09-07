@@ -243,6 +243,7 @@ export {
   ValidationCommandDiscovery,
 } from "./validation/validation-command-discovery.js";
 export {
+  DEFAULT_VALIDATION_ENABLED,
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_TIMEOUTS,
   SCRIPT_CANDIDATES,
@@ -290,7 +291,8 @@ export {
 export { ReviewerError } from "./review/reviewer.errors.js";
 export * from "./rules/index.js";
 export type { ReviewerErrorCode } from "./review/reviewer.errors.js";
-export { Reviewer } from "./review/reviewer.js";
+export { DEFAULT_REVIEWER_LIMITS, resolveReviewerLimits, Reviewer } from "./review/reviewer.js";
+export { DEFAULT_ALLOW_REPAIR } from "./workflow/workflow-runtime.js";
 export { ReviewerPromptBuilder } from "./review/reviewer-prompt-builder.js";
 export {
   ReviewContextRequestSchema,

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { configurationProxy } from "./fixtures/configuration-proxy.js";
 
 const mock = vi.hoisted(() => ({
+  workflowWorkspaceOverride: false,
   commands: new Map<string, (...args: any[]) => any>(), settings: new Map<string, any>(), updates: [] as Array<[string, unknown, unknown]>, failNextUpdateKey: undefined as string | undefined, inputs: [] as Array<string | undefined>, inputOptions: [] as any[], pickIndexes: [] as Array<number | undefined>, pickCalls: [] as any[][], errors: [] as string[], info: [] as string[], infoResults: [] as Array<string | undefined>, externalUrls: [] as string[], clipboard: [] as string[], terminals: [] as Array<{ name: string; commands: string[]; shown: boolean }>, taskExecutions: [] as any[], taskEndListeners: [] as Array<(event: any) => void>, providers: [] as any[], workspaceFolders: [] as any[], warnings: [] as string[], warningResult: "Disconnect" as string | undefined, output: { appendLine: vi.fn(), dispose: vi.fn() },
 }));
 
@@ -15,7 +17,7 @@ vi.mock("vscode", () => {
     commands: { registerCommand: vi.fn((name: string, handler: (...args: any[]) => any) => { mock.commands.set(name, handler); return { dispose: vi.fn() }; }), executeCommand: vi.fn() },
     workspace: {
       get workspaceFolders() { return mock.workspaceFolders; },
-      getConfiguration: vi.fn(() => ({ get: (key: string, fallback: any) => mock.settings.has(key) ? mock.settings.get(key) : fallback, update: async (key: string, value: unknown, target: unknown) => { if (mock.failNextUpdateKey === key) { mock.failNextUpdateKey = undefined; throw new Error("settings write failed"); } mock.updates.push([key, value, target]); mock.settings.set(key, value); } })),
+      getConfiguration: vi.fn(() => ({ get: (key: string, fallback: any) => mock.settings.has(key) ? configurationProxy(mock.settings.get(key)) : fallback, inspect: (key: string) => ({ workspaceValue: key === "nyxara.workflow" && mock.workflowWorkspaceOverride ? mock.settings.get(key) : undefined }), update: async (key: string, value: unknown, target: unknown) => { if (mock.failNextUpdateKey === key) { mock.failNextUpdateKey = undefined; throw new Error("settings write failed"); } mock.updates.push([key, value, target]); mock.settings.set(key, value); } })),
     },
     window: {
       createOutputChannel: vi.fn(() => mock.output), registerWebviewViewProvider: vi.fn((_id: string, provider: any) => { mock.providers.push(provider); return { dispose: vi.fn() }; }), createTerminal: vi.fn((options: { name: string }) => { const state = { name: options.name, commands: [] as string[], shown: false }; mock.terminals.push(state); return { show: () => { state.shown = true; }, sendText: (command: string) => { state.commands.push(command); }, dispose: vi.fn() }; }),
@@ -31,21 +33,28 @@ vi.mock("vscode", () => {
 import { decidePlanningContext } from "@nyxara/core";
 import { activate, providerConnectionMessage, workspaceRoot } from "../src/extension.js";
 import { readFileSync } from "node:fs";
+import { CLI_SESSION_STATE_KEY } from "../src/provider-connection-state.js";
+import { LEGACY_SECRET_KEY, providerSecretKey } from "../src/provider-config.js";
 
 const EXTENSION_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+
+async function flushSettingsMessages(): Promise<void> {
+  for (let turn = 0; turn < 100; turn += 1) await Promise.resolve();
+}
 
 function fakeSession(configured = false) {
   const core = { listModels: vi.fn(async () => [{ id: "ha-op/gpt-5.6-sol", name: "Routed" }]), listProviders: vi.fn(() => []), getModelCapabilities: vi.fn(() => undefined), listPlanningProfiles: vi.fn(() => [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }]), listEngineeringRules: vi.fn(() => []), planningContextDecision: undefined as any, requestPlanClarification: undefined as any, configureAgent: vi.fn(), createPlan: vi.fn(), runApprovedPlan: vi.fn(), startWorkflow: vi.fn() };
   return { core, configured, validation: new Map(), validationDurations: new Map(), currentPlan: undefined as any, snapshot: undefined as any, result: undefined as any, prompt: undefined as string | undefined, reviewStatus: undefined as string | undefined, reviewFindingCount: undefined as number | undefined, repairCycle: undefined as number | undefined, onChange: undefined as (() => void) | undefined, upsertProvider: vi.fn(), removeProvider: vi.fn(), configureAgents: vi.fn(), generate: vi.fn(), regenerate: vi.fn(), approveAndRun: vi.fn(async () => ({ status: "paused" })), rejectPlan: vi.fn(), pause: vi.fn(), resume: vi.fn(), abort: vi.fn(), resolvePermission: vi.fn(), resetPresentation: vi.fn() };
 }
 
-function activateFake(session = fakeSession()) {
-  const secretValues = new Map<string, string>();
+function activateFake(session = fakeSession(), saved: { secretValues?: Map<string, string>; globalValues?: Map<string, unknown> } = {}) {
+  const secretValues = saved.secretValues ?? new Map<string, string>();
+  const globalValues = saved.globalValues ?? new Map<string, unknown>();
   const secrets = { get: vi.fn(async (key: string) => secretValues.get(key)), store: vi.fn(async (key: string, value: string) => { secretValues.set(key, value); }), delete: vi.fn(async (key: string) => { secretValues.delete(key); }) };
-  const globalState = { get: vi.fn((_key: string, fallback: unknown) => fallback), update: vi.fn(async () => {}) }; const workspaceState = { update: vi.fn() };
+  const globalState = { get: vi.fn((key: string, fallback: unknown) => globalValues.get(key) ?? fallback), update: vi.fn(async (key: string, value: unknown) => { globalValues.set(key, value); }) }; const workspaceState = { update: vi.fn() };
   const context = { subscriptions: [] as any[], secrets, globalState, workspaceState, extensionUri: { value: "extension", toString: () => "extension" }, extension: { packageJSON: { version: EXTENSION_VERSION } } };
   activate(context as any, session as any);
-  return { session, context, secrets, secretValues, globalState, workspaceState };
+  return { session, context, secrets, secretValues, globalState, globalValues, workspaceState };
 }
 
 function resolveRegisteredWebview() {
@@ -69,9 +78,330 @@ const CODEX_CLI = { id: "codex-cli", type: "codex-cli", displayName: "OpenAI Cod
 const CLAUDE_CLI = { id: "claude-code-cli", type: "claude-code-cli", displayName: "Claude Code (Claude account)", authStrategy: "subscription_cli" };
 const terminalUsage = { workflowId: "terminal", planner: { role: "planner", providerConfigId: "openai", providerId: "openai", requestedModelId: "route/gpt", resolvedModelId: "gpt", executionProfileSummary: { kind: "provider_default" }, calls: 1, inputTokens: 8, outputTokens: 2, totalTokens: 10, usageSource: "provider_reported", providerDurationMs: 50 }, executor: { role: "executor", calls: 0 }, reviewer: { role: "reviewer", calls: 0 }, repair: { role: "repair", calls: 0 }, tasks: [], totalProviderCalls: 1, totalInputTokens: 8, totalOutputTokens: 2, totalTokens: 10, totalProviderDurationMs: 50, totalToolCalls: 0, usageSource: "provider_reported", providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable", totalDurationMs: 80, repairCycles: 0 };
 
+function providerSession() {
+  const session = fakeSession(true);
+  session.core.listProviders.mockReturnValue((mock.settings.get("nyxara.providerConfigs") ?? []).map((config: any) => ({ id: config.id, capabilities: { modelDiscovery: config.type !== "gemini-cli", textGeneration: true, structuredOutput: true, toolCalling: true } })));
+  return session;
+}
+
+function reloadProviderHost(previous: ReturnType<typeof activateFake>) {
+  for (const subscription of previous.context.subscriptions) subscription.dispose?.();
+  mock.providers.length = 0;
+  return activateFake(providerSession(), previous);
+}
+
+async function openProviderSettings(view: ReturnType<typeof resolveRegisteredWebview>) {
+  view.receive({ type: "ready" });
+  view.receive({ type: "openSettingsSection", section: "aiProviders" });
+  await flushSettingsMessages();
+  return view.posted.at(-1).state.settings.projection.providers;
+}
+
 describe("VS Code provider onboarding and command safety", () => {
+  it("logs the activated version so installed and running releases can be distinguished", () => {
+    activateFake();
+    expect(mock.output.appendLine).toHaveBeenCalledWith(`Nyxara extension activated (v${EXTENSION_VERSION})`);
+  });
   beforeEach(() => {
+    mock.workflowWorkspaceOverride = false;
     mock.commands.clear(); mock.settings.clear(); mock.updates.length = 0; mock.failNextUpdateKey = undefined; mock.inputs.length = 0; mock.inputOptions.length = 0; mock.pickIndexes.length = 0; mock.pickCalls.length = 0; mock.errors.length = 0; mock.info.length = 0; mock.infoResults.length = 0; mock.externalUrls.length = 0; mock.clipboard.length = 0; mock.terminals.length = 0; mock.taskExecutions.length = 0; mock.taskEndListeners.length = 0; mock.providers.length = 0; mock.workspaceFolders.length = 0; mock.warnings.length = 0; mock.warningResult = "Disconnect"; vi.clearAllMocks();
+  });
+
+  it.each([{}, { allowRepair: false, validation: { test: { enabled: false } } }])("opens provider state after reload with proxy-backed VS Code settings: %j", async (workflow) => {
+    mock.settings.set("nyxara.workflow", workflow);
+    mock.settings.set("nyxara.providerConfigs", [OPENAI]);
+    const host = activateFake(providerSession(), { secretValues: new Map([[providerSecretKey(OPENAI.id), "sk-local-test-only"]]) });
+    const view = resolveRegisteredWebview();
+    view.receive({ type: "ready" });
+    await flushSettingsMessages();
+    expect(view.posted.at(-1)).toMatchObject({ type: "initialState" });
+    view.receive({ type: "openSettings" });
+    await flushSettingsMessages();
+    expect(view.posted.at(-1)).toMatchObject({ type: "settingsProjection", state: { settings: { projection: { providers: [{ status: "Credential present", liveStatus: "not_verified" }] } } } });
+    view.receive({ type: "openSettingsSection", section: "aiProviders" });
+    await flushSettingsMessages();
+    expect(view.posted.filter((message) => message.type === "safeError")).toEqual([]);
+    expect(structuredClone(view.posted.at(-1))).toEqual(view.posted.at(-1));
+    expect(host.session.core.listModels).not.toHaveBeenCalled();
+    expect(host.session.core.createPlan).not.toHaveBeenCalled();
+    expect(mock.updates).toEqual([]);
+    const reloaded = reloadProviderHost(host);
+    const reloadedView = resolveRegisteredWebview();
+    expect((await openProviderSettings(reloadedView))[0]).toMatchObject({ status: "Credential present", liveStatus: "not_verified" });
+    expect(reloadedView.posted.filter((message) => message.type === "safeError")).toEqual([]);
+    expect(reloaded.session.core.listModels).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [OPENAI, providerSecretKey(OPENAI.id)], [GATEWAY, providerSecretKey(GATEWAY.id)], [GATEWAY, LEGACY_SECRET_KEY],
+  ])("restores API credential presence after reload without carrying live verification: %j", async (config, secretKey) => {
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const first = activateFake(providerSession(), { secretValues: new Map([[secretKey, "sk-local-test-only"]]) });
+    const view = resolveRegisteredWebview();
+    expect((await openProviderSettings(view))[0]).toMatchObject({ status: "Credential present", liveStatus: "not_verified", credentialStored: true });
+    await mock.commands.get("nyxara.testProviderConnection")!();
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ status: "Connected", liveStatus: "verified" });
+    expect(first.session.core.listModels).toHaveBeenCalledTimes(1);
+    const reloaded = reloadProviderHost(first);
+    const providers = await openProviderSettings(resolveRegisteredWebview());
+    expect(providers[0]).toMatchObject({ status: "Credential present", liveStatus: "not_verified", credentialStored: true, modelsStatus: "cached" });
+    expect(providers[0].connectionMessage).toContain("Live status not yet verified");
+    expect(reloaded.session.core.listModels).not.toHaveBeenCalled();
+    expect(JSON.stringify(providers)).not.toContain("sk-local-test-only");
+  });
+
+  it.each([CODEX_CLI, CLAUDE_CLI])("restores $type supported session evidence without a reload provider call", async (config) => {
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const first = activateFake(providerSession());
+    const view = resolveRegisteredWebview();
+    expect((await openProviderSettings(view))[0]).toMatchObject({ status: "CLI configured", liveStatus: "not_verified" });
+    view.receive({ type: "testProvider", providerConfigId: config.id });
+    await flushSettingsMessages();
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ status: "Session verified", liveStatus: "not_verified" });
+    expect(first.globalValues.get(CLI_SESSION_STATE_KEY)).toEqual([{ providerConfigId: config.id, adapterId: config.type, state: "present", checkedAt: expect.any(String) }]);
+    const reloaded = reloadProviderHost(first);
+    const providers = await openProviderSettings(resolveRegisteredWebview());
+    expect(providers[0]).toMatchObject({ status: "Session recorded", liveStatus: "not_verified", credentialStored: false, sessionLastCheckedAt: expect.any(String) });
+    expect(providers[0].authentication).toContain("Not rechecked on reload");
+    expect(reloaded.session.core.listModels).not.toHaveBeenCalled();
+    expect(reloaded.secrets.get).not.toHaveBeenCalled();
+    expect(reloaded.globalState.update).not.toHaveBeenCalled();
+  });
+
+  it.each([OPENAI, CODEX_CLI, CLAUDE_CLI])("keeps $type signed out after reload despite retained credentials or session evidence", async (config) => {
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const first = activateFake(providerSession(), { secretValues: new Map([[providerSecretKey(config.id), "sk-local-test-only"]]) });
+    await mock.commands.get("nyxara.testProviderConnection")!();
+    mock.warningResult = config.authStrategy === "subscription_cli" ? "Sign Out" : "Disconnect";
+    const view = resolveRegisteredWebview();
+    view.receive({ type: "signOutProvider", providerConfigId: config.id });
+    await flushSettingsMessages();
+    expect(mock.settings.get("nyxara.providerConfigs")[0].signedOut).toBe(true);
+    first.secretValues.set(providerSecretKey(config.id), "sk-still-present-elsewhere");
+    const reloaded = reloadProviderHost(first);
+    expect((await openProviderSettings(resolveRegisteredWebview()))[0]).toMatchObject({ status: "Signed out", liveStatus: "not_verified" });
+    expect(reloaded.session.core.listModels).not.toHaveBeenCalled();
+  });
+
+  it("keeps a missing API credential missing after reload and refuses live verification", async () => {
+    mock.settings.set("nyxara.providerConfigs", [OPENAI]);
+    const first = activateFake(providerSession());
+    expect((await openProviderSettings(resolveRegisteredWebview()))[0]).toMatchObject({ status: "Credential missing", credentialStored: false });
+    const reloaded = reloadProviderHost(first);
+    const view = resolveRegisteredWebview();
+    expect((await openProviderSettings(view))[0]).toMatchObject({ status: "Credential missing", liveStatus: "not_verified" });
+    await mock.commands.get("nyxara.testProviderConnection")!();
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ status: "Credential missing", liveStatus: "failed" });
+    expect(reloaded.session.core.listModels).not.toHaveBeenCalled();
+  });
+
+  it.each([["authentication_error", "Credential missing"], ["provider_not_installed", "Unavailable"]])("retains CLI %s observed by the explicit supported check", async (code, status) => {
+    mock.settings.set("nyxara.providerConfigs", [CODEX_CLI]);
+    const first = activateFake(providerSession());
+    first.session.core.listModels.mockRejectedValueOnce(Object.assign(new Error("local status check failed"), { code }));
+    await mock.commands.get("nyxara.testProviderConnection")!();
+    const reloaded = reloadProviderHost(first);
+    const providers = await openProviderSettings(resolveRegisteredWebview());
+    expect(providers[0]).toMatchObject({ status, liveStatus: "not_verified" });
+    expect(providers[0].authentication).toContain("at last check");
+    expect(reloaded.session.core.listModels).not.toHaveBeenCalled();
+  });
+
+  it("does not turn Gemini CLI version availability into authenticated or network-connected state", async () => {
+    const config = { id: "gemini-cli", type: "gemini-cli", displayName: "Gemini CLI", authStrategy: "subscription_cli" };
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const first = activateFake(providerSession());
+    first.session.core.listModels.mockResolvedValue([]);
+    const view = resolveRegisteredWebview();
+    await openProviderSettings(view);
+    view.receive({ type: "testProvider", providerConfigId: config.id });
+    await flushSettingsMessages();
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ status: "CLI available", liveStatus: "not_verified" });
+    expect(first.globalValues.get(CLI_SESSION_STATE_KEY)).toBeUndefined();
+    reloadProviderHost(first);
+    expect((await openProviderSettings(resolveRegisteredWebview()))[0]).toMatchObject({ status: "CLI configured", liveStatus: "not_verified" });
+  });
+
+  it("refreshes both successful and failed live tests immediately without retaining a stale Connected badge", async () => {
+    mock.settings.set("nyxara.providerConfigs", [OPENAI]);
+    const host = activateFake(providerSession(), { secretValues: new Map([[providerSecretKey(OPENAI.id), "sk-local-test-only"]]) });
+    const view = resolveRegisteredWebview();
+    await openProviderSettings(view);
+    view.receive({ type: "testProvider", providerConfigId: OPENAI.id });
+    await flushSettingsMessages();
+    expect(view.posted.at(-1)).toMatchObject({ type: "providerStatusChanged", state: { settings: { projection: { providers: [{ status: "Connected", liveStatus: "verified" }] } } } });
+    host.session.core.listModels.mockRejectedValueOnce(Object.assign(new Error("network failed"), { code: "network_error" }));
+    await mock.commands.get("nyxara.testProviderConnection")!();
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ status: "Credential present", liveStatus: "failed" });
+    await mock.commands.get("nyxara.testProviderConnection")!();
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ status: "Connected", liveStatus: "verified" });
+    expect(host.session.core.listModels).toHaveBeenCalledTimes(3);
+    expect(host.session.core.createPlan).not.toHaveBeenCalled();
+  });
+
+  it("invalidates live verification when the API key command replaces a credential", async () => {
+    mock.settings.set("nyxara.providerConfigs", [OPENAI]);
+    const host = activateFake(providerSession(), { secretValues: new Map([[providerSecretKey(OPENAI.id), "sk-local-test-only"]]) });
+    const view = resolveRegisteredWebview();
+    await openProviderSettings(view);
+    await mock.commands.get("nyxara.testProviderConnection")!();
+    mock.inputs.push("sk-replacement-test-only");
+    await mock.commands.get("nyxara.setApiKey")!();
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ status: "Credential present", liveStatus: "not_verified" });
+    expect(host.session.core.listModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads and idles without discovery, provider API calls, repository scans, CLI processes, timers, or polling", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const timeout = vi.spyOn(globalThis, "setTimeout");
+    const interval = vi.spyOn(globalThis, "setInterval");
+    try {
+      mock.settings.set("nyxara.providerConfigs", [OPENAI, CODEX_CLI, CLAUDE_CLI]);
+      const first = activateFake(providerSession(), { secretValues: new Map([[providerSecretKey(OPENAI.id), "sk-local-test-only"]]) });
+      await openProviderSettings(resolveRegisteredWebview());
+      const reloaded = reloadProviderHost(first);
+      const work = { buildContext: vi.fn(), validate: vi.fn(), runTaskPipeline: vi.fn(), executeTool: vi.fn() };
+      Object.assign(reloaded.session.core, work);
+      const view = resolveRegisteredWebview();
+      for (let opening = 0; opening < 3; opening += 1) await openProviderSettings(view);
+      const messageCount = view.posted.length;
+      const secretReads = reloaded.secrets.get.mock.calls.length;
+      expect(timeout).not.toHaveBeenCalled(); expect(interval).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(view.posted).toHaveLength(messageCount);
+      expect(reloaded.secrets.get).toHaveBeenCalledTimes(secretReads);
+      expect(reloaded.globalState.update).not.toHaveBeenCalled();
+      for (const host of [first, reloaded]) {
+        expect(host.session.core.listModels).not.toHaveBeenCalled();
+        expect(host.session.core.createPlan).not.toHaveBeenCalled();
+        expect(host.session.core.startWorkflow).not.toHaveBeenCalled();
+        expect(host.session.core.runApprovedPlan).not.toHaveBeenCalled();
+      }
+      for (const call of Object.values(work)) expect(call).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(mock.terminals).toEqual([]); expect(mock.taskExecutions).toEqual([]); expect(mock.externalUrls).toEqual([]);
+    } finally {
+      timeout.mockRestore(); interval.mockRestore(); vi.unstubAllGlobals(); vi.useRealTimers();
+    }
+  });
+
+  it("opens Workflow using local effective config without provider, discovery, repo, process, or timer work", async () => {
+    vi.useFakeTimers();
+    try {
+      mock.settings.set("nyxara.workflow", { allowRepair: false, repairLimits: { maxRepairCycles: 5 }, validation: { test: { enabled: false } } });
+      const { session } = activateFake();
+      const work = { buildContext: vi.fn(), validate: vi.fn(), runTaskPipeline: vi.fn(), executeTool: vi.fn() };
+      Object.assign(session.core, work);
+      const view = resolveRegisteredWebview();
+      view.receive({ type: "openSettingsSection", section: "workflow" });
+      await flushSettingsMessages();
+      expect(view.posted.at(-1)).toMatchObject({ type: "settingsProjection", state: { settings: { section: "workflow", projection: { workflow: { settings: { allowRepair: false, repairLimits: { maxRepairCycles: 5 }, validation: { test: { enabled: false, timeoutMs: 300000 } } } } } } } });
+      expect(session.core.listModels).not.toHaveBeenCalled();
+      expect(session.core.createPlan).not.toHaveBeenCalled();
+      expect(session.core.startWorkflow).not.toHaveBeenCalled();
+      expect(session.core.runApprovedPlan).not.toHaveBeenCalled();
+      for (const call of Object.values(work)) expect(call).not.toHaveBeenCalled();
+      expect(mock.terminals).toEqual([]); expect(mock.taskExecutions).toEqual([]); expect(mock.externalUrls).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+      const count = view.posted.length;
+      vi.advanceTimersByTime(86400000);
+      expect(view.posted).toHaveLength(count);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(mock.updates).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("atomically saves workflow options, refreshes immediately, survives reload, and preserves unrelated state", async () => {
+    mock.settings.set("nyxara.providerConfigs", [OPENAI]);
+    mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id);
+    mock.settings.set("nyxara.modelMode", "advanced");
+    for (const role of ["planner", "executor", "reviewer"]) {
+      mock.settings.set(`nyxara.${role}.provider`, OPENAI.id);
+      mock.settings.set(`nyxara.${role}.model`, "gpt-5.1");
+      mock.settings.set(`nyxara.${role}.execution`, { kind: "openai_reasoning", effort: "high" });
+    }
+    for (const key of ["permissions", "engineeringRules", "context", "performance"]) mock.settings.set(`nyxara.${key}`, { untouched: key });
+    mock.settings.set("nyxara.planningProfile", "default"); mock.settings.set("nyxara.history.retention", 20);
+    const original = structuredClone(mock.settings);
+    const { session, secrets, secretValues, globalState, workspaceState } = activateFake();
+    secretValues.set("existing-secret", "private-key");
+    session.snapshot = { workflowId: "running-workflow", status: "paused", tasks: [], updatedAt: "2026-09-07T00:00:00Z" };
+    const active = structuredClone(session.snapshot);
+    const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettingsSection", section: "workflow" });
+    await flushSettingsMessages();
+    const previousProjection = view.posted.at(-1).state.settings.projection;
+    view.receive({ type: "updateWorkflowSettings", settings: { allowRepair: false, repairLimits: { maxRepairCycles: 4, maxExecutorAttemptsPerTask: 5 }, validation: { failFast: false, lint: { enabled: false } }, reviewerLimits: { maxReviewerTurns: 1 } } });
+    await flushSettingsMessages();
+    const saved = mock.settings.get("nyxara.workflow");
+    expect(saved).toMatchObject({ allowRepair: false, repairLimits: { maxRepairCycles: 4, maxExecutorAttemptsPerTask: 5 }, validation: { failFast: false, lint: { enabled: false } }, reviewerLimits: { maxReviewerTurns: 1 } });
+    expect(mock.updates).toEqual([["nyxara.workflow", saved, true]]);
+    const updated = view.posted.at(-1).state.settings.projection;
+    expect(updated.workflow.settings).toEqual(saved);
+    for (const key of ["providers", "roles", "permissions", "planning", "rules", "context", "usage", "history", "privacy"]) expect(updated[key]).toEqual(previousProjection[key]);
+    for (const [key, value] of original) expect(mock.settings.get(key)).toEqual(value);
+    expect(secretValues.get("existing-secret")).toBe("private-key");
+    expect(secrets.store).not.toHaveBeenCalled(); expect(secrets.delete).not.toHaveBeenCalled();
+    expect(globalState.update).not.toHaveBeenCalled(); expect(workspaceState.update).not.toHaveBeenCalled();
+    expect(session.snapshot).toEqual(active);
+    expect(session.core.runApprovedPlan).not.toHaveBeenCalled(); expect(session.resume).not.toHaveBeenCalled(); expect(session.abort).not.toHaveBeenCalled();
+    mock.providers.length = 0;
+    activateFake();
+    const reloaded = resolveRegisteredWebview();
+    reloaded.receive({ type: "openSettingsSection", section: "workflow" });
+    await flushSettingsMessages();
+    expect(reloaded.posted.at(-1).state.settings.projection.workflow.settings).toEqual(saved);
+  });
+
+  it("leaves the prior config intact on failed atomic workflow saves and accepts a subsequent save", async () => {
+    const previous = { allowRepair: true, repairLimits: { maxRepairCycles: 2 } };
+    mock.settings.set("nyxara.workflow", previous);
+    activateFake(); const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettingsSection", section: "workflow" }); await flushSettingsMessages();
+    mock.failNextUpdateKey = "nyxara.workflow";
+    view.receive({ type: "updateWorkflowSettings", settings: { allowRepair: false, repairLimits: { maxRepairCycles: 5 } } });
+    await flushSettingsMessages();
+    expect(mock.settings.get("nyxara.workflow")).toEqual(previous);
+    expect(mock.updates).toEqual([]);
+    expect(view.posted.at(-1).type).toBe("safeError");
+    expect(view.posted.filter((message) => message.type === "settingsProjection").at(-1).state.settings.projection.workflow.settings).toMatchObject(previous);
+    view.receive({ type: "updateWorkflowSettings", settings: { repairLimits: { maxRepairCycles: 4 } } });
+    await flushSettingsMessages();
+    expect(mock.settings.get("nyxara.workflow")).toMatchObject({ allowRepair: true, repairLimits: { maxRepairCycles: 4 } });
+  });
+
+  it("updates the effective workspace scope instead of a shadowed user setting", async () => {
+    mock.workflowWorkspaceOverride = true;
+    mock.settings.set("nyxara.workflow", { repairLimits: { maxRepairCycles: 2 } });
+    activateFake(); const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettingsSection", section: "workflow" }); await flushSettingsMessages();
+    view.receive({ type: "updateWorkflowSettings", settings: { repairLimits: { maxRepairCycles: 4 } } }); await flushSettingsMessages();
+    expect(mock.updates).toEqual([["nyxara.workflow", mock.settings.get("nyxara.workflow"), false]]);
+    expect(view.posted.at(-1).state.settings.projection.workflow.settings.repairLimits.maxRepairCycles).toBe(4);
+  });
+
+  it("serializes rapid workflow changes without losing related values", async () => {
+    activateFake(); const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettingsSection", section: "workflow" }); await flushSettingsMessages();
+    view.receive({ type: "updateWorkflowSettings", settings: { repairLimits: { maxRepairCycles: 4 } } });
+    view.receive({ type: "updateWorkflowSettings", settings: { validation: { test: { enabled: false } } } });
+    view.receive({ type: "updateWorkflowSettings", settings: { validation: { test: { timeoutMs: 9876 } } } });
+    await flushSettingsMessages();
+    expect(mock.settings.get("nyxara.workflow")).toMatchObject({ repairLimits: { maxRepairCycles: 4 }, validation: { test: { enabled: false, timeoutMs: 9876 } } });
+    expect(mock.updates).toHaveLength(3);
+  });
+
+  it.each([{ repairLimits: { maxRepairCycles: 6 } }, { allowRepair: "false" }, { approval: "optional" }, { allowRepair: false, repairLimits: { maxRepairCycles: 0 } }])("rejects invalid workflow messages before any writes: %j", async (settings) => {
+    mock.settings.set("nyxara.workflow", { repairLimits: { maxRepairCycles: 2 } });
+    activateFake(); const view = resolveRegisteredWebview();
+    view.receive({ type: "updateWorkflowSettings", settings });
+    await flushSettingsMessages();
+    expect(mock.updates).toEqual([]);
+    expect(mock.settings.get("nyxara.workflow")).toEqual({ repairLimits: { maxRepairCycles: 2 } });
+    expect(view.posted.at(-1).type).toBe("safeError");
   });
 
   it.each([false, true])("keeps the chat workspace visible after ready with configured=%s", async (configured) => {
@@ -195,7 +525,7 @@ describe("VS Code provider onboarding and command safety", () => {
     await vi.waitFor(() => expect(view.posted.some((message) => message.type === "authCompleted")).toBe(true));
     const completed = view.posted.filter((message) => message.type === "authCompleted").at(-1);
     expect(completed.state.settings.section).toBe("modelsRoles");
-    expect(completed.state.settings.projection.providers[0]).toMatchObject({ status: "Connected", authStrategy: "subscription_cli" });
+    expect(completed.state.settings.projection.providers[0]).toMatchObject({ status: "Session verified", liveStatus: "not_verified", authStrategy: "subscription_cli" });
     expect(completed.state.settings.projection.pendingAuth).toBeUndefined(); expect(JSON.stringify(completed)).not.toMatch(/access_token|refresh_token|api.?key|authorization/i);
     expect(session.core.listModels).toHaveBeenCalledTimes(1); expect(mock.settings.get("nyxara.providerConfigs")[0].signedOut).toBe(false); expect((await import("vscode")).commands.executeCommand).not.toHaveBeenCalledWith("workbench.action.reloadWindow");
   });
@@ -214,7 +544,7 @@ describe("VS Code provider onboarding and command safety", () => {
     await vi.waitFor(() => expect(view.posted.some((message) => message.type === "authCompleted")).toBe(true));
     const completed = view.posted.filter((message) => message.type === "authCompleted").at(-1);
     expect(completed.state.settings.section).toBe("modelsRoles");
-    expect(completed.state.settings.projection.providers[0]).toMatchObject({ status: "Connected", modelsStatus: "loaded", models: [{ id: "opus", capabilities: { execution: { kind: "anthropic_effort", provenance: "provider_discovery" } } }] });
+    expect(completed.state.settings.projection.providers[0]).toMatchObject({ status: "Session verified", liveStatus: "not_verified", modelsStatus: "loaded", models: [{ id: "opus", capabilities: { execution: { kind: "anthropic_effort", provenance: "provider_discovery" } } }] });
     expect(session.core.listModels).toHaveBeenCalledTimes(1);
     expect((await import("vscode")).commands.executeCommand).not.toHaveBeenCalledWith("workbench.action.reloadWindow");
     expect(mock.pickCalls).toHaveLength(0);
@@ -281,9 +611,150 @@ describe("VS Code provider onboarding and command safety", () => {
   it("compatible setup requests connection fields once and leaves exact model entry to Models & Roles", async () => {
     const { session, secrets } = activateFake(); mock.pickIndexes.push(10); mock.inputs.push("Work Gateway", "https://router.example/v1", "");
     await mock.commands.get("nyxara.connectProvider")?.();
-    expect(mock.inputOptions.map((option) => option.prompt)).toEqual(["Display name (optional)", "OpenAI-compatible Base URL", "API key (optional; stored securely)"]); expect(secrets.store).not.toHaveBeenCalled();
+    expect(mock.inputOptions.map((option) => option.prompt)).toEqual(["Display name (optional)", "OpenAI-compatible Base URL", "API key (leave blank only if this gateway does not require authentication)"]); expect(secrets.store).not.toHaveBeenCalled();
     expect(session.upsertProvider).toHaveBeenCalledWith(expect.objectContaining({ displayName: "Work Gateway", type: "openai-compatible", authStrategy: "none" }));
     for (const role of ["planner", "executor", "reviewer"]) expect(mock.settings.get(`nyxara.${role}.model`)).toBeUndefined();
+  });
+
+  it.each([
+    { ...GATEWAY, displayName: "9Router", authStrategy: "none" },
+    { ...GATEWAY, id: "local-gateway", type: "local-openai-compatible", displayName: "Local gateway", authStrategy: "local" },
+  ])("adds a secure API key to an existing $authStrategy gateway and preserves its configuration", async (config) => {
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    mock.settings.set("nyxara.defaultProviderConfigId", config.id);
+    mock.settings.set("nyxara.planner.provider", config.id);
+    mock.settings.set("nyxara.planner.model", "ha-op/gpt-5.6-sol");
+    const host = activateFake(providerSession());
+    const view = resolveRegisteredWebview();
+    await openProviderSettings(view);
+    expect(host.session.core.listModels).not.toHaveBeenCalled();
+    mock.inputs.push("  gateway-key-test-only  ");
+    view.receive({ type: "updateCredential", providerConfigId: config.id });
+    await flushSettingsMessages();
+    expect(mock.inputOptions.at(-1)).toMatchObject({ password: true, ignoreFocusOut: true });
+    expect(host.secretValues.get(providerSecretKey(config.id))).toBe("gateway-key-test-only");
+    expect(mock.settings.get("nyxara.providerConfigs")).toEqual([{ ...config, authStrategy: "api_key", signedOut: false }]);
+    expect(mock.settings.get("nyxara.planner.provider")).toBe(config.id);
+    expect(mock.settings.get("nyxara.planner.model")).toBe("ha-op/gpt-5.6-sol");
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ status: "Connected", credentialStored: true, authStrategy: "api_key", lifecycleAction: "Disconnect" });
+    expect(JSON.stringify(view.posted)).not.toContain("gateway-key-test-only");
+    expect(JSON.stringify(mock.updates)).not.toContain("gateway-key-test-only");
+    expect(host.session.core.listModels).toHaveBeenCalledTimes(1);
+    const reloaded = reloadProviderHost(host);
+    expect((await openProviderSettings(resolveRegisteredWebview()))[0]).toMatchObject({ status: "Credential present", credentialStored: true, authStrategy: "api_key", liveStatus: "not_verified" });
+    expect(reloaded.session.core.listModels).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unauthenticated gateway visible for API key entry after an onboarding 401", async () => {
+    const host = activateFake();
+    host.session.core.listModels.mockRejectedValueOnce(Object.assign(new Error("key required"), { code: "authentication_error", statusCode: 401 }));
+    const view = resolveRegisteredWebview();
+    mock.pickIndexes.push(10);
+    mock.inputs.push("9Router", "http://127.0.0.1:20128/v1", "");
+    await mock.commands.get("nyxara.connectProvider")!();
+    expect(mock.settings.get("nyxara.providerConfigs")).toEqual([expect.objectContaining({ id: "openai-compatible", displayName: "9Router", authStrategy: "none", baseUrl: "http://127.0.0.1:20128/v1" })]);
+    expect(host.session.removeProvider).not.toHaveBeenCalled();
+    expect(view.posted.at(-1)).toMatchObject({ state: { settings: { section: "aiProviders", providerConfigId: "openai-compatible", projection: { providers: [{ authStrategy: "none", credentialStored: false, liveStatus: "failed" }] } } } });
+    expect(mock.warnings.join(" ")).toContain("Add API Key");
+    expect(host.session.core.listModels).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "", "   "])("keeps gateway configuration and credentials unchanged when key entry is cancelled or empty: %j", async (input) => {
+    const config = { ...GATEWAY, authStrategy: "none" };
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const host = activateFake(providerSession());
+    const view = resolveRegisteredWebview();
+    await openProviderSettings(view);
+    mock.inputs.push(input);
+    view.receive({ type: "updateCredential", providerConfigId: config.id });
+    await flushSettingsMessages();
+    expect(mock.inputOptions.at(-1)).toMatchObject({ password: true });
+    expect(mock.settings.get("nyxara.providerConfigs")).toEqual([config]);
+    expect(host.secrets.store).not.toHaveBeenCalled();
+    expect(host.session.core.listModels).not.toHaveBeenCalled();
+    expect(mock.updates).toEqual([]);
+  });
+
+  it("restores the no-key gateway state after an invalid replacement and permits retry", async () => {
+    const config = { ...GATEWAY, authStrategy: "none" };
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const host = activateFake(providerSession());
+    const view = resolveRegisteredWebview();
+    await openProviderSettings(view);
+    host.session.core.listModels.mockRejectedValueOnce(Object.assign(new Error("invalid credential"), { code: "authentication_error", statusCode: 401 }));
+    mock.inputs.push("invalid-key-test-only");
+    view.receive({ type: "updateCredential", providerConfigId: config.id });
+    await flushSettingsMessages();
+    expect(mock.settings.get("nyxara.providerConfigs")).toEqual([config]);
+    expect(host.secretValues.has(providerSecretKey(config.id))).toBe(false);
+    const refreshed = view.posted.filter((message) => message.state?.settings).at(-1).state.settings.projection.providers[0];
+    expect(refreshed).toMatchObject({ authStrategy: "none", credentialStored: false, liveStatus: "failed", authMethods: ["api_key", "none"] });
+    expect(refreshed.authentication).toContain("Add API Key");
+    mock.inputs.push("valid-key-test-only");
+    view.receive({ type: "updateCredential", providerConfigId: config.id });
+    await flushSettingsMessages();
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ authStrategy: "api_key", credentialStored: true, status: "Connected" });
+    expect(JSON.stringify(view.posted)).not.toContain("key-test-only");
+  });
+
+  it("restores gateway credentials when persisting API-key auth fails", async () => {
+    const config = { ...GATEWAY, authStrategy: "none" };
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const host = activateFake(providerSession());
+    const view = resolveRegisteredWebview();
+    await openProviderSettings(view);
+    mock.failNextUpdateKey = "nyxara.providerConfigs";
+    mock.inputs.push("unsaved-key-test-only");
+    view.receive({ type: "updateCredential", providerConfigId: config.id });
+    await flushSettingsMessages();
+    expect(mock.settings.get("nyxara.providerConfigs")).toEqual([config]);
+    expect(host.secretValues.has(providerSecretKey(config.id))).toBe(false);
+    expect(host.session.upsertProvider).not.toHaveBeenCalled();
+    expect(host.session.core.listModels).not.toHaveBeenCalled();
+  });
+
+  it("adds a gateway key through the API-key command without automatic verification", async () => {
+    const config = { ...GATEWAY, authStrategy: "none" };
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const host = activateFake(providerSession());
+    const view = resolveRegisteredWebview();
+    await openProviderSettings(view);
+    mock.inputs.push("gateway-command-key-test-only");
+    await mock.commands.get("nyxara.setApiKey")!();
+    expect(mock.settings.get("nyxara.providerConfigs")[0]).toMatchObject({ id: config.id, authStrategy: "api_key" });
+    expect(view.posted.at(-1).state.settings.projection.providers[0]).toMatchObject({ status: "Credential present", credentialStored: true, liveStatus: "not_verified" });
+    expect(host.session.core.listModels).not.toHaveBeenCalled();
+    expect(JSON.stringify(view.posted)).not.toContain("gateway-command-key-test-only");
+  });
+
+  it("recognizes a previously stored gateway key even if its saved auth strategy is none", async () => {
+    const config = { ...GATEWAY, authStrategy: "none" };
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const host = activateFake(providerSession(), { secretValues: new Map([[providerSecretKey(config.id), "previous-key-test-only"]]) });
+    const projected = (await openProviderSettings(resolveRegisteredWebview()))[0];
+    expect(projected).toMatchObject({ authStrategy: "none", credentialStored: true, status: "Credential present", liveStatus: "not_verified" });
+    expect(projected.authentication).toContain("SecretStorage");
+    expect(host.session.core.listModels).not.toHaveBeenCalled();
+  });
+
+  it.each([CODEX_CLI, { id: "ollama", type: "ollama", displayName: "Ollama", baseUrl: "http://localhost:11434/v1", authStrategy: "local" }])("does not offer key entry for unsupported $type providers", async (config) => {
+    mock.settings.set("nyxara.providerConfigs", [config]);
+    const host = activateFake(providerSession());
+    await mock.commands.get("nyxara.setApiKey")!();
+    expect(mock.inputOptions).toEqual([]);
+    expect(host.secrets.store).not.toHaveBeenCalled();
+    expect(host.session.core.listModels).not.toHaveBeenCalled();
+  });
+
+  it("keeps a whitespace-only optional gateway key absent and offers secure entry after auth failure", async () => {
+    const host = activateFake();
+    host.session.core.listModels.mockRejectedValueOnce(Object.assign(new Error("key required"), { statusCode: 403 }));
+    mock.pickIndexes.push(10);
+    mock.inputs.push("9Router", "http://127.0.0.1:20128/v1", "   ");
+    await mock.commands.get("nyxara.connectProvider")!();
+    expect(mock.settings.get("nyxara.providerConfigs")[0]).toMatchObject({ displayName: "9Router", authStrategy: "none" });
+    expect(host.secrets.store).not.toHaveBeenCalled();
+    expect(mock.warnings.join(" ")).toContain("Add API Key");
   });
 
   it("falls back to exact manual model entry when model discovery is unsupported", async () => {

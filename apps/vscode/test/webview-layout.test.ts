@@ -38,7 +38,9 @@ const scenarios = [
   { name: "empty-catalog", section: "modelsRoles", projection: emptyProjection },
   { name: "providers", section: "aiProviders", projection },
   { name: "provider-details", section: "aiProviders", projection: { ...projection, providers: projection.providers.map((entry) => ({ ...entry, endpoint: provider.baseUrl })) }, providerConfigId: provider.id },
+  { name: "gateway-add-key", section: "aiProviders", projection: { ...projection, providers: projection.providers.map((entry) => ({ ...entry, displayName: "9Router", endpoint: "http://127.0.0.1:20128/v1", authStrategy: "none", authMethods: ["api_key", "none"], credentialStored: false, status: "Configured", liveStatus: "failed", authentication: "No API key configured. Use Add API Key if this gateway requires authentication.", connectionMessage: "Last connection test failed. Use Test Connection to retry.", lifecycleAction: "Remove Provider" })) }, providerConfigId: provider.id },
   { name: "workspace", section: "workspace", projection },
+  { name: "workflow", section: "workflow", projection },
   { name: "advanced-settings", section: "advanced", projection },
 ].map(({ name, manual, ...settings }) => ({ name, manual, state: { version: "layout-test", configured: true, workspace: { available: true, multiple: true }, providers: [{ id: provider.id, displayName: longProvider, modelId: longModel, isDefault: true }], validation: [], repairCycles: null, settings } }));
 
@@ -46,6 +48,7 @@ interface LayoutResult {
   name: string; width: number; fontSize: number; error?: string; outsideViewport: string[]; outsideContainer: string[]; invisibleControls: string[]; undersizedFields: string[]; scrollingContainers: unknown[];
   ellipsis: Array<{ element: string; ellipsis: boolean; nowrap: boolean }>; helperWraps: boolean;
   gridWidth: number | null; gridTrack: number | null; selectedIds: string[]; settingsColumns: number | null; clippedCards: number;
+  apiKeyActions: string[];
 }
 
 describe.skipIf(!browser)("Nyxara real-browser sidebar layout", () => {
@@ -105,6 +108,12 @@ describe.skipIf(!browser)("Nyxara real-browser sidebar layout", () => {
       for (const label of result.ellipsis) expect(label, `${result.name} ${result.width}px`).toMatchObject({ ellipsis: true, nowrap: true });
       if (["simple", "advanced", "thinking-budget"].includes(result.name)) expect(result.selectedIds, result.name).toEqual(Array(result.name === "simple" ? 1 : 3).fill(`model:${longModel}`));
     }
+  });
+
+  it("keeps Add API Key visible for an unauthenticated gateway at every sidebar width", () => {
+    const gateways = results.filter((result) => result.name === "gateway-add-key");
+    expect(gateways).toHaveLength(layouts.length);
+    for (const result of gateways) expect(result.apiKeyActions, `${result.width}px ${result.fontSize}px font`).toEqual(["Add API Key"]);
   });
 
   it("stacks narrow metadata, preserves wide columns, and performs no external actions", () => {

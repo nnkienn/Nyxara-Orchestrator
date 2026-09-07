@@ -139,7 +139,12 @@ export function projectTaskSession(existing: TaskSession, state: WorkspaceViewSt
   const planApproval = workflow?.approvalStatus === "rejected" ? "rejected"
     : workflow?.approvalStatus === "approved" || (workflow && !["created", "planning", "awaiting_plan_approval"].includes(workflow.status)) ? "approved"
     : "draft";
-  const validationStatus = state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) ? "failed" : state.validation.length ? "passed" : ["validating", "reviewing", "repairing", "completed"].includes(workflow?.status ?? "") ? "unavailable" : "pending";
+  const validationStatus = state.performance?.validation.status ?? (
+    state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) ? "failed"
+      : state.validation.some((step) => step.status === "running" || step.status === "pending") ? "pending"
+        : state.validation.some((step) => step.status === "passed") ? "passed"
+          : state.validation.length || ["validating", "reviewing", "repairing", "completed"].includes(workflow?.status ?? "") ? "unavailable" : "pending"
+  );
   const occurredStages = workflow?.occurredStages ?? [];
   const executionOccurred = Boolean(workflow) && (occurredStages.includes("execution") || workflow!.tasks.some((task) => task.status !== "pending"));
   const validationOccurred = state.validation.length > 0 || occurredStages.includes("validation");
@@ -231,6 +236,12 @@ export function sanitizeTaskSession(value: unknown): TaskSession | undefined {
   const performanceSummary = sanitizePerformanceProjection(value.performanceSummary)
     ?? (usageSummary ? buildPerformanceProjection({ legacySummary: usageSummary, ...(terminalPerformanceStatus(status) ? { terminalStatus: terminalPerformanceStatus(status)! } : {}) }) : undefined);
   if (performanceSummary) Object.assign(session, { performanceSummary });
+  if (session.validationSummary) {
+    const authoritative = performanceSummary?.validation.status;
+    const skippedOnly = session.validationSummary.steps.length > 0 && session.validationSummary.steps.every((step) => step.status === "skipped");
+    if (authoritative === "passed" || authoritative === "failed") Object.assign(session, { validationSummary: { ...session.validationSummary, status: authoritative } });
+    else if (session.validationSummary.status === "passed" && skippedOnly) Object.assign(session, { validationSummary: { ...session.validationSummary, status: "unavailable" } });
+  }
   // A rejected task has no failure to report; the outcome itself is the message.
   if (status !== "rejected" && record(value.failureSummary)) { const stage = privacySafe(value.failureSummary.stage, 80); const message = privacySafe(value.failureSummary.message, 240); if (stage && message) Object.assign(session, { failureSummary: { stage, message } }); }
   if (status === "interrupted" || value.interrupted === true) Object.assign(session, { interrupted: true });

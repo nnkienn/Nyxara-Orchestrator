@@ -40,6 +40,50 @@ function codedError(code: string): Error & { code: string } {
 }
 
 describe("workflow runtime control", () => {
+  it("retains the exact command in the pending permission without executing before approval", async () => {
+    const { nyxara, workflow, plan } = setup();
+    const command = { command: "python3", args: ["apps/web/scripts/planet-compare.py", "baseline"], cwd: "/workspace" };
+    let executed = 0;
+    vi.spyOn(nyxara, "runTaskPipeline").mockImplementation(async (input) => {
+      if (input.taskId === "T1") {
+        const decision = await input.resolvePermission!({ capability: "run_command", workspaceRoot: "/workspace", command });
+        if (decision !== "allow") throw codedError("command_blocked");
+        executed += 1;
+      }
+      return result(input.taskId);
+    });
+    const waiting = await nyxara.runApprovedPlan({ workflowId: workflow.id, planId: plan.id });
+    if (waiting.status !== "waiting_for_permission") throw new Error("expected permission");
+    expect(waiting.permission.command).toEqual(command);
+    expect(waiting.permission.command?.args).not.toBe(command.args);
+    expect(executed).toBe(0);
+    expect((await nyxara.resolveWorkflowPermission({ workflowId: workflow.id, permissionRequestId: waiting.permission.id, decision: "allow" })).status).toBe("completed");
+    expect(executed).toBe(1);
+  });
+
+  it("retains actionable no-command validation diagnostics without changing failure semantics", async () => {
+    const { nyxara, workflow, plan } = setup();
+    const pipeline = vi.spyOn(nyxara, "runTaskPipeline").mockImplementation(async (input) => ({ ...result(input.taskId), status: "failed", validation: { ...result(input.taskId).validation, status: "failed", errorCode: "no_validation_commands" } }));
+    const failed = await nyxara.runApprovedPlan({ workflowId: workflow.id, planId: plan.id });
+    expect(failed).toMatchObject({ status: "failed", failure: { code: "no_validation_commands", message: expect.stringContaining("workspace root") }, blockedTaskIds: ["T2", "T3"] });
+    expect(pipeline).toHaveBeenCalledTimes(1);
+    expect(nyxara.getWorkflowSnapshot(workflow.id).error?.code).toBe("no_validation_commands");
+  });
+
+  it("forwards existing pipeline options as an isolated snapshot across pause/resume", async () => {
+    const { nyxara, workflow, plan } = setup();
+    const options = { allowRepair: false, repairLimits: { maxRepairCycles: 2 }, validation: { failFast: false, test: { enabled: false, timeoutMs: 1234 } }, reviewerLimits: { maxReviewerTurns: 1 } };
+    const snapshot = structuredClone(options);
+    const pipeline = vi.spyOn(nyxara, "runTaskPipeline").mockImplementation(async (input) => result(input.taskId));
+    nyxara.events.on("workflow.task_completed", ({ taskId }) => { if (taskId === "T1") nyxara.pauseWorkflow(workflow.id); });
+    expect((await nyxara.runApprovedPlan({ ...options, workflowId: workflow.id, planId: plan.id })).status).toBe("paused");
+    options.repairLimits.maxRepairCycles = 5;
+    options.validation.test.enabled = true;
+    options.reviewerLimits.maxReviewerTurns = 4;
+    expect((await nyxara.resumeWorkflow(workflow.id)).status).toBe("completed");
+    expect(pipeline).toHaveBeenCalledTimes(3);
+    for (const [input] of pipeline.mock.calls) expect(input).toMatchObject(snapshot);
+  });
   it("pauses between tasks and resumes without rerunning completed work", async () => {
     const { nyxara, workflow, plan } = setup();
     const calls: string[] = [];

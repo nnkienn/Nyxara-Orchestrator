@@ -89,7 +89,7 @@ import {
   resolveReviewEvidenceBudget,
 } from "../review/review-evidence-builder.js";
 import { ReviewerError } from "../review/reviewer.errors.js";
-import { Reviewer } from "../review/reviewer.js";
+import { DEFAULT_REVIEWER_LIMITS, Reviewer } from "../review/reviewer.js";
 import { ReviewStore } from "../review/review-store.js";
 import { validateReviewContextRequest } from "../review/review-validator.js";
 import type {
@@ -118,7 +118,7 @@ import type {
   ResolveWorkflowPermissionInput,
 } from "./orchestrator.types.js";
 import { aggregateWorkflowUsage, type UsageRecord, type WorkflowUsage } from "@nyxara/shared";
-import { deferred, type WorkflowRuntime } from "../workflow/workflow-runtime.js";
+import { DEFAULT_ALLOW_REPAIR, deferred, type WorkflowPipelineConfig, type WorkflowRuntime } from "../workflow/workflow-runtime.js";
 import { randomUUID, createHash } from "node:crypto";
 import path from "node:path";
 import { EngineeringRuleRegistry } from "../rules/rule-registry.js";
@@ -202,8 +202,8 @@ export class NyxaraOrchestrator {
       this.refreshWorkflowUsage(event.workflowId);
       this.events.emit("usage.updated", { workflowId: event.workflowId });
     });
-    this.events.on("executor.completed", (event) => {
-      if (!event.workflowId) return;
+    for (const eventName of ["executor.completed", "executor.failed"] as const) this.events.on(eventName, (event) => {
+      if (!event.workflowId || event.toolCalls === undefined) return;
       const prior = this.workflowTools.get(event.workflowId) ?? { modelRequested: 0, executed: 0, successful: 0, failed: 0, invalid: 0, durationMs: 0, byName: {} };
       prior.modelRequested += event.toolCalls;
       prior.successful += event.successfulToolCalls ?? 0;
@@ -702,7 +702,7 @@ export class NyxaraOrchestrator {
   }
 
   /** Executes an approved plan sequentially using the existing task pipeline. */
-  async runApprovedPlan(input: {
+  async runApprovedPlan(input: WorkflowPipelineConfig & {
     readonly workflowId: string;
     readonly planId: string;
     readonly signal?: AbortSignal;
@@ -726,7 +726,12 @@ export class NyxaraOrchestrator {
     const runtime: WorkflowRuntime = {
       workflowId: input.workflowId, planId: plan.id, plan, graph,
       completed: new Set(), failed: [], blocked: [], changed: new Set(), repairCycles: 0,
-      startedAt, startedMs, allowRepair: input.allowRepair ?? true,
+      startedAt, startedMs, allowRepair: input.allowRepair ?? DEFAULT_ALLOW_REPAIR,
+      pipelineConfig: structuredClone({
+        ...(input.validation ? { validation: input.validation } : {}),
+        ...(input.repairLimits ? { repairLimits: input.repairLimits } : {}),
+        ...(input.reviewerLimits ? { reviewerLimits: input.reviewerLimits } : {}),
+      }),
       abortController: new AbortController(), subscribers: new Set(),
       ...(this.plannerContexts.get(plan.id) ? { plannerContext: this.plannerContexts.get(plan.id)! } : {}),
     };
@@ -870,7 +875,7 @@ export class NyxaraOrchestrator {
         this.events.emit("workflow.task_selected", { workflowId: runtime.workflowId, planId: runtime.planId, taskId: task.id, completedCount: runtime.completed.size, total: runtime.plan.tasks.length });
         let result: TaskPipelineResult;
         try {
-          result = await this.runTaskPipeline({ workflowId: runtime.workflowId, requirement: workflow.prompt, plan: runtime.plan, taskId: task.id, workspaceRoot: workflow.workspace, ...(runtime.plannerContext ? { plannerContext: runtime.plannerContext } : {}), allowRepair: runtime.allowRepair, signal: runtime.abortController.signal, resolvePermission: (request) => this.awaitWorkflowPermission(runtime, task.id, request) });
+          result = await this.runTaskPipeline({ ...runtime.pipelineConfig, workflowId: runtime.workflowId, requirement: workflow.prompt, plan: runtime.plan, taskId: task.id, workspaceRoot: workflow.workspace, ...(runtime.plannerContext ? { plannerContext: runtime.plannerContext } : {}), allowRepair: runtime.allowRepair, signal: runtime.abortController.signal, resolvePermission: (request) => this.awaitWorkflowPermission(runtime, task.id, request) });
         } catch (error: unknown) {
           if (runtime.abortController.signal.aborted || errorCodeOr(error, "") === "executor_aborted" || errorCodeOr(error, "") === "reviewer_aborted") { if (this.workflowEngine.get(runtime.workflowId).status !== "aborted") this.workflowEngine.abort(runtime.workflowId); this.finishRuntime(runtime, "aborted", { taskId: task.id, code: "aborted", message: "Workflow aborted" }); return; }
           const code = errorCodeOr(error, "task_pipeline_error"); const message = errorMessageOr(error, "Task pipeline failed");
@@ -880,7 +885,21 @@ export class NyxaraOrchestrator {
         for (const file of result.execution.changedFiles) runtime.changed.add(canonicalChangedPath(workflow.workspace, file));
         if (result.repair) { runtime.repairCycles += result.repair.cycles; for (const file of result.repair.changedFiles) runtime.changed.add(canonicalChangedPath(workflow.workspace, file)); }
         if (result.repair?.status === "aborted") { if (this.workflowEngine.get(runtime.workflowId).status !== "aborted") this.workflowEngine.abort(runtime.workflowId); this.finishRuntime(runtime, "aborted", { taskId: task.id, code: "aborted", message: "Workflow aborted" }); return; }
-        if (result.status !== "passed") { runtime.failed.push(task.id); for (const dependent of runtime.graph.getDependents(task.id, true)) if (!runtime.blocked.includes(dependent.id) && !runtime.completed.has(dependent.id) && !runtime.failed.includes(dependent.id)) { runtime.blocked.push(dependent.id); this.workflowEngine.recordTask(runtime.workflowId, { taskId: dependent.id, executionStatus: "blocked" }); this.events.emit("workflow.task_blocked", { workflowId: runtime.workflowId, planId: runtime.planId, taskId: dependent.id }); } const code = result.repair?.status ?? "task_failed"; this.workflowEngine.taskFailed(runtime.workflowId, task.id, code, 1); this.workflowEngine.transition(runtime.workflowId, "failed", { failedTaskId: task.id, blockedTaskIds: runtime.blocked, error: { code, message: "Task failed" }, progress: { completed: runtime.completed.size, total: runtime.plan.tasks.length } }); this.finishRuntime(runtime, "failed", { taskId: task.id, code, message: "Task failed" }); return; }
+        if (result.status !== "passed") {
+          runtime.failed.push(task.id);
+          for (const dependent of runtime.graph.getDependents(task.id, true)) {
+            if (!runtime.blocked.includes(dependent.id) && !runtime.completed.has(dependent.id) && !runtime.failed.includes(dependent.id)) {
+              runtime.blocked.push(dependent.id);
+              this.workflowEngine.recordTask(runtime.workflowId, { taskId: dependent.id, executionStatus: "blocked" });
+              this.events.emit("workflow.task_blocked", { workflowId: runtime.workflowId, planId: runtime.planId, taskId: dependent.id });
+            }
+          }
+          const failure = taskPipelineFailure(result);
+          this.workflowEngine.taskFailed(runtime.workflowId, task.id, failure.code, 1);
+          this.workflowEngine.transition(runtime.workflowId, "failed", { failedTaskId: task.id, blockedTaskIds: runtime.blocked, error: failure, progress: { completed: runtime.completed.size, total: runtime.plan.tasks.length } });
+          this.finishRuntime(runtime, "failed", { taskId: task.id, ...failure });
+          return;
+        }
         runtime.completed.add(task.id); this.workflowEngine.taskCompleted(runtime.workflowId, task.id, 1); this.workflowEngine.transition(runtime.workflowId, "running", { currentTaskId: null, progress: { completed: runtime.completed.size, total: runtime.plan.tasks.length } });
         if (this.workflowEngine.get(runtime.workflowId).pauseRequested) { this.workflowEngine.transition(runtime.workflowId, "paused", { pauseRequested: false }); this.events.emit("workflow.paused", { workflowId: runtime.workflowId }); }
       }
@@ -890,7 +909,7 @@ export class NyxaraOrchestrator {
   }
 
   private async awaitWorkflowPermission(runtime: WorkflowRuntime, taskId: string, request: PermissionRequest): Promise<"allow" | "deny"> {
-    const pending: PendingWorkflowPermission = { id: randomUUID(), workflowId: runtime.workflowId, planId: runtime.planId, taskId, capability: request.capability, ...(request.resource ? { resource: request.resource } : {}), requestedAt: new Date().toISOString() };
+    const pending: PendingWorkflowPermission = { id: randomUUID(), workflowId: runtime.workflowId, planId: runtime.planId, taskId, capability: request.capability, ...(request.resource ? { resource: request.resource } : {}), ...(request.command ? { command: Object.freeze({ command: request.command.command, args: Object.freeze([...(request.command.args ?? [])]), cwd: request.command.cwd }) } : {}), requestedAt: new Date().toISOString() };
     this.workflowEngine.setPendingPermission(runtime.workflowId, pending);
     this.workflowEngine.transition(runtime.workflowId, "waiting_for_permission", { currentTaskId: taskId });
     runtime.permissionGate = { requestId: pending.id, resolve: () => undefined };
@@ -1103,7 +1122,7 @@ export class NyxaraOrchestrator {
     const maxReviewerTurns =
       input.limits?.maxReviewerTurns ??
       this.reviewerLimits?.maxReviewerTurns ??
-      2;
+      DEFAULT_REVIEWER_LIMITS.maxReviewerTurns;
     const limits = {
       ...this.reviewerLimits,
       ...input.limits,
@@ -1627,6 +1646,30 @@ function mergeContextFiles(
       ),
     ),
     truncated: base.truncated || added.some((file) => file.truncated),
+  };
+}
+
+function taskPipelineFailure(result: TaskPipelineResult): { code: string; message: string } {
+  const execution = result.repair?.finalExecution ?? result.execution;
+  const validation = result.repair?.finalValidation ?? result.validation;
+  const messages: string[] = [];
+  if (execution.status === "failed") messages.push(`Executor could not complete ${result.taskId}: ${execution.summary.slice(0, 600)}`);
+  if (validation.status === "failed") {
+    messages.push(validation.errorCode === "no_validation_commands"
+      ? "Validation found no runnable commands at the workspace root. Define root validation scripts or configure explicit validation commands; no validation passed."
+      : validation.errorCode === "package_manager_not_found"
+        ? "Validation could not identify the package manager. Declare packageManager or provide a supported root lockfile."
+        : `Validation failed (${validation.errorCode ?? "validation_failed"}).`);
+  }
+  const review = result.repair?.finalReview ?? result.review;
+  if (review && review.status !== "passed") messages.push("Review did not pass.");
+  if (result.repair && ["limit_reached", "stalled"].includes(result.repair.status)) messages.push(`Repair stopped (${result.repair.status}).`);
+  return {
+    code: result.repair && ["limit_reached", "stalled"].includes(result.repair.status) ? result.repair.status
+      : execution.status === "failed" ? "executor_error"
+        : validation.status === "failed" ? validation.errorCode ?? "validation_failed"
+          : review && review.status !== "passed" ? "review_failed" : "task_failed",
+    message: messages.join(" ") || "Task failed",
   };
 }
 

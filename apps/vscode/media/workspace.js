@@ -198,7 +198,7 @@
   const SETTINGS_SECTIONS = [
     ["aiProviders", "AI Providers", "provider connect account credential sign out disconnect remove"],
     ["modelsRoles", "Models & Roles", "default simple advanced planner executor reviewer repair model routing execution reasoning thinking provider default"],
-    ["workflow", "Workflow", "approval pause resume automatic repair"],
+    ["workflow", "Workflow", "approval pause resume automatic repair cycles attempts validation typecheck lint tests build timeout fail fast review reviewer turns permission abort"],
     ["planning", "Planning", "profile locale conservative concise detailed"],
     ["engineeringRules", "Engineering Rules", "rules precedence scope severity n+1 secret dependencies"],
     ["permissions", "Permissions", "allowed ask first sensitive destructive sudo git push deployment"],
@@ -267,7 +267,7 @@
     const providerManagedModel = provider.authStrategy === "subscription_cli" && !provider.supportsModelDiscovery;
     const modelSummary = provider.modelsStatus === "loading" ? "Loading…" : providerManagedModel ? "Provider-managed default" : `${provider.models.length} available · ${friendly(provider.modelsStatus)}`;
     const refreshedSummary = providerManagedModel ? "Managed by official CLI" : provider.modelsLastRefreshedAt || "Never";
-    cardValue.append(providerBadge(authPending ? "Pending" : provider.status), labeledValue("Display Name", provider.displayName), labeledValue("Provider", provider.providerName), labeledValue("Category", provider.category), labeledValue("Authentication", authPending ? "Waiting for browser sign-in…" : provider.credentialStored ? "Credential stored securely" : provider.authStrategy === "subscription_cli" ? "Official CLI account session" : provider.authStrategy === "local" || provider.authStrategy === "none" ? "No stored credential" : "Credential not stored"), labeledValue("Endpoint", provider.endpoint), labeledValue("Default Model", provider.defaultModel || "Not selected"), labeledValue("Models", modelSummary), labeledValue("Last Refreshed", refreshedSummary));
+    cardValue.append(providerBadge(authPending ? "Pending" : provider.status), labeledValue("Display Name", provider.displayName), labeledValue("Provider", provider.providerName), labeledValue("Category", provider.category), labeledValue("Authentication", authPending ? "Waiting for browser sign-in…" : provider.authentication), labeledValue("Connection", provider.connectionMessage), labeledValue("Endpoint", provider.endpoint), labeledValue("Default Model", provider.defaultModel || "Not selected"), labeledValue("Models", modelSummary), labeledValue("Last Refreshed", refreshedSummary));
     if (provider.isDefault) cardValue.append(node("div", "default-pill", "Default AI"));
     if (provider.endpoint !== "Official" && provider.endpoint !== "Managed by official CLI") {
       const edit = node("div", "provider-edit"); const nameInput = node("input", "settings-input"); nameInput.value = provider.displayName; nameInput.maxLength = 100; nameInput.setAttribute("aria-label", "Provider display name"); const endpointInput = node("input", "settings-input"); endpointInput.value = provider.endpoint; endpointInput.maxLength = 2048; endpointInput.setAttribute("aria-label", "Provider endpoint"); const save = node("button", "secondary", "Save Name & Endpoint"); save.type = "button"; save.addEventListener("click", () => { if (nameInput.value.trim() && endpointInput.value.trim()) vscode.postMessage({ type: "updateProviderMetadata", providerConfigId: provider.id, displayName: nameInput.value.trim(), endpoint: endpointInput.value.trim() }); }); edit.append(node("div", "field-label", "Edit Configuration"), nameInput, endpointInput, save); cardValue.append(edit);
@@ -275,11 +275,11 @@
     const actions = node("div", "settings-actions");
     if (authPending) actions.append(node("p", "muted", "Waiting for browser sign-in…"), button("Cancel", "secondary", "cancelBrowserAuth", { providerConfigId: provider.id, sessionId: projection.pendingAuth.sessionId }));
     else if (provider.supportsBrowserAuth) actions.append(button("Sign In with Browser", "secondary", "startBrowserAuth", { providerConfigId: provider.id }));
+    if (provider.authMethods.includes("api_key")) actions.append(button(provider.credentialStored ? "Update API Key" : "Add API Key", "secondary", "updateCredential", { providerConfigId: provider.id }));
     const testConnection = button("Test Connection", "secondary", "testProvider", { providerConfigId: provider.id }); testConnection.disabled = provider.status === "Signed out"; actions.append(testConnection);
     const refreshModels = button("Refresh Models", "secondary", "refreshModels", { providerConfigId: provider.id }); refreshModels.disabled = !provider.supportsModelDiscovery || provider.status === "Signed out" || provider.modelsStatus === "loading"; actions.append(refreshModels);
     if (provider.modelsMessage) actions.append(node("p", "muted", provider.modelsMessage));
     actions.append(button("Configure Models & Roles", "secondary", "openSettingsSection", { section: "modelsRoles" }));
-    if (provider.authStrategy === "api_key") actions.append(button(provider.credentialStored ? "Update Credential" : "Reconnect", "secondary", "updateCredential", { providerConfigId: provider.id }));
     if (provider.lifecycleBlocked) actions.append(node("p", "muted", "This provider is in use by the active workflow. Finish or abort the workflow before signing out or removing it."));
     if (provider.lifecycleAction !== "Remove Provider" && provider.status !== "Signed out") { const lifecycle = button(provider.lifecycleAction, "danger", "signOutProvider", { providerConfigId: provider.id }); lifecycle.disabled = provider.lifecycleBlocked; actions.append(lifecycle); }
     const remove = button("Remove Provider", "danger-link settings-remove", "removeProvider", { providerConfigId: provider.id }); remove.disabled = provider.lifecycleBlocked; actions.append(remove);
@@ -458,18 +458,56 @@
   }
 
   function booleanRow(label, enabled) { return labeledValue(label, enabled ? "Enabled" : "Disabled", enabled ? "passed" : "muted"); }
+  function renderWorkflow(projection) {
+    const settings = card("Workflow Settings");
+    settings.append(node("p", "muted", "Saves automatically. Applies to new tasks only, not the current plan or running task."));
+    ["Repair", "Validation", "Review"].forEach((group) => {
+      const details = node("details", "workflow-controls");
+      details.open = disclosures.get(`workflow-settings:${group}`) ?? group === "Repair";
+      details.append(node("summary", "", group));
+      details.addEventListener("toggle", () => disclosures.set(`workflow-settings:${group}`, details.open));
+      projection.workflow.controls.filter((control) => control.group === group).forEach((control) => {
+        const label = node("label", "workflow-setting");
+        const field = node("input", control.type === "boolean" ? "" : "settings-input");
+        field.type = control.type === "boolean" ? "checkbox" : "number";
+        field.setAttribute("aria-label", control.label);
+        if (control.type === "boolean") field.checked = control.value;
+        else {
+          field.value = String(control.value); field.step = "1";
+          if (control.minimum !== undefined) field.min = String(control.minimum);
+          if (control.maximum !== undefined) field.max = String(control.maximum);
+        }
+        field.addEventListener("change", () => {
+          const value = control.type === "boolean" ? field.checked : Number(field.value);
+          if (control.type !== "boolean" && (!field.value.trim() || !Number.isFinite(value) || !Number.isInteger(value) || value < control.minimum || (control.maximum !== undefined && value > control.maximum))) {
+            field.value = String(control.value); el("notice").textContent = `${control.label}: enter an integer${control.minimum !== undefined ? ` from ${control.minimum}` : ""}${control.maximum !== undefined ? ` to ${control.maximum}` : ""}.`; el("notice").classList.remove("hidden"); return;
+          }
+          const patch = control.path.reduceRight((child, key) => ({ [key]: child }), value);
+          field.disabled = true;
+          vscode.postMessage({ type: "updateWorkflowSettings", settings: patch });
+        });
+        label.append(node("span", "", control.label), field); details.append(label);
+      });
+      if (group === "Repair") details.append(node("p", "muted", "Limits count attempts within each repair loop. The first reached limit stops repair."));
+      settings.append(details);
+    });
+    const capabilities = card("Current Capabilities");
+    capabilities.append(labeledValue("Plan Approval", projection.workflow.planApproval), labeledValue("After Approval", "Automatic continuation"), labeledValue("Validation Before Review", "Required"), labeledValue("Review", "Runs after passing validation"), labeledValue("Pause / Resume", projection.workflow.pauseResume), labeledValue("Waiting for Permission", "Supported · rules in Permissions"), labeledValue("Abort", "Supported · existing changes remain"), labeledValue("Repair No-change Detection", "Stops repair"));
+    timeline.append(settings, capabilities);
+  }
   function renderGenericSection(projection, section) {
     const titles = Object.fromEntries(SETTINGS_SECTIONS.map((entry) => [entry[0], entry[1]])); settingsHeading(titles[section] || friendly(section));
-    if (section === "workflow") { const p = projection.workflow; const value = card("Current Workflow Behavior"); value.append(labeledValue("Plan Approval", p.planApproval), labeledValue("After Approval", p.afterApproval), labeledValue("Pause / Resume", p.pauseResume), labeledValue("Automatic Repair", p.automaticRepair)); timeline.append(value); }
+    if (section === "workflow") renderWorkflow(projection);
     else if (section === "engineeringRules") { timeline.append(node("p", "muted", "Effective precedence: Task › Workspace › Global. Resolution remains in Core.")); projection.rules.forEach((rule) => { const value = card(rule.name); value.append(node("p", "muted", rule.description), labeledValue("Scope", friendly(rule.scope)), labeledValue("Severity", friendly(rule.severity)), booleanRow("Status", rule.enabled)); timeline.append(value); }); }
     else if (section === "permissions") { [["Automatically Allowed", projection.permissions.automaticallyAllowed, "✓"], ["Ask First", projection.permissions.askFirst, "!"], ["Always Denied", projection.permissions.denied, "×"]].forEach(([title, items, mark]) => { const value = card(title); items.forEach((item) => value.append(node("div", "policy-line", `${mark} ${item}`))); timeline.append(value); }); timeline.append(node("p", "muted", "There is no allow-all or permission bypass. Core PermissionEngine is authoritative.")); }
     else if (section === "context") { const p = projection.context; const value = card("Context Strategy"); value.append(labeledValue("Strategy", p.strategy), labeledValue("Repository Context", p.repositoryContext), labeledValue("Targeted Expansion", p.targetedExpansion), labeledValue("Bounded Context", p.bounded), labeledValue("Task Limit", `${p.maxTaskFiles} files · ${formatNumber(p.maxTaskBytes)} bytes`)); timeline.append(value); }
     else if (section === "validation") { const value = card("Validation Pipeline"); projection.validation.steps.forEach((step) => value.append(labeledValue(step.kind, step.policy))); value.append(labeledValue("Fail Fast", projection.validation.failFast ? "Enabled" : "Disabled")); timeline.append(value); }
-    else if (section === "review") { const p = projection.review; const value = card("Reviewer"); value.append(labeledValue("Assignment", p.reviewer.providerName ? `${p.reviewer.providerName} / ${p.reviewer.modelId}` : "Unconfigured"), booleanRow("Engineering Rules Applied", p.rulesApplied), booleanRow("Validation Failure Forces Fail", p.validationFailuresForceFail), booleanRow("Bounded Evidence", p.boundedEvidence), booleanRow("Targeted Context Expansion", p.targetedContextExpansion)); timeline.append(value); }
+    else if (section === "review") { const p = projection.review; const value = card("Reviewer"); value.append(labeledValue("Assignment", p.reviewer.providerName ? `${p.reviewer.providerName} / ${p.reviewer.modelId}` : "Unconfigured"), booleanRow("Engineering Rules Applied", p.rulesApplied), booleanRow("Validation Failure Forces Fail", p.validationFailuresForceFail), booleanRow("Bounded Evidence", p.boundedEvidence), labeledValue("Targeted Context Expansion", "Supported · bounded by reviewer turns"), labeledValue("Maximum Reviewer Turns", projection.workflow.settings.reviewerLimits.maxReviewerTurns)); timeline.append(value); }
     else if (section === "repair") { const p = projection.repair; const value = card("Automatic Repair"); value.append(booleanRow("Enabled", p.automatic), booleanRow("Validation First", p.validationFirst), booleanRow("Planner Replan", p.plannerReplan), booleanRow("Context Reuse", p.contextReuse), labeledValue("Model Assignment", `Uses ${p.usesRole}`), labeledValue("Maximum Cycles", p.maximumCycles)); timeline.append(value); }
     else if (section === "usage") { const p = projection.usage; const value = card("Usage & Performance"); value.append(labeledValue("Token Reporting", p.tokenReporting), labeledValue("Cache Token Reporting", p.cacheTokenReporting), labeledValue("Provider-Reported Cost", p.providerReportedCost), labeledValue("Local Task Performance History", p.localTaskPerformanceHistory), labeledValue("Execution Profile Attribution", p.executionProfileAttribution), labeledValue("Automatic Optimization", p.automaticOptimization)); timeline.append(value); }
     else if (section === "privacy") { const p = projection.privacy; const value = card("Privacy & Storage"); [["Credentials", p.credentials], ["Task History", p.taskHistory], ["Cloud Sync", p.cloudSync], ["Nyxara Account", p.account], ["Telemetry", p.telemetry], ["Provider Requests", p.providerRequests]].forEach(([key, val]) => value.append(labeledValue(key, val))); timeline.append(value); }
     else if (section === "advanced") { const p = projection.advanced; const value = card("Supported Technical Configuration"); [["Manual Model ID", p.manualModelId], ["Custom Endpoints", p.customEndpoints], ["Role Routing", p.roleRouting], ["Execution Profiles", "Capability-driven per role/model"], ["Diagnostics", p.diagnosticState]].forEach(([key, val]) => value.append(labeledValue(key, val))); timeline.append(value, node("p", "muted", "Automatic routing, Budget Engine, Skills, MCP, Hooks, Plugins, and Marketplace are not available in this phase.")); }
+    if (["validation", "review", "repair"].includes(section)) timeline.append(node("p", "muted", "Workflow preferences apply to new tasks."), button("Edit Workflow Settings", "secondary", "openSettingsSection", { section: "workflow" }));
   }
 
   function renderHistorySettings(projection) {
@@ -793,6 +831,7 @@
     if (!permission) return;
     const value = card("Permission required", "permission");
     value.append(node("div", "eyebrow", "Action"), node("p", "", permission.action), node("div", "eyebrow", "Reason"), node("p", "", permission.reason));
+    if (permission.command) value.append(node("div", "eyebrow", "Executable and arguments (JSON)"), node("pre", "diagnostics", permission.command), node("div", "eyebrow", "Working directory"), node("p", "", permission.cwd));
     addActions(value, [button("Deny", "secondary", "denyPermission", { requestId: permission.id }), button("Allow Once", "primary", "allowPermission", { requestId: permission.id }), button("Abort", "danger", "abortWorkflow")]);
     timeline.append(value);
   }
