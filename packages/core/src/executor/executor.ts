@@ -95,10 +95,18 @@ export class Executor {
       contextFileCount: input.context.files.length,
     });
 
+    let phase: "model_resolution" | "generation" | "tools" | "response" = "model_resolution";
+    const changedPaths = new Set<string>();
+    let toolCallCount = 0;
+    let successfulToolCalls = 0;
+    let failedToolCalls = 0;
+    let invalidToolCalls = 0;
+    let toolDurationMs = 0;
+    const toolCallsByName: Record<string, number> = {};
     try {
       const provider = this.providers.get(model.providerId);
       const selectedModel = this.requireModel(
-        await provider.listModels(),
+        await this.providers.resolveModel(model.providerId, model.modelId, model.executionOptions),
         model.modelId,
       );
       if (
@@ -111,6 +119,7 @@ export class Executor {
         );
       }
 
+      phase = "tools";
       const context = toolContext(input.workspaceRoot, input.signal, input.resolvePermission);
       const [initialStatus, initialDiff] = await Promise.all([
         this.tools.execute<Record<string, never>, GitStatusResult>(
@@ -136,14 +145,7 @@ export class Executor {
         : this.promptBuilder.build(input, EXECUTOR_TOOL_DEFINITIONS);
       const conversation: ModelConversationMessage[] = [];
       const callIds = new Set<string>();
-      const changedPaths = new Set<string>();
       const unresolvedToolErrors = new Map<string, { tool: string; code: string }>();
-      let toolCallCount = 0;
-      let successfulToolCalls = 0;
-      let failedToolCalls = 0;
-      let invalidToolCalls = 0;
-      let toolDurationMs = 0;
-      const toolCallsByName: Record<string, number> = {};
 
       for (let modelTurn = 1; modelTurn <= limits.maxModelTurnsPerTask; modelTurn += 1) {
         await input.checkpoint?.();
@@ -152,6 +154,7 @@ export class Executor {
         }
         const providerStarted = performance.now();
         const streaming = provider.capabilities().progressStreaming === true;
+        phase = "generation";
         const response = await provider.generate({
           model: selectedModel.id,
           prompt,
@@ -175,6 +178,7 @@ export class Executor {
             ? { responseFormat: "json" as const }
             : {}),
         });
+        phase = "response";
         // Provider wait is measured at the provider boundary and contains no
         // local tool or validation work.
         if (runInput.workflowId) this.events.emit("provider.generation.completed", {
@@ -263,6 +267,7 @@ export class Executor {
             "Executor cannot perform another tool round within the model-turn limit",
           );
         }
+        phase = "tools";
         for (const call of requestedCalls) {
           if (callIds.has(call.id)) {
             throw new ExecutorError(
@@ -308,21 +313,31 @@ export class Executor {
         "Executor exceeded the model-turn limit for this task",
       );
     } catch (error: unknown) {
+      const statusCode = typeof error === "object" && error !== null && "statusCode" in error ? error.statusCode : undefined;
       this.events.emit("executor.failed", {
+        ...(runInput.workflowId ? { workflowId: runInput.workflowId } : {}),
         taskId: runInput.input.task.id,
         providerId: runInput.model.providerId,
         modelId: runInput.model.modelId,
         code: executorErrorCode(error),
+        phase,
+        toolCalls: toolCallCount,
+        toolDurationMs,
+        successfulToolCalls,
+        failedToolCalls,
+        invalidToolCalls,
+        toolCallsByName: { ...toolCallsByName },
+        changedFiles: [...changedPaths],
+        ...(typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? { statusCode } : {}),
       });
       throw error;
     }
   }
 
   private requireModel(
-    models: readonly ModelInfo[],
+    model: ModelInfo | undefined,
     modelId: string,
   ): ModelInfo {
-    const model = models.find((candidate) => candidate.id === modelId);
     if (!model) {
       throw new ExecutorError(
         "invalid_model",

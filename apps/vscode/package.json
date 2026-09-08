@@ -1,6 +1,6 @@
 {
   "name": "nyxara-vscode",
-  "version": "0.1.0-alpha.33",
+  "version": "0.1.0-alpha.36",
   "publisher": "nyxara",
   "private": true,
   "description": "Thin VS Code client for Nyxara Orchestrator",
@@ -294,6 +294,7 @@
   "dependencies": {
     "@nyxara/core": "workspace:*",
     "@nyxara/provider-sdk": "workspace:*",
-    "@nyxara/providers": "workspace:*"
+    "@nyxara/providers": "workspace:*",
+    "zod": "^3.24.2"
   }
 }

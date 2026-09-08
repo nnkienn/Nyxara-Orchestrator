@@ -46,3 +46,17 @@ export function assertApprovedPlanIntegrity(
     });
   }
 }
+
+export function createApprovalRecord(
+  plan: ExecutionPlan,
+  approvedAt: string,
+  approvedPlanFingerprint?: string,
+): PlanApprovalRecord {
+  return Object.freeze({
+    planId: plan.id,
+    approvedBy: "user",
+    approvedAt,
+    taskCount: plan.tasks.length,
+    planFingerprint: approvedPlanFingerprint ?? planFingerprint(plan),
+  });
+}

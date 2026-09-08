@@ -920,7 +920,18 @@
     const actions = [];
     if (hasTerminalDetails(stages)) actions.push(expandButton("View Details", "secondary", liveDisclosureKey("terminal-details")));
     if (canViewPerformance(state.performance, outcome)) actions.push(button("View Performance", "secondary", "openPerformance"));
-    if (outcome === "failed" && state.prompt) actions.push(button("Try Again", "primary", "retryPlanning"), button("Choose Model", "secondary", "openSettingsSection", { section: "modelsRoles" }));
+    if (outcome === "failed" && state.prompt) {
+      const retry = state.workflow && state.workflow.executionRetry;
+      if (retry) {
+        value.append(node("p", "muted", `Retry ${retry.taskId} with the approved plan and current role models. Completed tasks stay done. Partial changes remain; commands may run again.`));
+        actions.push(button("Retry Execute", "primary", "retryExecution", { workflowId: state.workflow.id, planId: retry.planId, taskId: retry.taskId }));
+      } else if (!state.workflow || state.workflow.approvalStatus !== "approved") {
+        actions.push(button("Try Again", "primary", "retryPlanning"));
+      } else {
+        value.append(node("p", "muted", "No resumable Executor attempt remains. Automatic recovery after reload or validation/review/repair failure is not supported."));
+      }
+      actions.push(button("Choose Model", "secondary", "openSettingsSection", { section: "modelsRoles" }));
+    }
     actions.push(button("New Task", completed ? "primary" : "secondary", "newTask"));
     addActions(value, actions);
     timeline.append(value);

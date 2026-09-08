@@ -324,7 +324,7 @@ describe("Executor", () => {
   it("does not accept claimed completion after a command exits nonzero", async () => {
     const generate = vi.fn(async (request: GenerateRequest) => {
       if (!request.conversation) return response({ toolCalls: [{ id: "failure", name: "run_command", arguments: { command: process.execPath, args: ["-e", "console.error('fixture failure'); process.exit(7)"] } }] });
-      expect(request.conversation.at(-1)).toMatchObject({ role: "tool", toolResult: { name: "run_command", error: { code: "command_failed", message: expect.stringContaining("fixture failure") } } });
+      expect(request.conversation.at(-1)).toMatchObject({ role: "tool", toolResult: { name: "run_command", error: { code: "command_failed", message: expect.stringContaining("exit code 7") } } });
       return response({ text: JSON.stringify({ status: "completed", summary: "Claims success" }) });
     });
     const executed = await orchestrator(generate).executeTask({ plan: executionPlan(), taskId: "T1", workspaceRoot: workspace, resolvePermission: async () => "allow" });

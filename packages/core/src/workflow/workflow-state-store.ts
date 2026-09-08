@@ -22,6 +22,15 @@ export class WorkflowStateStore {
     this.evictWorkflows();
   }
 
+  restore(state: WorkflowState, tasks: readonly WorkflowTaskRecord[] = []): void {
+    const tasksById = new Map(tasks.map((task) => [task.taskId, task]));
+    this.records.set(state.id, {
+      state,
+      tasks: new Map([...tasksById].sort(([leftId], [rightId]) => leftId.localeCompare(rightId))),
+    });
+    this.evictWorkflows();
+  }
+
   has(workflowId: string): boolean {
     return this.records.has(workflowId);
   }

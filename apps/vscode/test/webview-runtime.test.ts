@@ -371,6 +371,24 @@ describe("Nyxara browser runtime", () => {
     expect(h.messages.at(-1)).toEqual({ type: "openSettingsSection", section: "modelsRoles" });
   });
 
+  it("retries an approved Executor attempt without a Planner action or idle timer", () => {
+    const h = harness();
+    h.emit(baseState({ prompt: "Continue approved work", workflow: { id: "workflow", status: "failed", stage: "Failed", active: false, approvalStatus: "approved", executionRetry: { planId: "plan", taskId: "T2", attempt: 2 }, tasks: [], occurredStages: ["planning", "approval", "execution"] }, completion: { status: "failed", outcome: "failed", changedFiles: 1, tokens: null, modelCalls: 1, durationMs: 20, repairCycles: 0, tokenParts: [] } }));
+    expect(h.findButton("Try Again")).toBeUndefined();
+    expect(h.text()).toContain("Completed tasks stay done. Partial changes remain");
+    expect(h.timers.size).toBe(0);
+    h.findButton("Retry Execute")?.dispatch("click");
+    expect(h.messages.at(-1)).toEqual({ type: "retryExecution", workflowId: "workflow", planId: "plan", taskId: "T2" });
+  });
+
+  it("does not pretend a failed later stage or missing runtime can be retried from history", () => {
+    const h = harness();
+    h.emit(baseState({ prompt: "Keep plan", workflow: { id: "workflow", status: "failed", stage: "Failed", active: false, approvalStatus: "approved", tasks: [], occurredStages: ["planning", "approval", "execution", "validation"] }, completion: { status: "failed", outcome: "failed", changedFiles: 1, tokens: null, modelCalls: 1, durationMs: 20, repairCycles: 0, tokenParts: [] } }));
+    expect(h.findButton("Retry Execute")).toBeUndefined();
+    expect(h.findButton("Try Again")).toBeUndefined();
+    expect(h.text()).toContain("No resumable Executor attempt remains");
+  });
+
   it("summarizes validation failures and failed tests without expanding workflow detail", () => {
     const h = harness();
     h.emit(baseState({

@@ -1,4 +1,4 @@
-import type { ModelCapabilities, ModelProvider, ProviderInfo } from "@nyxara/provider-sdk";
+import type { ExecutionOptions, ModelCapabilities, ModelInfo, ModelProvider, ProviderInfo } from "@nyxara/provider-sdk";
 
 export type ProviderRegistryErrorCode =
   | "duplicate_provider"
@@ -75,5 +75,12 @@ export class ProviderRegistry {
 
   modelCapabilities(providerConfigId: string, modelId: string): ModelCapabilities | undefined {
     return this.get(providerConfigId).modelCapabilities?.(modelId);
+  }
+
+  async resolveModel(providerConfigId: string, modelId: string, executionOptions?: ExecutionOptions): Promise<ModelInfo | undefined> {
+    const provider = this.get(providerConfigId);
+    return provider.resolveModel
+      ? provider.resolveModel(modelId, executionOptions)
+      : (await provider.listModels()).find((model) => model.id === modelId);
   }
 }

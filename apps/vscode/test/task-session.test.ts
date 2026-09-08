@@ -9,6 +9,39 @@ const state = (overrides: Partial<WorkspaceViewState> = {}): WorkspaceViewState 
 const performance = buildPerformanceProjection({ usage: { workflowId: "w", planner: { role: "planner", providerConfigId: "removed-provider", providerId: "openai", requestedModelId: "route/gpt", resolvedModelId: "gpt", executionProfileSummary: { kind: "provider_default" }, calls: 1, inputTokens: 8, outputTokens: 2, totalTokens: 10, usageSource: "provider_reported", providerDurationMs: 50 }, executor: { role: "executor", calls: 0 }, reviewer: { role: "reviewer", calls: 0 }, repair: { role: "repair", calls: 0 }, tasks: [], totalProviderCalls: 1, totalInputTokens: 8, totalOutputTokens: 2, totalTokens: 10, totalProviderDurationMs: 50, totalToolCalls: 0, usageSource: "provider_reported", providerReportedCost: null, estimatedCost: null, currency: null, costSource: "unavailable", totalDurationMs: 80, repairCycles: 0 } as any, providers: [{ id: "removed-provider", displayName: "OpenAI Work" }], terminalStatus: "completed" });
 
 describe("TaskSession projection", () => {
+  it("round-trips an exact failed-Executor recovery record", () => {
+    const plan = {
+      id: "11111111-1111-4111-8111-111111111111",
+      objective: "Recover approved work",
+      createdAt: "2026-09-08T00:00:00.000Z",
+      tasks: [{ id: "T1", title: "Task", description: "Complete work", dependencies: [], acceptanceCriteria: ["done"] }],
+    } as any;
+    const recovery = {
+      plan,
+      workflow: { id: "workflow", workspace: "/workspace", prompt: "Complete work", status: "failed", planId: plan.id, failedTaskId: "T1", createdAt: "2026-09-08T00:00:00.000Z", updatedAt: "2026-09-08T00:01:00.000Z" },
+      tasks: [{ taskId: "T1", executionStatus: "failed", attempts: 1 }],
+      taskExecutionStates: [{ taskId: "T1", status: "failed", attempts: 1 }],
+      approvedAt: "2026-09-08T00:00:30.000Z",
+      approvedPlanFingerprint: "a".repeat(64),
+      allowRepair: true,
+      pipelineConfig: {},
+    } as any;
+    const projected = projectTaskSession(base, state({
+      plan: { id: plan.id, objective: plan.objective, tasks: plan.tasks, risks: [] },
+      workflow: { id: "workflow", status: "failed", stage: "Execution", active: false, approvalStatus: "approved", tasks: [{ id: "T1", title: "Task", status: "failed" }], occurredStages: ["planning", "approval", "execution"] },
+    }), recovery);
+    expect(sanitizeTaskSession(JSON.parse(JSON.stringify(projected)))?.recovery).toEqual(recovery);
+  });
+
+  it("clears the previous attempt failure in active and completed retry projections", () => {
+    const previous = { ...base, status: "failed", failureSummary: { stage: "Execution", message: "Provider timed out" } } as const;
+    for (const status of ["executing", "completed"] as const) {
+      const projected = projectTaskSession(previous, state({ workflow: { id: "w", status, stage: status, active: status === "executing", approvalStatus: "approved", tasks: [], occurredStages: ["planning", "approval", "execution"] } }));
+      expect(projected.status).toBe(status);
+      expect(projected.failureSummary).toBeUndefined();
+      expect(sanitizeTaskSession(JSON.parse(JSON.stringify(projected)))?.failureSummary).toBeUndefined();
+    }
+  });
   it("preserves every grouped criterion through history save and reload", () => {
     const criteria = Array.from({ length: 8 }, (_, index) => `Original check ${index + 1}`);
     const grouped = [`${criteria[0]}\n${criteria[1]}`, `${criteria[2]}\n${criteria[3]}`, ...criteria.slice(4)];

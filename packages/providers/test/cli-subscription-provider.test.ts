@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
 import { CliSubscriptionProvider, NodeClaudeAgentSdkCatalog, NodeCliProcessRunner, NodeCodexAppServerCatalog, type ClaudeModelCatalog, type CliProcessRunner, type CliRunResult, type CodexAppServerProcess, type CodexModelCatalog } from "../src/cli-subscription/cli-subscription-provider.js";
 
 function runner(...results: Array<CliRunResult | Error>): CliProcessRunner & { run: ReturnType<typeof vi.fn> } {
@@ -16,21 +17,49 @@ function runner(...results: Array<CliRunResult | Error>): CliProcessRunner & { r
 
 const ok = (stdout: string): CliRunResult => ({ exitCode: 0, stdout, stderr: "" });
 const envelope = JSON.stringify({ text: "{\"status\":\"completed\",\"summary\":\"done\"}", toolCalls: [], finishReason: "stop" });
+const complexBusinessOutput = JSON.stringify({
+  title: "Complex plan",
+  sections: [{ id: "planning", steps: [{ action: "inspect", targets: ["packages/core", "apps/vscode"] }], risks: { level: "high", reasons: ["cross-package change"] } }],
+  metadata: { language: "vi", options: { preservePaths: true, validation: ["build", "test", "lint"] } },
+});
 const codexCatalog = (models = [{ id: "gpt-next/exact", name: "GPT Next", provider: "codex-cli", capabilities: { text: true, reasoning: true, tools: true, structuredOutput: true, execution: { kind: "openai_reasoning" as const, label: "Reasoning" as const, control: "select" as const, values: [{ value: "low", label: "Low" }, { value: "ultra", label: "Ultra" }], provenance: "provider_discovery" as const } } }]): CodexModelCatalog => ({ listModels: vi.fn(async () => models) });
 const claudeCatalog = (models = [{ id: "sonnet", name: "Sonnet", provider: "claude-code-cli", capabilities: { text: true, reasoning: true, tools: true, structuredOutput: true, execution: { kind: "anthropic_effort" as const, label: "Effort" as const, control: "select" as const, values: [{ value: "low", label: "Low" }, { value: "max", label: "Max" }], provenance: "provider_discovery" as const } } }]): ClaudeModelCatalog => ({ listModels: vi.fn(async () => models) });
 
 describe("CliSubscriptionProvider", () => {
-  it("uses Codex subscription auth status and JSONL without exposing cached tokens", async () => {
+  it("uses Codex subscription auth and returns raw business output without a transport envelope", async () => {
     const process = runner(ok("Logged in using ChatGPT"), ok([
-      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: envelope } }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: complexBusinessOutput } }),
       JSON.stringify({ type: "turn.completed", usage: { input_tokens: 11, output_tokens: 4, total_tokens: 15 } }),
     ].join("\n")));
     const provider = new CliSubscriptionProvider({ kind: "codex-cli", runner: process, codexModelCatalog: codexCatalog() });
     await expect(provider.listModels()).resolves.toEqual([expect.objectContaining({ id: "gpt-next/exact", name: "GPT Next", provider: "codex-cli", capabilities: expect.objectContaining({ execution: expect.objectContaining({ provenance: "provider_discovery" }) }) })]);
-    await expect(provider.generate({ model: "default", prompt: "work" })).resolves.toMatchObject({ provider: "codex-cli", text: "{\"status\":\"completed\",\"summary\":\"done\"}", usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15 } });
+    await expect(provider.generate({ model: "default", prompt: "work" })).resolves.toMatchObject({ provider: "codex-cli", text: complexBusinessOutput, usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15 } });
     expect(process.run.mock.calls[0]?.[0]).toMatchObject({ command: "codex", args: ["login", "status"] });
     expect(process.run.mock.calls[1]?.[0].args).toEqual(expect.arrayContaining(["exec", "-", "--ephemeral", "--ignore-user-config", "--sandbox", "read-only", "--json"]));
-    expect(process.run.mock.calls[1]?.[0].stdin).toContain("Do not call or execute any CLI built-in tools");
+    expect(process.run.mock.calls[1]?.[0].args).not.toContain("--output-schema");
+    expect(process.run.mock.calls[1]?.[0].stdin).toBe("work");
+  });
+
+  it("uses a native Codex schema only for the Nyxara tool-call bridge", async () => {
+    let responseSchema: unknown;
+    const toolEnvelope = JSON.stringify({ text: "", toolCalls: [{ id: "call-1", name: "read_file", argumentsJson: JSON.stringify({ path: "src/a.ts" }) }], finishReason: "tool_calls" });
+    const process: CliProcessRunner & { run: ReturnType<typeof vi.fn> } = {
+      run: vi.fn(async (input) => {
+        const schemaIndex = input.args.indexOf("--output-schema");
+        responseSchema = JSON.parse(await readFile(input.args[schemaIndex + 1]!, "utf8"));
+        return ok(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: toolEnvelope } }));
+      }),
+    };
+    const provider = new CliSubscriptionProvider({ kind: "codex-cli", runner: process, codexModelCatalog: codexCatalog() });
+    await expect(provider.generate({ model: "default", prompt: "work", tools: [{ name: "read_file", description: "read", inputSchema: {} }] })).resolves.toMatchObject({
+      provider: "codex-cli", toolCalls: [{ id: "call-1", name: "read_file", arguments: { path: "src/a.ts" } }],
+    });
+    expect(process.run.mock.calls[0]?.[0].stdin).toContain("Do not call or execute any CLI built-in tools");
+    expect(responseSchema).toMatchObject({
+      required: ["text", "toolCalls", "finishReason"],
+      properties: { toolCalls: { items: { required: ["id", "name", "argumentsJson"], additionalProperties: false } } },
+      additionalProperties: false,
+    });
   });
 
   it("uses provider-discovered Codex reasoning values without normalizing exact model IDs", async () => {
@@ -133,21 +162,25 @@ describe("CliSubscriptionProvider", () => {
   });
 
   it("normalizes Claude Code subscription output and simulates native tool calls", async () => {
-    const response = JSON.stringify({ text: "", toolCalls: [{ id: "call-1", name: "read_file", arguments: { path: "src/a.ts" } }], finishReason: "tool_calls" });
-    const process = runner(ok(JSON.stringify({ result: response, usage: { input_tokens: 8, output_tokens: 2 } })));
+    const response = JSON.stringify({ text: "", toolCalls: [{ id: "call-1", name: "read_file", argumentsJson: JSON.stringify({ path: "src/a.ts" }) }], finishReason: "tool_calls" });
+    const process = runner(ok(JSON.stringify({ result: response, structured_output: JSON.parse(response), usage: { input_tokens: 8, output_tokens: 2 } })));
     const provider = new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process, claudeModelCatalog: claudeCatalog() });
     await expect(provider.generate({ model: "sonnet", prompt: "work", tools: [{ name: "read_file", description: "read", inputSchema: {} }] })).resolves.toMatchObject({
       provider: "claude-code-cli", model: "sonnet", toolCalls: [{ id: "call-1", name: "read_file", arguments: { path: "src/a.ts" } }], usage: { inputTokens: 8, outputTokens: 2, totalTokens: 10 },
     });
     expect(process.run.mock.calls[0]?.[0].args).toEqual(expect.arrayContaining(["--safe-mode", "--tools", "", "--permission-mode", "dontAsk", "--model", "sonnet"]));
+    const schemaIndex = process.run.mock.calls[0]?.[0].args.indexOf("--json-schema") ?? -1;
+    expect(JSON.parse(process.run.mock.calls[0]?.[0].args[schemaIndex + 1])).toMatchObject({ required: ["text", "toolCalls", "finishReason"] });
   });
 
   it("projects Claude-discovered effort values and passes only a selected supported value", async () => {
-    const process = runner(ok(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })), ok(JSON.stringify({ result: envelope, usage: {} })));
+    const process = runner(ok(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })), ok(JSON.stringify({ result: complexBusinessOutput, usage: {} })));
     const provider = new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process, claudeModelCatalog: claudeCatalog() });
     await expect(provider.listModels()).resolves.toEqual([expect.objectContaining({ id: "sonnet", capabilities: expect.objectContaining({ execution: expect.objectContaining({ kind: "anthropic_effort", provenance: "provider_discovery" }) }) })]);
-    await provider.generate({ model: "sonnet", prompt: "work", executionOptions: { kind: "anthropic_effort", effort: "max" } });
+    await expect(provider.generate({ model: "sonnet", prompt: "work", executionOptions: { kind: "anthropic_effort", effort: "max" } })).resolves.toMatchObject({ text: complexBusinessOutput });
     expect(process.run.mock.calls[1]?.[0].args).toEqual(expect.arrayContaining(["--model", "sonnet", "--effort", "max"]));
+    expect(process.run.mock.calls[1]?.[0].args).not.toContain("--json-schema");
+    expect(process.run.mock.calls[1]?.[0].stdin).toBe("work");
   });
 
   it("accepts only account-backed Codex and Claude login status", async () => {
@@ -170,11 +203,12 @@ describe("CliSubscriptionProvider", () => {
     }
   });
 
-  it("normalizes Gemini CLI JSON and keeps its tools in non-executing plan mode", async () => {
-    const process = runner(ok(JSON.stringify({ response: envelope, stats: {} })));
+  it("returns raw Gemini CLI business output and keeps its built-in tools in non-executing plan mode", async () => {
+    const process = runner(ok(JSON.stringify({ response: complexBusinessOutput, stats: {} })));
     const provider = new CliSubscriptionProvider({ kind: "gemini-cli", runner: process });
-    await expect(provider.generate({ model: "default", prompt: "work" })).resolves.toMatchObject({ provider: "gemini-cli", finishReason: "stop" });
+    await expect(provider.generate({ model: "default", prompt: "work" })).resolves.toMatchObject({ provider: "gemini-cli", text: complexBusinessOutput });
     expect(process.run.mock.calls[0]?.[0].args).toEqual(expect.arrayContaining(["--output-format", "stream-json", "--approval-mode", "plan", "--allowed-tools", ""]));
+    expect(process.run.mock.calls[0]?.[0].stdin).toBe("work");
   });
 
   it("maps missing binaries, login failures, and subscription limits without leaking CLI output", async () => {
@@ -187,8 +221,14 @@ describe("CliSubscriptionProvider", () => {
   });
 
   it("rejects malformed envelopes instead of treating them as executable output", async () => {
-    const process = runner(ok(JSON.stringify({ result: "not-json", usage: {} })));
-    await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process }).generate({ model: "default", prompt: "work" })).rejects.toMatchObject({ code: "invalid_response" });
+    const process = runner(ok(JSON.stringify({ result: "not-json", structured_output: "not-json", usage: {} })));
+    await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process }).generate({ model: "default", prompt: "work", tools: [{ name: "read_file", description: "read", inputSchema: {} }] })).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  it("rejects the retired object-valued CLI tool argument envelope", async () => {
+    const legacyEnvelope = JSON.stringify({ text: "", toolCalls: [{ id: "call-1", name: "read_file", arguments: { path: "src/a.ts" } }], finishReason: "tool_calls" });
+    const process = runner(ok(JSON.stringify({ result: legacyEnvelope, structured_output: JSON.parse(legacyEnvelope), usage: {} })));
+    await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process }).generate({ model: "default", prompt: "work", tools: [{ name: "read_file", description: "read", inputSchema: {} }] })).rejects.toMatchObject({ code: "invalid_response", message: "CLI returned an invalid tool call" });
   });
   it("consumes documented Codex JSONL events as safe progress and never scrapes human output", async () => {
     const lines = [
@@ -226,7 +266,7 @@ describe("CliSubscriptionProvider", () => {
   });
 
   it("uses only structured Claude JSONL phases and ignores human spinner output", async () => {
-    const process = runner(ok(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })), ok(JSON.stringify({ result: envelope, usage: { input_tokens: 5, output_tokens: 1 } })));
+    const process = runner(ok(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })), ok(JSON.stringify({ result: envelope, structured_output: JSON.parse(envelope), usage: { input_tokens: 5, output_tokens: 1 } })));
     const provider = new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process, claudeModelCatalog: claudeCatalog() });
     await provider.listModels();
     const onProgress = vi.fn();
@@ -238,7 +278,7 @@ describe("CliSubscriptionProvider", () => {
     const claudeLines = [
       "\u001b[2Kspinner private-account",
       JSON.stringify({ type: "assistant", message: { content: [{ type: "thinking", thinking: "hidden" }] } }),
-      JSON.stringify({ type: "result", result: envelope, usage: { input_tokens: 2, cache_read_input_tokens: 126000, cache_creation_input_tokens: 1000, output_tokens: 2048 } }),
+      JSON.stringify({ type: "result", result: envelope, structured_output: JSON.parse(envelope), usage: { input_tokens: 2, cache_read_input_tokens: 126000, cache_creation_input_tokens: 1000, output_tokens: 2048 } }),
     ];
     const claudeRunner: CliProcessRunner = { run: async (input) => { for (const line of claudeLines) input.onOutputLine?.(line); return ok(claudeLines.join("\n")); } };
     const claude = new CliSubscriptionProvider({ kind: "claude-code-cli", runner: claudeRunner, claudeModelCatalog: claudeCatalog() });

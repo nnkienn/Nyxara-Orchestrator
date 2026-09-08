@@ -71,7 +71,20 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   const authoritativeSnapshot = session.snapshot;
   const authoritativeWorkflowIds = new Set<string>();
   if (authoritativeSnapshot && !["completed", "failed", "aborted"].includes(authoritativeSnapshot.status)) authoritativeWorkflowIds.add(authoritativeSnapshot.workflowId);
-  let currentTaskSessionId = authoritativeSnapshot
+  const workspacePaths = new Set((vscode.workspace.workspaceFolders ?? []).map((folder: any) => folder.uri.fsPath));
+  const recoverableTask = historyStore.list({ allWorkspaces: true }).find((task) =>
+    task.status === "failed" && !!task.recovery && workspacePaths.has(task.recovery.workflow.workspace));
+  if (recoverableTask?.recovery && !session.snapshot && typeof session.restoreRecovery === "function") {
+    try {
+      session.restoreRecovery(recoverableTask.recovery);
+      output.appendLine(`Recovered failed Executor attempt for workflow ${recoverableTask.recovery.workflow.id}`);
+    } catch (error) {
+      output.appendLine(`Could not recover failed Executor attempt: ${safeErrorMessage(error)}`);
+    }
+  }
+  let currentTaskSessionId = session.snapshot?.workflowId
+    ? historyStore.list({ allWorkspaces: true }).find((task) => task.workflowId === session.snapshot?.workflowId)?.id
+    : authoritativeSnapshot
     ? historyStore.list({ allWorkspaces: true }).find((task) => task.workflowId === authoritativeSnapshot.workflowId)?.id
     : undefined;
   const interruptedCount = historyStore.markInterrupted(authoritativeWorkflowIds);
@@ -218,7 +231,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   };
   const syncCurrentTask = (): void => {
     if (!currentTaskSessionId) return;
-    historyStore.update(currentTaskSessionId, (task) => projectTaskSession(task, workspaceState()));
+    historyStore.update(currentTaskSessionId, (task) => projectTaskSession(task, workspaceState(), session.buildRecovery?.()));
   };
   const providerSummary = () => {
     const selected = selectedProvider();
@@ -385,6 +398,17 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       case "abortWorkflow": session.abort(); return;
       case "pauseWorkflow": session.pause(); return;
       case "resumeWorkflow": await session.resume(); return;
+      case "retryExecution": {
+        if (planningRequestActive || historyScreen === "historical" || message.workflowId !== session.workflowId) throw new Error("That failed Executor attempt is no longer active in this session.");
+        performanceScreen = undefined;
+        activeWorkflowProviderIds.clear();
+        for (const role of ROLES) {
+          const providerId = setting(`nyxara.${role}.provider`, "");
+          if (providerId) activeWorkflowProviderIds.add(providerId);
+        }
+        await session.retryExecution(message);
+        webview.refresh("workflowSnapshot"); return;
+      }
       case "newTask": performanceScreen = undefined; session.resetPresentation(); currentTaskSessionId = undefined; selectedHistoryTaskId = undefined; historyScreen = "workspace"; clarification = undefined; requirementDraft = undefined; providerProgressLabel = undefined; providerProgressStage = undefined; webview.refresh("recentTasks"); return;
       case "editRequirement": {
         // Copies the requirement into a fresh draft. The rejected workflow is not
@@ -400,6 +424,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       }
       case "dismissClarification": clarification = undefined; requirementDraft = undefined; webview.refresh("recentTasks"); return;
       case "retryPlanning": {
+        if (session.snapshot?.plan?.status === "approved") throw new Error("This task already has an approved plan. Retry Execute when available, or explicitly start a New Task.");
         const task = session.prompt?.trim();
         const root = await workspaceRoot();
         if (!task || !root) throw new Error("The failed planning request is no longer available.");

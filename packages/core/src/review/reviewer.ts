@@ -50,7 +50,7 @@ export class Reviewer {
     try {
       const provider = this.providers.get(model.providerId);
       const selectedModel = this.requireModel(
-        await provider.listModels(),
+        await this.providers.resolveModel(model.providerId, model.modelId, model.executionOptions),
         model.modelId,
       );
 
@@ -170,8 +170,7 @@ export class Reviewer {
     }
   }
 
-  private requireModel(models: readonly ModelInfo[], modelId: string): ModelInfo {
-    const model = models.find((candidate) => candidate.id === modelId);
+  private requireModel(model: ModelInfo | undefined, modelId: string): ModelInfo {
     if (!model) {
       throw new ReviewerError(
         "invalid_model",

@@ -71,6 +71,7 @@ export interface WorkspaceViewState {
     readonly currentTaskId?: string;
     readonly tasks: readonly { readonly id: string; readonly title: string; readonly status: string }[];
     readonly permission?: { readonly id: string; readonly action: string; readonly reason: string; readonly command?: string; readonly cwd?: string };
+    readonly executionRetry?: { readonly planId: string; readonly taskId: string; readonly attempt: number };
     readonly error?: { readonly stage: string; readonly message: string };
   };
   readonly validation: readonly { readonly kind: string; readonly status: string; readonly durationMs?: number | null }[];
@@ -144,6 +145,7 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
     ...(input.providerLabel && !terminal.has(snapshot.status) ? { providerLabel: bounded(input.providerLabel, 200) } : {}),
     ...(input.progressLabel && !terminal.has(snapshot.status) ? { progressLabel: bounded(input.progressLabel, 120) } : {}),
     ...(snapshot.plan?.status ? { approvalStatus: snapshot.plan.status } : {}),
+    ...(snapshot.status === "failed" && snapshot.executionRetry ? { executionRetry: { ...snapshot.executionRetry } } : {}),
     ...(snapshot.progress ? { progress: { completed: snapshot.progress.completed, total: snapshot.progress.total } } : {}),
     ...(snapshot.currentTaskId ? { currentTaskId: bounded(snapshot.currentTaskId, 200) } : {}),
     tasks: snapshot.tasks.slice(0, MAX_ITEMS).map((task) => ({ id: bounded(task.taskId, 200), title: plan?.tasks.find((item) => item.id === task.taskId)?.title ?? bounded(task.taskId, 200), status: task.executionStatus ?? "pending" })),

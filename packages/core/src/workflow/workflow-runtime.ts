@@ -27,6 +27,8 @@ export interface WorkflowRuntime {
   permissionGate?: { readonly requestId: string; readonly resolve: (decision: "allow" | "deny") => void };
   pausedWorkspaceFingerprint?: string;
   terminalResult?: AutonomousWorkflowResult;
+  retryableTaskId?: string;
+  retryContextTaskId?: string;
   advancing?: Promise<void>;
 }
 

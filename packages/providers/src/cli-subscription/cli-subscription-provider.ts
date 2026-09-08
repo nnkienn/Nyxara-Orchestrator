@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -97,8 +97,8 @@ interface CliSpec {
   readonly statusArgs: readonly string[];
   readonly modelDiscovery: boolean;
   validateStatus(result: CliRunResult, providerId: string): void;
-  generationArgs(model: string, executionOptions: ExecutionOptions): readonly string[];
-  responseText(stdout: string): { readonly text: string; readonly usage?: GenerateUsage };
+  generationArgs(model: string, executionOptions: ExecutionOptions, responseSchema?: string): readonly string[];
+  responseText(stdout: string, toolEnvelope: boolean): { readonly text: string; readonly usage?: GenerateUsage };
   /**
    * Maps one line of a documented machine-readable CLI event stream to a safe
    * progress phase. Absent when a CLI has no documented event-stream contract.
@@ -117,6 +117,29 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 30_000;
 const MAX_MODEL_PAGES = 32;
 const MAX_DISCOVERED_MODELS = 512;
+const RESPONSE_ENVELOPE_SCHEMA = {
+  type: "object",
+  properties: {
+    text: { type: "string" },
+    toolCalls: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          argumentsJson: { type: "string" },
+        },
+        required: ["id", "name", "argumentsJson"],
+        additionalProperties: false,
+      },
+    },
+    finishReason: { type: "string" },
+  },
+  required: ["text", "toolCalls", "finishReason"],
+  additionalProperties: false,
+} as const;
+const RESPONSE_ENVELOPE_SCHEMA_JSON = JSON.stringify(RESPONSE_ENVELOPE_SCHEMA);
 
 export class CliSubscriptionProvider implements ModelProvider {
   readonly id: string;
@@ -177,11 +200,21 @@ export class CliSubscriptionProvider implements ModelProvider {
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const executionOptions = assertExecutionOptionsSupported(request.executionOptions, this.modelCapabilities(request.model)?.execution);
-    const prompt = providerPrompt(request);
+    const toolEnvelope = (request.tools?.length ?? 0) > 0;
+    const prompt = providerPrompt(request, toolEnvelope);
     const progress = this.spec.progressPhase && request.onProgress ? request.onProgress : undefined;
     progress?.({ phase: "request_started" });
     const result = await this.run(
-      this.spec.generationArgs(request.model, executionOptions),
+      async (cwd) => {
+        let responseSchema: string | undefined;
+        if (toolEnvelope && this.config.kind === "codex-cli") {
+          responseSchema = join(cwd, "response-envelope.schema.json");
+          await writeFile(responseSchema, RESPONSE_ENVELOPE_SCHEMA_JSON, { encoding: "utf8", flag: "wx" });
+        } else if (toolEnvelope && this.config.kind === "claude-code-cli") {
+          responseSchema = RESPONSE_ENVELOPE_SCHEMA_JSON;
+        }
+        return this.spec.generationArgs(request.model, executionOptions, responseSchema);
+      },
       prompt,
       progress && this.spec.progressPhase
         ? (line) => {
@@ -193,12 +226,18 @@ export class CliSubscriptionProvider implements ModelProvider {
     );
     progress?.({ phase: "request_completed" });
     let parsed: { readonly text: string; readonly usage?: GenerateUsage };
-    try { parsed = this.spec.responseText(result.stdout); }
+    try { parsed = this.spec.responseText(result.stdout, toolEnvelope); }
     catch (error) {
       if (error instanceof ProviderError) throw error;
       throw new ProviderError("CLI returned an invalid response", { code: "invalid_response", providerId: this.id });
     }
-    const envelope = parseEnvelope(parsed.text, this.id);
+    if (!toolEnvelope) return {
+      provider: this.id,
+      model: request.model,
+      text: parsed.text,
+      ...(parsed.usage ? { usage: parsed.usage } : {}),
+    };
+    const envelope = parseToolEnvelope(parsed.text, this.id);
     return {
       provider: this.id,
       model: request.model,
@@ -209,12 +248,13 @@ export class CliSubscriptionProvider implements ModelProvider {
     };
   }
 
-  private async run(args: readonly string[], stdin?: string, onOutputLine?: (line: string) => void, signal?: AbortSignal): Promise<CliRunResult> {
+  private async run(args: readonly string[] | ((cwd: string) => Promise<readonly string[]>), stdin?: string, onOutputLine?: (line: string) => void, signal?: AbortSignal): Promise<CliRunResult> {
     const cwd = await mkdtemp(join(tmpdir(), "nyxara-cli-"));
     try {
       let result: CliRunResult;
       try {
-        result = await this.runner.run({ command: this.spec.command, args, ...(stdin !== undefined ? { stdin } : {}), cwd, timeoutMs: this.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES, ...(onOutputLine ? { onOutputLine } : {}), ...(signal ? { signal } : {}) });
+        const resolvedArgs = typeof args === "function" ? await args(cwd) : args;
+        result = await this.runner.run({ command: this.spec.command, args: resolvedArgs, ...(stdin !== undefined ? { stdin } : {}), cwd, timeoutMs: this.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES, ...(onOutputLine ? { onOutputLine } : {}), ...(signal ? { signal } : {}) });
       } catch (error) {
         const code = isRecord(error) && error.code === "ENOENT" ? "provider_not_installed" : isRecord(error) && error.code === "ETIMEDOUT" ? "timeout_error" : "provider_error";
         throw new ProviderError(code === "provider_not_installed" ? `${this.spec.command} CLI is not installed` : code === "timeout_error" ? `${this.displayName} CLI timed out` : `${this.displayName} CLI could not start`, { code, providerId: this.id });
@@ -449,7 +489,7 @@ function cliSpec(kind: CliSubscriptionKind): CliSpec {
     validateStatus: (result, providerId) => {
       if (!/logged in using chatgpt/i.test(`${result.stdout}\n${result.stderr}`)) throw new ProviderError("Codex must be signed in with ChatGPT, not an API key", { code: "authentication_error", providerId });
     },
-    generationArgs: (model, executionOptions) => ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", ...(model === DEFAULT_MODEL_ALIAS ? [] : ["--model", model]), ...(executionOptions.kind === "openai_reasoning" ? ["--config", `model_reasoning_effort=${JSON.stringify(executionOptions.effort)}`] : []), "-"],
+    generationArgs: (model, executionOptions, responseSchema) => ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "--color", "never", ...(responseSchema ? ["--output-schema", responseSchema] : []), ...(model === DEFAULT_MODEL_ALIAS ? [] : ["--model", model]), ...(executionOptions.kind === "openai_reasoning" ? ["--config", `model_reasoning_effort=${JSON.stringify(executionOptions.effort)}`] : []), "-"],
     responseText: parseCodexOutput,
     progressPhase: codexProgressPhase,
   };
@@ -463,7 +503,7 @@ function cliSpec(kind: CliSubscriptionKind): CliSpec {
       try { status = JSON.parse(result.stdout); } catch { status = undefined; }
       if (!isRecord(status) || status.loggedIn !== true || status.authMethod !== "claude.ai") throw new ProviderError("Claude Code must be signed in with a Claude account, not an API key", { code: "authentication_error", providerId });
     },
-    generationArgs: (model, executionOptions) => ["--print", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--safe-mode", "--tools", "", "--permission-mode", "dontAsk", ...(model === DEFAULT_MODEL_ALIAS ? [] : ["--model", model]), ...(executionOptions.kind === "anthropic_effort" ? ["--effort", executionOptions.effort] : [])],
+    generationArgs: (model, executionOptions, responseSchema) => ["--print", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--safe-mode", "--tools", "", "--permission-mode", "dontAsk", ...(responseSchema ? ["--json-schema", responseSchema] : []), ...(model === DEFAULT_MODEL_ALIAS ? [] : ["--model", model]), ...(executionOptions.kind === "anthropic_effort" ? ["--effort", executionOptions.effort] : [])],
     responseText: parseClaudeOutput,
     progressPhase: claudeProgressPhase,
   };
@@ -479,12 +519,19 @@ function cliSpec(kind: CliSubscriptionKind): CliSpec {
   };
 }
 
-function providerPrompt(request: GenerateRequest): string {
+function providerPrompt(request: GenerateRequest, toolEnvelope: boolean): string {
+  if (!toolEnvelope) {
+    if (!request.conversation?.length) return request.prompt;
+    return [
+      `Prior conversation: ${JSON.stringify(request.conversation)}`,
+      `Request: ${request.prompt}`,
+    ].join("\n\n");
+  }
   return [
     "You are the model backend inside Nyxara Orchestrator.",
     "Do not call or execute any CLI built-in tools. Nyxara alone executes tools after explicit policy checks.",
-    "Return exactly one JSON object with this shape and no markdown: {\"text\":string,\"toolCalls\":[{\"id\":string,\"name\":string,\"arguments\":object}],\"finishReason\":string}.",
-    "When tools are needed, return them in toolCalls and leave execution to Nyxara. Otherwise return an empty toolCalls array.",
+    "Return exactly one JSON object with this shape and no markdown: {\"text\":string,\"toolCalls\":[{\"id\":string,\"name\":string,\"argumentsJson\":string}],\"finishReason\":string}.",
+    "When tools are needed, encode each arguments object as JSON in argumentsJson and leave execution to Nyxara. Otherwise return an empty toolCalls array.",
     `Requested response format: ${request.responseFormat ?? "text"}`,
     `Available Nyxara tools: ${JSON.stringify(request.tools ?? [])}`,
     `Prior conversation: ${JSON.stringify(request.conversation ?? [])}`,
@@ -492,15 +539,19 @@ function providerPrompt(request: GenerateRequest): string {
   ].join("\n\n");
 }
 
-function parseEnvelope(value: string, providerId: string): { text: string; toolCalls: ModelToolCall[]; finishReason?: string } {
+function parseToolEnvelope(value: string, providerId: string): { text: string; toolCalls: ModelToolCall[]; finishReason?: string } {
   const normalized = value.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   let parsed: unknown;
   try { parsed = JSON.parse(normalized); }
   catch { throw new ProviderError("CLI returned invalid structured output", { code: "invalid_response", providerId }); }
   if (!isRecord(parsed) || typeof parsed.text !== "string" || !Array.isArray(parsed.toolCalls)) throw new ProviderError("CLI returned an invalid response envelope", { code: "invalid_response", providerId });
   const toolCalls = parsed.toolCalls.map((value): ModelToolCall => {
-    if (!isRecord(value) || typeof value.id !== "string" || !value.id || typeof value.name !== "string" || !value.name || !isRecord(value.arguments)) throw new ProviderError("CLI returned an invalid tool call", { code: "invalid_response", providerId });
-    return { id: value.id, name: value.name, arguments: value.arguments };
+    if (!isRecord(value) || typeof value.id !== "string" || !value.id || typeof value.name !== "string" || !value.name || typeof value.argumentsJson !== "string") throw new ProviderError("CLI returned an invalid tool call", { code: "invalid_response", providerId });
+    let args: unknown;
+    try { args = JSON.parse(value.argumentsJson); }
+    catch { throw new ProviderError("CLI returned invalid tool call arguments", { code: "invalid_response", providerId }); }
+    if (!isRecord(args)) throw new ProviderError("CLI returned invalid tool call arguments", { code: "invalid_response", providerId });
+    return { id: value.id, name: value.name, arguments: args };
   });
   return { text: parsed.text, toolCalls, ...(typeof parsed.finishReason === "string" && parsed.finishReason ? { finishReason: parsed.finishReason } : {}) };
 }
@@ -549,10 +600,15 @@ function parseCodexOutput(stdout: string): { text: string; usage?: GenerateUsage
   return { text, ...(usage ? { usage } : {}) };
 }
 
-function parseClaudeOutput(stdout: string): { text: string; usage?: GenerateUsage } {
+function parseClaudeOutput(stdout: string, toolEnvelope: boolean): { text: string; usage?: GenerateUsage } {
   const payload = finalJsonLine(stdout, "result");
-  if (!isRecord(payload) || typeof payload.result !== "string") throw new Error("Claude Code returned no result");
+  if (!isRecord(payload)) throw new Error("Claude Code returned no result");
   const usage = isRecord(payload.usage) ? anthropicTokenUsage(payload.usage) : undefined;
+  if (toolEnvelope) {
+    if (!isRecord(payload.structured_output)) throw new Error("Claude Code returned no structured output");
+    return { text: JSON.stringify(payload.structured_output), ...(usage ? { usage } : {}) };
+  }
+  if (typeof payload.result !== "string") throw new Error("Claude Code returned no result");
   return { text: payload.result, ...(usage ? { usage } : {}) };
 }
 

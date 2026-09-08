@@ -1,4 +1,5 @@
 import type {
+  ExecutionOptions,
   GenerateRequest,
   GenerateResponse,
   ModelCapabilities,
@@ -13,6 +14,7 @@ export interface ModelProvider {
   readonly displayName: string;
 
   listModels(): Promise<ModelInfo[]>;
+  resolveModel?(modelId: string, executionOptions?: ExecutionOptions): Promise<ModelInfo | undefined>;
   generate(request: GenerateRequest): Promise<GenerateResponse>;
   capabilities(): ProviderCapabilities;
   /** Synchronous, locally cached/known capabilities. This method never performs discovery. */

@@ -46,6 +46,7 @@ export type WebviewToExtensionMessage =
   | { readonly type: "dismissClarification" }
   | { readonly type: "toggleDisclosure"; readonly key: string; readonly expanded: boolean }
   | { readonly type: "retryPlanning" }
+  | { readonly type: "retryExecution"; readonly workflowId: string; readonly planId: string; readonly taskId: string }
   | { readonly type: "openPerformance"; readonly taskId?: string }
   | { readonly type: "closePerformance" }
   | { readonly type: "openHistory" }
@@ -109,6 +110,11 @@ export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage |
   if (!record(value) || typeof value.type !== "string") return undefined;
   const text = (key: string, max = MAX_FIELD_INPUT): string | undefined => typeof value[key] === "string" && value[key].length <= max ? value[key] as string : undefined;
   switch (value.type) {
+    case "retryExecution": {
+      if (Object.keys(value).some((key) => !["type", "workflowId", "planId", "taskId"].includes(key))) return undefined;
+      const workflowId = text("workflowId", 200); const planId = text("planId", 200); const taskId = text("taskId", 200);
+      return workflowId?.trim() && planId?.trim() && taskId?.trim() && ![workflowId, planId, taskId].some((id) => id.includes("\0")) ? { type: value.type, workflowId, planId, taskId } : undefined;
+    }
     case "ready": case "approvePlan": case "rejectPlan": case "abortWorkflow": case "pauseWorkflow": case "resumeWorkflow": case "newTask": case "retryPlanning": case "openProviderSetup": case "openSettings": case "closeSettings": case "closePerformance": case "connectProvider": case "openHistory": case "clearHistory": case "returnToActiveTask": case "requestDiagnostics": case "copyDiagnostics": case "dismissClarification": return { type: value.type };
     case "editRequirement": { const taskId = text("taskId", 200)?.trim(); return value.taskId === undefined ? { type: value.type } : taskId ? { type: value.type, taskId } : undefined; }
     case "toggleDisclosure": { const key = text("key", 60)?.trim(); return key && typeof value.expanded === "boolean" ? { type: value.type, key, expanded: value.expanded } : undefined; }

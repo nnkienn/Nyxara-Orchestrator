@@ -107,6 +107,7 @@ import type {
   RepairResult,
 } from "../repair/repair.types.js";
 import type {
+  ApprovedWorkflowRecoveryInput,
   ModelGenerateInput,
   NyxaraOrchestratorConfig,
   RepairTaskInput,
@@ -204,6 +205,8 @@ export class NyxaraOrchestrator {
     });
     for (const eventName of ["executor.completed", "executor.failed"] as const) this.events.on(eventName, (event) => {
       if (!event.workflowId || event.toolCalls === undefined) return;
+      const runtime = this.workflowRuntimes.get(event.workflowId);
+      if (runtime && "changedFiles" in event) for (const file of event.changedFiles ?? []) runtime.changed.add(canonicalChangedPath(this.workflowEngine.get(event.workflowId).workspace, file));
       const prior = this.workflowTools.get(event.workflowId) ?? { modelRequested: 0, executed: 0, successful: 0, failed: 0, invalid: 0, durationMs: 0, byName: {} };
       prior.modelRequested += event.toolCalls;
       prior.successful += event.successfulToolCalls ?? 0;
@@ -234,6 +237,107 @@ export class NyxaraOrchestrator {
     return this.workflowEngine.start(input);
   }
 
+  restoreApprovedWorkflow(input: ApprovedWorkflowRecoveryInput): PlanRuntimeState {
+    if (input.workflow.planId !== input.plan.id) {
+      throw new PlanRuntimeError("plan_workflow_mismatch");
+    }
+    const workflow = this.workflowEngine.restore(input.workflow, input.tasks);
+    const plan = this.planRuntime.restoreApproved({
+      plan: input.plan,
+      workflowId: workflow.id,
+      approvedAt: input.approvedAt,
+      ...(input.approvedPlanFingerprint ? { approvedPlanFingerprint: input.approvedPlanFingerprint } : {}),
+    });
+    if (input.plannerContext) this.plannerContexts.set(plan.planId, input.plannerContext);
+    return plan;
+  }
+
+  restoreApprovedExecution(input: ApprovedWorkflowRecoveryInput & {
+    readonly taskExecutionStates?: readonly TaskExecutionState[];
+    readonly result?: AutonomousWorkflowResult;
+    readonly pipelineConfig: WorkflowPipelineConfig;
+    readonly allowRepair?: boolean;
+  }): PlanRuntimeState {
+    if (input.workflow.status !== "failed") {
+      throw new WorkflowStateError(
+        "invalid_workflow_transition",
+        "Only a failed approved workflow can be restored for execution",
+      );
+    }
+    const retainedStates = input.taskExecutionStates ?? [];
+    const failedStates = retainedStates.filter((state) => state.status === "failed" && !state.result);
+    const retryableTaskId = input.workflow.failedTaskId
+      ?? (failedStates.length === 1 ? failedStates[0]!.taskId : undefined);
+    const retainedTasks = input.tasks ?? [];
+    if (!retryableTaskId
+      || !failedStates.some((state) => state.taskId === retryableTaskId)
+      || !retainedTasks.some((task) => task.taskId === retryableTaskId && task.executionStatus === "failed")) {
+      throw new WorkflowStateError(
+        "invalid_workflow_transition",
+        "The approved plan has no unambiguous failed Executor attempt",
+      );
+    }
+    if (input.result && (input.result.status !== "failed" || input.result.workflowId !== input.workflow.id || input.result.planId !== input.plan.id)) {
+      throw new WorkflowStateError(
+        "invalid_workflow_transition",
+        "The retained terminal result does not belong to the failed approved workflow",
+      );
+    }
+    const planRuntimeState = this.restoreApprovedWorkflow(input);
+    const plan = this.planRuntime.getPlan(planRuntimeState.planId);
+    this.taskExecutions.restore(plan, retainedStates);
+    const completed = new Set(retainedStates
+      .filter((state) => state.status === "completed")
+      .map((state) => state.taskId));
+    const failed = retainedStates
+      .filter((state) => state.status === "failed")
+      .map((state) => state.taskId);
+    const blocked = retainedStates
+      .filter((state) => state.status === "blocked")
+      .map((state) => state.taskId);
+    const runtime: WorkflowRuntime = {
+      workflowId: input.workflow.id,
+      planId: plan.id,
+      plan,
+      graph: new TaskGraph(plan),
+      completed,
+      failed,
+      blocked,
+      changed: new Set(input.result?.changedFiles ?? []),
+      repairCycles: input.result?.repairCycles ?? 0,
+      startedAt: input.result?.startedAt ?? new Date().toISOString(),
+      startedMs: Date.now(),
+      allowRepair: input.allowRepair ?? DEFAULT_ALLOW_REPAIR,
+      pipelineConfig: structuredClone(input.pipelineConfig),
+      abortController: new AbortController(),
+      subscribers: new Set(),
+      ...(input.plannerContext ? { plannerContext: input.plannerContext } : {}),
+      ...(input.result ? { terminalResult: input.result } : {}),
+      retryableTaskId,
+    };
+    this.workflowRuntimes.set(input.workflow.id, runtime);
+    if (!this.executionRetry(input.workflow.id)) {
+      this.workflowRuntimes.delete(input.workflow.id);
+      throw new WorkflowStateError(
+        "invalid_workflow_transition",
+        "The approved plan has no recoverable failed Executor attempt",
+      );
+    }
+    return planRuntimeState;
+  }
+
+  async recoverApprovedExecution(input: ApprovedWorkflowRecoveryInput & {
+    readonly taskExecutionStates?: readonly TaskExecutionState[];
+    readonly result?: AutonomousWorkflowResult;
+    readonly pipelineConfig: WorkflowPipelineConfig;
+    readonly allowRepair?: boolean;
+  }): Promise<WorkflowRunOutcome> {
+    const planRuntimeState = this.restoreApprovedExecution(input);
+    const plan = this.planRuntime.getPlan(planRuntimeState.planId);
+    const outcome = this.executionRetry(input.workflow.id)!;
+    return this.retryWorkflowExecution({ workflowId: input.workflow.id, planId: plan.id, taskId: outcome.taskId });
+  }
+
   getWorkflowState(workflowId: string): WorkflowState {
     return this.workflowEngine.get(workflowId);
   }
@@ -245,8 +349,10 @@ export class NyxaraOrchestrator {
     if (!snapshot.planId) return withUsage ? Object.freeze({ ...snapshot, usage: withUsage }) : snapshot;
     if (!this.planRuntime.has(snapshot.planId)) return withUsage ? Object.freeze({ ...snapshot, usage: withUsage }) : snapshot;
     const runtime = this.planRuntime.get(snapshot.planId);
+    const executionRetry = this.executionRetry(workflowId);
     return Object.freeze({
       ...snapshot,
+      ...(executionRetry ? { executionRetry } : {}),
       ...(withUsage ? { usage: withUsage } : {}),
       plan: {
         planId: runtime.planId,
@@ -360,6 +466,38 @@ export class NyxaraOrchestrator {
     const gate = runtime.pauseGate;
     delete runtime.pauseGate;
     gate?.release();
+    this.advanceApprovedWorkflow(runtime);
+    return outcome;
+  }
+
+  private executionRetry(workflowId: string): WorkflowSnapshot["executionRetry"] {
+    const runtime = this.workflowRuntimes.get(workflowId);
+    const taskId = runtime?.retryableTaskId;
+    if (!runtime || !taskId || (runtime.terminalResult && runtime.terminalResult.status !== "failed") || runtime.abortController.signal.aborted || this.workflowEngine.get(workflowId).status !== "failed") return undefined;
+    const task = this.taskExecutions.getRetained(runtime.planId, taskId);
+    if (task?.status !== "failed" || task.result || runtime.completed.has(taskId) || [...runtime.completed].some((completed) => !this.taskExecutions.getRetained(runtime.planId, completed))) return undefined;
+    if (this.planRuntime.workflowId(runtime.planId) !== workflowId || this.workflowEngine.get(workflowId).planId !== runtime.planId || this.planRuntime.get(runtime.planId).status !== "approved") return undefined;
+    try { this.assertApprovedPlanIntegrity(runtime.planId, runtime.plan); } catch { return undefined; }
+    return { planId: runtime.planId, taskId, attempt: task.attempts + 1 };
+  }
+
+  async retryWorkflowExecution(input: { readonly workflowId: string; readonly planId: string; readonly taskId: string }): Promise<WorkflowRunOutcome> {
+    const runtime = this.requireRuntime(input.workflowId);
+    if (runtime.planId !== input.planId || this.planRuntime.workflowId(input.planId) !== input.workflowId) throw new PlanRuntimeError("plan_workflow_mismatch");
+    this.assertApprovedPlanIntegrity(runtime.planId, runtime.plan);
+    if (this.executionRetry(input.workflowId)?.taskId !== input.taskId) throw new WorkflowStateError("invalid_workflow_transition", "No failed Executor attempt is available to retry in this session");
+    await runtime.advancing;
+    const retry = this.executionRetry(input.workflowId);
+    if (!retry || retry.taskId !== input.taskId) throw new WorkflowStateError("invalid_workflow_transition", "No failed Executor attempt is available to retry in this session");
+    this.workflowEngine.retryExecution(input.workflowId, input.taskId);
+    runtime.failed.splice(0);
+    runtime.blocked.splice(0);
+    runtime.retryContextTaskId = input.taskId;
+    delete runtime.retryableTaskId;
+    delete runtime.terminalResult;
+    this.finalizedUsage.delete(input.workflowId);
+    this.refreshWorkflowUsage(input.workflowId);
+    const outcome = this.waitForRuntimeOutcome(runtime);
     this.advanceApprovedWorkflow(runtime);
     return outcome;
   }
@@ -870,16 +1008,17 @@ export class NyxaraOrchestrator {
           this.workflowEngine.fail(runtime.workflowId, { code: "invalid_task_graph", message: "No ready task remains" });
           this.finishRuntime(runtime, "failed", { code: "invalid_task_graph", message: "No ready task remains" }); return;
         }
-        this.workflowEngine.taskStarted(runtime.workflowId, task.id, 1);
+        const attempt = (this.taskExecutions.getRetained(runtime.planId, task.id)?.attempts ?? 0) + 1;
+        this.workflowEngine.taskStarted(runtime.workflowId, task.id, attempt);
         this.workflowEngine.transition(runtime.workflowId, "running", { currentTaskId: task.id, progress: { completed: runtime.completed.size, total: runtime.plan.tasks.length } });
         this.events.emit("workflow.task_selected", { workflowId: runtime.workflowId, planId: runtime.planId, taskId: task.id, completedCount: runtime.completed.size, total: runtime.plan.tasks.length });
         let result: TaskPipelineResult;
         try {
-          result = await this.runTaskPipeline({ ...runtime.pipelineConfig, workflowId: runtime.workflowId, requirement: workflow.prompt, plan: runtime.plan, taskId: task.id, workspaceRoot: workflow.workspace, ...(runtime.plannerContext ? { plannerContext: runtime.plannerContext } : {}), allowRepair: runtime.allowRepair, signal: runtime.abortController.signal, resolvePermission: (request) => this.awaitWorkflowPermission(runtime, task.id, request) });
+          result = await this.runTaskPipeline({ ...runtime.pipelineConfig, workflowId: runtime.workflowId, requirement: workflow.prompt, plan: runtime.plan, taskId: task.id, workspaceRoot: workflow.workspace, ...(runtime.plannerContext && runtime.retryContextTaskId !== task.id ? { plannerContext: runtime.plannerContext } : {}), allowRepair: runtime.allowRepair, signal: runtime.abortController.signal, resolvePermission: (request) => this.awaitWorkflowPermission(runtime, task.id, request) });
         } catch (error: unknown) {
           if (runtime.abortController.signal.aborted || errorCodeOr(error, "") === "executor_aborted" || errorCodeOr(error, "") === "reviewer_aborted") { if (this.workflowEngine.get(runtime.workflowId).status !== "aborted") this.workflowEngine.abort(runtime.workflowId); this.finishRuntime(runtime, "aborted", { taskId: task.id, code: "aborted", message: "Workflow aborted" }); return; }
           const code = errorCodeOr(error, "task_pipeline_error"); const message = errorMessageOr(error, "Task pipeline failed");
-          runtime.failed.push(task.id); this.workflowEngine.taskFailed(runtime.workflowId, task.id, code, 1); if (this.workflowEngine.get(runtime.workflowId).status !== "failed") this.workflowEngine.fail(runtime.workflowId, { code, message });
+          runtime.failed.push(task.id); this.workflowEngine.taskFailed(runtime.workflowId, task.id, code, attempt); if (this.workflowEngine.get(runtime.workflowId).status !== "failed") this.workflowEngine.fail(runtime.workflowId, { code, message });
           this.finishRuntime(runtime, "failed", { taskId: task.id, code, message }); return;
         }
         for (const file of result.execution.changedFiles) runtime.changed.add(canonicalChangedPath(workflow.workspace, file));
@@ -895,12 +1034,13 @@ export class NyxaraOrchestrator {
             }
           }
           const failure = taskPipelineFailure(result);
-          this.workflowEngine.taskFailed(runtime.workflowId, task.id, failure.code, 1);
+          this.workflowEngine.taskFailed(runtime.workflowId, task.id, failure.code, attempt);
           this.workflowEngine.transition(runtime.workflowId, "failed", { failedTaskId: task.id, blockedTaskIds: runtime.blocked, error: failure, progress: { completed: runtime.completed.size, total: runtime.plan.tasks.length } });
           this.finishRuntime(runtime, "failed", { taskId: task.id, ...failure });
           return;
         }
-        runtime.completed.add(task.id); this.workflowEngine.taskCompleted(runtime.workflowId, task.id, 1); this.workflowEngine.transition(runtime.workflowId, "running", { currentTaskId: null, progress: { completed: runtime.completed.size, total: runtime.plan.tasks.length } });
+        delete runtime.retryContextTaskId;
+        runtime.completed.add(task.id); this.workflowEngine.taskCompleted(runtime.workflowId, task.id, attempt); this.workflowEngine.transition(runtime.workflowId, "running", { currentTaskId: null, progress: { completed: runtime.completed.size, total: runtime.plan.tasks.length } });
         if (this.workflowEngine.get(runtime.workflowId).pauseRequested) { this.workflowEngine.transition(runtime.workflowId, "paused", { pauseRequested: false }); this.events.emit("workflow.paused", { workflowId: runtime.workflowId }); }
       }
       this.workflowEngine.transition(runtime.workflowId, "completed", { currentTaskId: null, progress: { completed: runtime.completed.size, total: runtime.plan.tasks.length } });
@@ -1489,7 +1629,10 @@ export class NyxaraOrchestrator {
       };
       } catch (error: unknown) {
       if (!input.signal?.aborted) {
-        this.failWorkflowIfTracked(workflowId, error, "task_pipeline_error");
+        const runtime = workflowId ? this.workflowRuntimes.get(workflowId) : undefined;
+        const execution = this.taskExecutions.getRetained(plan.id, task.id);
+        if (runtime && this.workflowEngine.get(runtime.workflowId).status === "executing" && execution?.status === "failed" && !execution.result) runtime.retryableTaskId = task.id;
+        this.failWorkflowIfTracked(workflowId, error, "task_pipeline_error", task.id);
       }
       throw error;
     }
@@ -1517,13 +1660,14 @@ export class NyxaraOrchestrator {
     workflowId: string | undefined,
     error: unknown,
     fallbackCode: string,
+    failedTaskId?: string,
   ): void {
     if (workflowId === undefined || !this.workflowEngine.has(workflowId)) return;
     try {
       this.workflowEngine.fail(workflowId, {
         code: errorCodeOr(error, fallbackCode),
         message: errorMessageOr(error, "Workflow failed"),
-      });
+      }, failedTaskId);
     } catch {
       // A workflow already in a terminal state keeps its original failure.
     }

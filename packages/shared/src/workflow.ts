@@ -132,6 +132,7 @@ export interface WorkflowSnapshot {
   };
   readonly pauseRequested?: boolean;
   readonly pendingPermission?: PendingWorkflowPermission;
+  readonly executionRetry?: { readonly planId: string; readonly taskId: string; readonly attempt: number };
   readonly usage?: import("./usage.js").WorkflowUsage;
   /** Authoritative time the current stage was entered; clients format elapsed locally. */
   readonly stageStartedAt?: string;

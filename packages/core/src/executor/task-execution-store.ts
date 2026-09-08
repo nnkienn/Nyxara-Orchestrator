@@ -65,6 +65,36 @@ export class TaskExecutionStore {
     return this.record(plan).states.get(taskId);
   }
 
+  getRetained(planId: string, taskId: string): TaskExecutionState | undefined {
+    return this.plans.get(planId)?.states.get(taskId);
+  }
+
+  restore(plan: ExecutionPlan, states: readonly TaskExecutionState[] = []): void {
+    if (plan.tasks.length > this.limits.maxTasksPerPlan) {
+      throw new ExecutorError(
+        "task_limit_reached",
+        "Plan exceeds the task retention bound: " + String(plan.tasks.length),
+      );
+    }
+    const restored = new Map<string, TaskExecutionState>(
+      plan.tasks.map((task) => [
+        task.id,
+        {
+          taskId: task.id,
+          status: task.dependencies.length === 0 ? "ready" : "pending",
+          attempts: 0,
+        } satisfies TaskExecutionState,
+      ]),
+    );
+    for (const state of states.slice(0, plan.tasks.length)) {
+      if (!restored.has(state.taskId)) continue;
+      restored.set(state.taskId, { ...state });
+    }
+    const record: PlanRecord = { states: restored };
+    this.plans.set(plan.id, record);
+    this.evictPlans();
+  }
+
   begin(
     plan: ExecutionPlan,
     taskId: string,

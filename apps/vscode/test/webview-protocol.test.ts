@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { MAX_HISTORY_SEARCH, MAX_TASK_INPUT, parseWebviewMessage } from "../src/webview-protocol.js";
 
 describe("webview message boundary", () => {
+  it("accepts only bounded identity-only execution retries, never a client-supplied plan", () => {
+    const input = { type: "retryExecution", workflowId: "workflow", planId: "plan", taskId: "T2" };
+    expect(parseWebviewMessage(input)).toEqual(input);
+    for (const mutation of [{ taskId: "" }, { taskId: 2 }, { workflowId: {} }, { workflowId: "bad\0id" }, { planId: "x".repeat(201) }, { plan: { approved: true } }, { allowRepair: false }]) expect(parseWebviewMessage({ ...input, ...mutation })).toBeUndefined();
+    expect(parseWebviewMessage({ type: "retryExecution" })).toBeUndefined();
+  });
   it("accepts known messages and normalizes task and model input", () => {
     expect(parseWebviewMessage({ type: "submitRequirement", task: "  small task  " })).toEqual({ type: "submitRequirement", task: "small task" });
     expect(parseWebviewMessage({ type: "selectModel", providerConfigId: " gateway ", modelId: " routed/exact " })).toEqual({ type: "selectModel", providerConfigId: "gateway", modelId: "routed/exact" });

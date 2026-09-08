@@ -1,6 +1,10 @@
 import type { ModelProvider } from "@nyxara/provider-sdk";
 import type { PermissionRequest, ToolRegistry } from "@nyxara/tools";
-import type { PendingWorkflowPermission, WorkflowSnapshot } from "@nyxara/shared";
+import type {
+  PendingWorkflowPermission,
+  WorkflowSnapshot,
+  WorkflowState,
+} from "@nyxara/shared";
 import type { AgentModelConfig } from "../agents/agent.types.js";
 import type {
   ContextBudget,
@@ -9,6 +13,7 @@ import type {
 import type {
   ExecutionResult,
   ExecutorLimits,
+  TaskExecutionState,
 } from "../executor/executor.types.js";
 import type { ExecutionPlan } from "../planner/planner.types.js";
 import type { PlanningProfile } from "../planner/planning-profile.js";
@@ -24,12 +29,22 @@ import type {
   ValidationConfig,
   ValidationResult,
 } from "../validation/validation.types.js";
-import type { WorkflowLimits } from "../workflow/workflow.types.js";
+import type { WorkflowLimits, WorkflowTaskRecord } from "../workflow/workflow.types.js";
 import type { WorkflowUsage } from "@nyxara/shared";
+import type { WorkflowPipelineConfig } from "../workflow/workflow-runtime.js";
 
 export interface StartWorkflowInput {
   readonly workspace: string;
   readonly prompt: string;
+}
+
+export interface ApprovedWorkflowRecoveryInput {
+  readonly workflow: WorkflowState;
+  readonly tasks?: readonly WorkflowTaskRecord[];
+  readonly plan: ExecutionPlan;
+  readonly approvedAt: string;
+  readonly approvedPlanFingerprint?: string;
+  readonly plannerContext?: ContextBundle;
 }
 
 /** @deprecated Use StartWorkflowInput; retained for source compatibility. */

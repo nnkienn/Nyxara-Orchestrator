@@ -55,8 +55,8 @@ describe("Planner gateway to VS Code workflow", () => {
     expect(run.session.snapshot?.status).toBe("awaiting_plan_approval");
     expect(run.approve).not.toHaveBeenCalled();
     expect(run.execute).not.toHaveBeenCalled();
-    expect(run.fetch).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(String(run.fetch.mock.calls[1]![1]?.body))).toMatchObject({ stream: true, stream_options: { include_usage: true }, model: "route/model", max_tokens: 4096 });
+    expect(run.fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(run.fetch.mock.calls[0]![1]?.body))).toMatchObject({ stream: true, stream_options: { include_usage: true }, model: "route/model", max_tokens: 4096 });
     expect(progress.mock.calls.map(([event]) => event.phase)).toEqual(["request_started", "response_started", "output_receiving", "request_completed"]);
     expect(received).toHaveBeenCalledWith(expect.objectContaining({ role: "planner", usage: { inputTokens: 43, outputTokens: 25, totalTokens: 68 } }));
     expect(run.secrets.store).not.toHaveBeenCalled();
@@ -71,7 +71,7 @@ describe("Planner gateway to VS Code workflow", () => {
     expect(run.session.currentPlan).toBeUndefined();
     expect(run.approve).not.toHaveBeenCalled();
     expect(run.execute).not.toHaveBeenCalled();
-    expect(run.fetch).toHaveBeenCalledTimes(2);
+    expect(run.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("groups eight short streamed criteria losslessly and still requires explicit approval", async () => {
@@ -84,7 +84,7 @@ describe("Planner gateway to VS Code workflow", () => {
     expect(run.session.snapshot?.status).toBe("awaiting_plan_approval");
     expect(run.approve).not.toHaveBeenCalled();
     expect(run.execute).not.toHaveBeenCalled();
-    expect(run.fetch).toHaveBeenCalledTimes(2);
+    expect(run.fetch).toHaveBeenCalledTimes(1);
     expect(run.output.appendLine).toHaveBeenCalledWith('Planner acceptance criteria grouped without dropping text: {"tasks":1,"originalCriteria":8,"groupedCriteria":6}');
     expect(run.secrets.store).not.toHaveBeenCalled();
     expect(run.secrets.delete).not.toHaveBeenCalled();
@@ -98,10 +98,9 @@ describe("Planner gateway to VS Code workflow", () => {
     expect(run.session.snapshot?.status).toBe("awaiting_plan_approval");
     expect(run.approve).not.toHaveBeenCalled();
     expect(run.execute).not.toHaveBeenCalled();
-    expect(run.fetch).toHaveBeenCalledTimes(2);
-    expect(String(run.fetch.mock.calls[0]![0])).toBe("https://router.invalid/v1/models");
-    expect(String(run.fetch.mock.calls[1]![0])).toBe("https://router.invalid/v1/chat/completions");
-    const body = JSON.parse(String(run.fetch.mock.calls[1]![1]?.body));
+    expect(run.fetch).toHaveBeenCalledTimes(1);
+    expect(String(run.fetch.mock.calls[0]![0])).toBe("https://router.invalid/v1/chat/completions");
+    const body = JSON.parse(String(run.fetch.mock.calls[0]![1]?.body));
     expect(body).toMatchObject({ model: "route/model", stream: false, max_tokens: 4_096 });
     expect(body.response_format).toBeUndefined();
     expect(run.secrets.store).not.toHaveBeenCalled();
@@ -119,7 +118,7 @@ describe("Planner gateway to VS Code workflow", () => {
     await expect(run.session.generate("Fix the dark planet atmosphere", "/workspace", "default")).rejects.toMatchObject({ code });
     expect(run.session.snapshot?.status).toBe("failed");
     expect(run.session.currentPlan).toBeUndefined();
-    expect(run.fetch).toHaveBeenCalledTimes(2);
+    expect(run.fetch).toHaveBeenCalledTimes(1);
     expect(run.approve).not.toHaveBeenCalled();
     expect(run.execute).not.toHaveBeenCalled();
     expect(run.secrets.store).not.toHaveBeenCalled();

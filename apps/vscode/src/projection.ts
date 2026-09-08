@@ -91,7 +91,9 @@ export function friendlyErrorMessage(error: unknown): string {
   switch (code) {
     case "provider_not_configured": return "Provider not configured.";
     case "authentication_error": return "Provider authentication failed. Check the configured credential.";
-    case "invalid_model": return "Configured model unavailable. Choose another model.";
+    case "invalid_model": return record?.message === "Provider request failed with status 404" || (typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === 404)
+      ? "Provider rejected the model route or generation endpoint (HTTP 404). Check the model ID and endpoint."
+      : "Configured model unavailable. Choose another model.";
     case "network_error": return "Network error. Check the provider endpoint and connection.";
     case "invalid_plan": case "plan_response_invalid": {
       const detail = typeof record?.message === "string" && record.message.startsWith("Planner plan field ")

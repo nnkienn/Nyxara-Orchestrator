@@ -1,6 +1,7 @@
 import type { ExecutionPlan } from "./planner.types.js";
 import { PlanValidator } from "./plan-validator.js";
 import {
+  createApprovalRecord,
   assertApprovedPlanIntegrity,
   planFingerprint,
   type PlanApprovalRecord,
@@ -45,6 +46,27 @@ export class PlanRuntimeStore {
       createdAt: plan.createdAt,
     });
     this.records.set(plan.id, { plan, ...(workflowId ? { workflowId } : {}), state });
+    return state;
+  }
+
+  restoreApproved(input: {
+    readonly plan: ExecutionPlan;
+    readonly workflowId: string;
+    readonly approvedAt: string;
+    readonly approvedPlanFingerprint?: string;
+  }): PlanRuntimeState {
+    if (input.approvedPlanFingerprint && input.approvedPlanFingerprint !== planFingerprint(input.plan)) {
+      throw new PlanRuntimeError("plan_changed_after_approval");
+    }
+    this.validator.validate(input.plan);
+    const state: PlanRuntimeState = Object.freeze({
+      planId: input.plan.id,
+      status: "approved" as const,
+      createdAt: input.plan.createdAt,
+      approvedAt: input.approvedAt,
+      approval: createApprovalRecord(input.plan, input.approvedAt, input.approvedPlanFingerprint),
+    });
+    this.records.set(input.plan.id, { plan: input.plan, workflowId: input.workflowId, state });
     return state;
   }
 

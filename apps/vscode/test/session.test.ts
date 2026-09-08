@@ -13,9 +13,14 @@ function fakeCore() {
     rejectPlan: vi.fn(),
     pauseWorkflow: vi.fn(),
     resumeWorkflow: vi.fn(),
+    retryWorkflowExecution: vi.fn(),
+    restoreApprovedExecution: vi.fn(),
     abortWorkflow: vi.fn(),
     resolveWorkflowPermission: vi.fn(async () => ({ status: "paused" })),
     getWorkflowSnapshot: vi.fn(() => ({ status: "awaiting_plan_approval", tasks: [] })),
+    getWorkflowState: vi.fn(),
+    getPlanRuntimeState: vi.fn(),
+    getTaskExecutionStates: vi.fn(),
   };
 }
 
@@ -27,6 +32,88 @@ function createSession(core = fakeCore()) {
 
 describe("NyxaraSession Core boundary", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it("persists authoritative task IDs and restores a failed approved runtime without replanning", () => {
+    const { session, core } = createSession();
+    const plan = { id: "plan-1", objective: "Recover", createdAt: "2026-09-08T00:00:00.000Z", tasks: [{ id: "T1", title: "Task", description: "Do work", dependencies: [], acceptanceCriteria: ["done"] }] } as any;
+    const workflow = { id: "workflow-1", workspace: "/workspace", prompt: "Recover work", status: "failed", planId: plan.id, failedTaskId: "T1", createdAt: "2026-09-08T00:00:00.000Z", updatedAt: "2026-09-08T00:01:00.000Z" } as const;
+    const taskStates = [{ taskId: "T1", status: "failed", attempts: 1 }] as const;
+    session.plan = { plan } as any; session.workflowId = workflow.id; session.prompt = workflow.prompt;
+    core.getWorkflowSnapshot.mockReturnValue({ workflowId: workflow.id, status: "failed", tasks: [{ taskId: "T1", executionStatus: "failed", attempts: 1 }], plan: { planId: plan.id, status: "approved" } } as any);
+    core.getWorkflowState.mockReturnValue(workflow);
+    core.getPlanRuntimeState.mockReturnValue({ approvedAt: "2026-09-08T00:00:30.000Z", approval: { planFingerprint: "a".repeat(64) } });
+    core.getTaskExecutionStates.mockReturnValue(taskStates);
+    const recovery = session.buildRecovery()!;
+    expect(recovery.tasks).toEqual([{ taskId: "T1", executionStatus: "failed", attempts: 1 }]);
+    const restored = createSession();
+    restored.session.restoreRecovery(recovery);
+    expect(restored.core.restoreApprovedExecution).toHaveBeenCalledWith(expect.objectContaining({
+      workflow,
+      plan,
+      tasks: recovery.tasks,
+      taskExecutionStates: taskStates,
+    }));
+    expect(restored.core.createPlan).not.toHaveBeenCalled();
+  });
+
+  it("does not persist an exact recovery record containing credential-shaped text", () => {
+    const { session, core, output } = createSession();
+    const plan = { id: "plan-1", tasks: [{ id: "T1" }] } as any;
+    session.plan = { plan } as any; session.workflowId = "workflow-1";
+    core.getWorkflowSnapshot.mockReturnValue({ status: "failed", tasks: [{ taskId: "T1", executionStatus: "failed", attempts: 1 }], plan: { planId: plan.id, status: "approved" } } as any);
+    core.getWorkflowState.mockReturnValue({ id: "workflow-1", prompt: "api_key=sk-secret-value", status: "failed" });
+    core.getPlanRuntimeState.mockReturnValue({ approvedAt: "2026-09-08T00:00:30.000Z", approval: { planFingerprint: "a".repeat(64) } });
+    expect(session.buildRecovery()).toBeUndefined();
+    expect(output.appendLine).toHaveBeenCalledWith(expect.stringContaining("credential-shaped text"));
+  });
+
+  it("retries the exact approved execution without planning, approval, or settings writes", async () => {
+    const { session, core, secrets } = createSession();
+    const input = { workflowId: "workflow-1", planId: "plan-1", taskId: "T2" };
+    const approvedPlan = { plan: { id: input.planId, tasks: [{ id: "T1" }, { id: "T2" }] } } as any;
+    session.plan = approvedPlan; session.workflowId = input.workflowId; session.prompt = "Original requirement";
+    session.result = { status: "failed" } as any;
+    core.getWorkflowSnapshot.mockReturnValue({ status: "failed", tasks: [], executionRetry: { planId: input.planId, taskId: input.taskId, attempt: 2 } } as any);
+    const outcome = { workflowId: input.workflowId, status: "completed" };
+    core.retryWorkflowExecution.mockImplementation(async () => {
+      expect(session.result).toBeUndefined();
+      return outcome;
+    });
+    session.onChange = vi.fn();
+    expect(await session.retryExecution(input)).toBe(outcome);
+    expect(core.retryWorkflowExecution).toHaveBeenCalledWith(input);
+    expect(core.createPlan).not.toHaveBeenCalled();
+    expect(core.approvePlan).not.toHaveBeenCalled();
+    expect(core.configureAgent).not.toHaveBeenCalled();
+    expect(secrets.store).not.toHaveBeenCalled();
+    expect(secrets.delete).not.toHaveBeenCalled();
+    expect(session.plan).toBe(approvedPlan);
+    expect(session.result).toBe(outcome);
+    expect(session.onChange).toHaveBeenCalled();
+  });
+
+  it("rejects stale retries and restores a terminal result if Core refuses recovery", async () => {
+    const { session, core } = createSession();
+    const input = { workflowId: "workflow-1", planId: "plan-1", taskId: "T1" };
+    session.workflowId = input.workflowId; session.plan = { plan: { id: input.planId } } as any;
+    const previous = { status: "failed" } as any; session.result = previous;
+    core.getWorkflowSnapshot.mockReturnValue({ status: "failed", tasks: [], executionRetry: { planId: input.planId, taskId: input.taskId, attempt: 2 } } as any);
+    await expect(session.retryExecution({ ...input, taskId: "wrong" })).rejects.toThrow("no longer available");
+    expect(core.retryWorkflowExecution).not.toHaveBeenCalled();
+    core.retryWorkflowExecution.mockRejectedValue(new Error("Plan integrity failed"));
+    await expect(session.retryExecution(input)).rejects.toThrow("Plan integrity failed");
+    expect(session.result).toBe(previous);
+  });
+
+  it("logs Executor failure phase and HTTP status without provider payloads", () => {
+    const { session, core, output } = createSession(); session.workflowId = "workflow-1";
+    const listeners = core.events.on.mock.calls as unknown as Array<[string, (event: unknown) => void]>;
+    const failed = listeners.find(([name]) => name === "executor.failed")![1];
+    failed({ workflowId: "other", phase: "generation", statusCode: 404 });
+    expect(output.appendLine).not.toHaveBeenCalled();
+    failed({ workflowId: "workflow-1", phase: "generation", statusCode: 404, message: "private payload", modelId: "private model" });
+    expect(output.appendLine).toHaveBeenCalledWith('Executor failure: {"phase":"generation","statusCode":404}');
+  });
 
   it("logs command outcomes and validation codes without arguments or output", () => {
     const { session, core, output } = createSession();

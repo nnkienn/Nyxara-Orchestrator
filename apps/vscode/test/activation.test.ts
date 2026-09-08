@@ -487,6 +487,25 @@ describe("VS Code provider onboarding and command safety", () => {
     expect(mock.pickCalls[0].flatMap((item: any) => item.label)).not.toContain("Continue with OpenAI");
   });
 
+  it("routes execution retry to the retained session without resetting, planning, discovery, or config writes", async () => {
+    const session = Object.assign(fakeSession(true), { workflowId: "workflow", retryExecution: vi.fn(async () => ({ status: "paused" })) });
+    session.prompt = "Approved requirement";
+    session.snapshot = { workflowId: "workflow", status: "failed", tasks: [], plan: { planId: "plan", status: "approved" }, executionRetry: { planId: "plan", taskId: "T2", attempt: 2 } };
+    activateFake(session); const view = resolveRegisteredWebview();
+    const before = mock.updates.length;
+    view.receive({ type: "retryExecution", workflowId: "workflow", planId: "plan", taskId: "T2" });
+    await vi.waitFor(() => expect(session.retryExecution).toHaveBeenCalledOnce());
+    expect(session.resetPresentation).not.toHaveBeenCalled();
+    expect(session.generate).not.toHaveBeenCalled();
+    expect(session.approveAndRun).not.toHaveBeenCalled();
+    expect(session.core.listModels).not.toHaveBeenCalled();
+    expect(mock.updates).toHaveLength(before);
+    view.receive({ type: "retryPlanning" });
+    await flushSettingsMessages();
+    expect(session.generate).not.toHaveBeenCalled();
+    expect(session.resetPresentation).not.toHaveBeenCalled();
+  });
+
   it.each([
     [0, "Use existing CLI login", "codex-cli"],
     [1, "Use existing CLI login", "claude-code-cli"],

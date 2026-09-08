@@ -12,6 +12,22 @@ It builds the required packages, runs the deterministic VS Code checks, derives 
 
 The extension manifest at `apps/vscode/package.json` is the single source of truth for the local dogfood version. **Nyxara: About** and the sidebar show that installed manifest version with the **Local Dogfood** label. Use F5 only for development/debugging in an Extension Development Host; use the VSIX for daily dogfood.
 
+## Direct subscription CLI responses (alpha.36)
+
+Planner and Reviewer prompts now go directly to Codex, Claude, and Gemini subscription CLIs, and their complete response text goes directly back to the existing business parser. Nyxara does not add or parse a transport envelope for content-only turns, so nested or lengthy business JSON is handled the same way as a direct CLI/chat response, subject only to the provider's own context/output limits and Nyxara's existing bounded process output.
+
+Only Executor turns that advertise Nyxara tools use a transport envelope. Codex and Claude enforce that narrow bridge with their CLI-native JSON Schema controls; Gemini uses the equivalent explicit prompt contract because it does not expose the same schema flag in the supported local adapter contract. Tool arguments cross this boundary as JSON strings and are parsed and validated back into objects before Core can execute them. Malformed tool envelopes fail closed; Nyxara does not treat arbitrary model text as an executable tool call or retry with a weaker parser.
+
+## Retry a failed Executor without replanning (alpha.34)
+
+After a failed Executor attempt, **Retry Execute** continues the same approved plan in the current extension-host session. Completed tasks remain completed. The failed task reads fresh context and uses the current Models & Roles selections; the original workflow configuration remains unchanged. Partial changes are not rolled back, and commands in the failed task may run again. Validation, Review, automatic Repair limits, permission gates, pause/resume, and abort remain in force.
+
+The control is available only for an interrupted Executor attempt before Validation starts for that task. It is not recovery from failed Validation/Review/Repair or a rejected/aborted plan. A bounded exact recovery record is stored for this specific failed approved attempt, so a normal window reload can restore **Retry Execute** without rerunning Planner. Recovery is deliberately not persisted when the requirement or approved plan contains credential-shaped text. Starting a new task, deleting its local history, or invalid recovery data removes retry availability. Install the update and reload **before starting the next task**; installing a VSIX does not replace the already-running extension host.
+
+Compatible gateways can accept exact manually configured route IDs even when `/models` omits them. Provider Default execution no longer needs an automatic discovery request before generation. Explicit discovery remains in Settings; non-default execution profiles still require verified capability metadata. Official OpenAI and providers without a route resolver keep their existing discovery checks. A real HTTP 404/502 or timeout still fails without substitution, hidden retries, or accepting empty output. Logs now separate model resolution, generation, tool, and response failures and record safe HTTP status codes.
+
+See `docs/EXECUTION_RETRY_AUDIT.md` for evidence, constraints, and deterministic coverage. No paid generation is needed for these tests.
+
 ## Slow compatible gateways
 
 OpenAI-compatible adapters allow up to **5 minutes per generation request**, including response-body consumption, while model discovery remains bounded at **30 seconds**. This avoids applying the discovery budget to a queued or non-streaming gateway response. A caller cancellation still interrupts the request; the VS Code Abort action now forwards cancellation into Planner generation and regeneration. There are no automatic retries, idle timers, speculative streaming capabilities or new Workflow controls. The existing approval, execution, validation, review and repair engine is unchanged.

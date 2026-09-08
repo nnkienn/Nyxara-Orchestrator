@@ -278,6 +278,9 @@ export interface ExecutorFailedEvent extends Partial<Pick<ExecutorCompletedEvent
   readonly providerId: string;
   readonly modelId: string;
   readonly code: string;
+  readonly phase?: "model_resolution" | "generation" | "tools" | "response";
+  readonly statusCode?: number;
+  readonly changedFiles?: readonly string[];
 }
 
 export interface TaskExecutionStartedEvent {

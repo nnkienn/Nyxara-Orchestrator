@@ -35,6 +35,12 @@ describe("VS Code workflow projection", () => {
   it("projects authoritative Core usage without recalculation", () => {
     expect(usageSummary({ usage: { totalTokens: 7073, totalProviderCalls: 3, usageSource: "provider_reported", totalDurationMs: 20620 } } as any)).toEqual({ tokens: 7073, modelCalls: 3, usageSource: "Provider reported", durationMs: 20620 });
   });
+  it("distinguishes a provider HTTP 404 from local discovery rejection, including retained workflow errors", () => {
+    const expected = "Provider rejected the model route or generation endpoint (HTTP 404). Check the model ID and endpoint.";
+    expect(friendlyErrorMessage({ code: "invalid_model", statusCode: 404 })).toBe(expected);
+    expect(friendlyErrorMessage({ code: "invalid_model", message: "Provider request failed with status 404" })).toBe(expected);
+    expect(friendlyErrorMessage({ code: "invalid_model", message: "private-provider-body" })).not.toContain("private-provider-body");
+  });
   it.each([
     ["authentication_error", "Provider authentication failed. Check the configured credential."],
     ["invalid_model", "Configured model unavailable. Choose another model."],

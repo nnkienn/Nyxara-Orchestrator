@@ -18,6 +18,13 @@ const plan = {
 };
 
 describe("workspace Webview state projection", () => {
+  it("projects only a Core-owned retry from a failed runtime", () => {
+    const executionRetry = { planId: "plan", taskId: "T2", attempt: 2 };
+    const snapshot = { workflowId: "workflow", status: "failed", tasks: [], executionRetry };
+    expect(build({ snapshot }).workflow?.executionRetry).toEqual(executionRetry);
+    expect(build({ snapshot: { ...snapshot, status: "executing" } }).workflow?.executionRetry).toBeUndefined();
+    expect(build().workflow?.executionRetry).toBeUndefined();
+  });
   it("shows full command argv and cwd for one-time permission, including long arguments", () => {
     const command = { command: "python3", args: ["apps/web/scripts/planet-compare.py", "x".repeat(800)], cwd: "/workspace" };
     const state = build({ snapshot: { workflowId: "w", status: "waiting_for_permission", tasks: [], pendingPermission: { id: "permission-1", capability: "run_command", command } } });

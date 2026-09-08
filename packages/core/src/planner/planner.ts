@@ -38,8 +38,7 @@ export class Planner {
 
     try {
       const provider = this.providers.get(model.providerId);
-      const models = await provider.listModels();
-      const selectedModel = this.requireModel(models, model.modelId);
+      const selectedModel = this.requireModel(await this.providers.resolveModel(model.providerId, model.modelId, model.executionOptions), model.modelId);
       const prompt = this.promptBuilder.build(input, planningProfile, runInput.engineeringRules, this.validator.structureBounds);
       const response = await this.generate(
         provider,
@@ -125,8 +124,7 @@ export class Planner {
     }
   }
 
-  private requireModel(models: readonly ModelInfo[], modelId: string): ModelInfo {
-    const model = models.find((candidate) => candidate.id === modelId);
+  private requireModel(model: ModelInfo | undefined, modelId: string): ModelInfo {
     if (!model) {
       throw new PlannerError(
         "invalid_model",

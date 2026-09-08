@@ -1,4 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
+import {
+  ExecutionPlanSchema,
+  type AutonomousWorkflowResult,
+  type ExecutionPlan,
+  type RepairLimits,
+  type ReviewerLimits,
+  type TaskExecutionState,
+  type ValidationConfig,
+  type WorkflowState,
+  type WorkflowTaskRecord,
+} from "@nyxara/core";
+import { z } from "zod";
 import { buildPerformanceProjection, sanitizePerformanceProjection, type PerformanceProjection, type PerformanceTerminalStatus } from "./performance-projection.js";
 import type { WorkspaceViewState } from "./workspace-state.js";
 
@@ -64,6 +76,24 @@ export interface TaskSession {
   /** Stages with recorded evidence. Unexecuted stages are never rendered. */
   readonly occurredStages?: readonly string[];
   readonly interrupted?: true;
+  /** Exact approved-plan recovery data for a failed Executor attempt. */
+  readonly recovery?: TaskWorkflowRecovery;
+}
+
+export interface TaskWorkflowRecovery {
+  readonly plan: ExecutionPlan;
+  readonly workflow: WorkflowState;
+  readonly tasks: readonly WorkflowTaskRecord[];
+  readonly taskExecutionStates: readonly TaskExecutionState[];
+  readonly approvedAt: string;
+  readonly approvedPlanFingerprint: string;
+  readonly allowRepair: boolean;
+  readonly pipelineConfig: {
+    readonly validation?: ValidationConfig;
+    readonly repairLimits?: Partial<RepairLimits>;
+    readonly reviewerLimits?: Partial<ReviewerLimits>;
+  };
+  readonly result?: AutonomousWorkflowResult;
 }
 
 export interface CreateTaskSessionInput {
@@ -83,6 +113,68 @@ const statusSet = new Set<TaskSessionStatus>(["draft", "planning", "awaiting_app
 export const TERMINAL_TASK_SESSION_STATUSES = new Set<TaskSessionStatus>(["completed", "failed", "aborted", "rejected", "interrupted"]);
 /** Legacy terminal reason that identifies a user rejection in older records. */
 export const LEGACY_PLAN_REJECTED_MESSAGE = "Plan rejected by user";
+
+const TaskRecoverySchema = z.object({
+  plan: ExecutionPlanSchema,
+  workflow: z.object({
+    id: z.string().min(1).max(200),
+    workspace: z.string().min(1).max(4_096),
+    prompt: z.string().min(1).max(20_000),
+    status: z.enum(["approved", "running", "executing", "failed"]),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    planId: z.string().min(1).max(200).optional(),
+    currentTaskId: z.string().min(1).max(200).optional(),
+    error: z.object({ code: z.string().min(1).max(120), message: z.string().min(1).max(500) }).optional(),
+    progress: z.object({ completed: z.number().int().min(0), total: z.number().int().min(1) }).optional(),
+    failedTaskId: z.string().min(1).max(200).optional(),
+    blockedTaskIds: z.array(z.string().min(1).max(200)).max(200).optional(),
+    stageStartedAt: z.string().datetime().optional(),
+  }),
+  tasks: z.array(z.object({
+    taskId: z.string().min(1).max(200),
+    executionStatus: z.enum(["pending", "ready", "running", "completed", "failed", "blocked"]).optional(),
+    validationStatus: z.enum(["passed", "failed"]).optional(),
+    reviewStatus: z.enum(["passed", "failed", "needs_more_context"]).optional(),
+    repairStatus: z.enum(["passed", "failed", "stalled", "limit_reached", "aborted"]).optional(),
+    attempts: z.number().int().min(0).optional(),
+  })).max(200),
+  taskExecutionStates: z.array(z.object({
+    taskId: z.string().min(1).max(200),
+    status: z.enum(["pending", "ready", "running", "completed", "failed", "blocked"]),
+    attempts: z.number().int().min(0),
+    startedAt: z.string().datetime().optional(),
+    completedAt: z.string().datetime().optional(),
+  })).max(200),
+  approvedAt: z.string().datetime(),
+  approvedPlanFingerprint: z.string().min(32).max(64),
+  allowRepair: z.boolean(),
+  pipelineConfig: z.object({
+    validation: z.unknown().optional(),
+    repairLimits: z.unknown().optional(),
+    reviewerLimits: z.unknown().optional(),
+  }),
+  result: z.object({
+    workflowId: z.string().min(1).max(200),
+    planId: z.string().min(1).max(200),
+    status: z.literal("failed"),
+    completedTaskIds: z.array(z.string().min(1).max(200)).max(200),
+    failedTaskIds: z.array(z.string().min(1).max(200)).max(200),
+    blockedTaskIds: z.array(z.string().min(1).max(200)).max(200),
+    changedFiles: z.array(z.string().min(1).max(4_096)).max(2_000),
+    totalTasks: z.number().int().min(0).max(200),
+    completedTasks: z.number().int().min(0).max(200),
+    repairCycles: z.number().int().min(0),
+    startedAt: z.string().datetime(),
+    completedAt: z.string().datetime(),
+    durationMs: z.number().min(0),
+    failure: z.object({
+      taskId: z.string().min(1).max(200).optional(),
+      code: z.string().min(1).max(120),
+      message: z.string().min(1).max(500),
+    }).optional(),
+  }).optional(),
+});
 
 /** Redacts common credential shapes before any user/provider-controlled text is persisted. */
 export function redactSensitiveText(value: string): string {
@@ -119,7 +211,7 @@ export function createTaskSession(input: CreateTaskSessionInput): TaskSession {
   return session;
 }
 
-export function projectTaskSession(existing: TaskSession, state: WorkspaceViewState, now = new Date().toISOString()): TaskSession {
+export function projectTaskSession(existing: TaskSession, state: WorkspaceViewState, recovery?: TaskWorkflowRecovery, now = new Date().toISOString()): TaskSession {
   const workflow = state.workflow;
   const status = taskSessionStatus(workflow?.status, state.completion?.status, existing.status);
   const compactUsage = state.usage ?? state.completion;
@@ -150,6 +242,8 @@ export function projectTaskSession(existing: TaskSession, state: WorkspaceViewSt
   const validationOccurred = state.validation.length > 0 || occurredStages.includes("validation");
   const projected = {
     ...existing,
+    ...(recovery ? { recovery } : state.workflow?.approvalStatus === "approved" ? {} : { recovery: undefined }),
+    failureSummary: undefined,
     updatedAt: now,
     ...(workflow?.id ? { workflowId: workflow.id } : {}),
     status,
@@ -201,6 +295,8 @@ export function sanitizeTaskSession(value: unknown): TaskSession | undefined {
   if (!id || !createdAt || !updatedAt || !workspace?.id || !workspace.label || !title || !requirement || !status) return undefined;
   const session: TaskSession = { id, schemaVersion: TASK_SESSION_SCHEMA_VERSION, createdAt, updatedAt, workspaceIdentity: workspace, title, requirement, status };
   const workflowId = bounded(value.workflowId, 200); if (workflowId) Object.assign(session, { workflowId });
+  const recovery = TaskRecoverySchema.safeParse(value.recovery);
+  if (recovery.success) Object.assign(session, { recovery: recovery.data });
   if (record(value.providerSummary)) { const provider = privacySafe(value.providerSummary.provider, 100); const model = privacySafe(value.providerSummary.model, 200); if (provider) Object.assign(session, { providerSummary: { provider, ...(model ? { model } : {}) } }); }
   const planSummary = sanitizePlan(value.planSummary); if (planSummary) Object.assign(session, { planSummary });
   const occurredStages = Array.isArray(value.occurredStages)

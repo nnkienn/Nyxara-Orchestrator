@@ -2,6 +2,7 @@ import {
   assertExecutionOptionsSupported,
   capabilityForModel,
   ProviderError,
+  type ExecutionOptions,
   type CredentialStore,
   type GenerateRequest,
   type GenerateResponse,
@@ -103,6 +104,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const declared = candidate?.kind === "openai_reasoning" ? candidate : undefined;
     if (!discovered && !declared) return undefined;
     return { ...discovered, ...(declared && !discovered?.execution ? { execution: declared } : {}) };
+  }
+
+  async resolveModel(modelId: string, executionOptions?: ExecutionOptions): Promise<ModelInfo | undefined> {
+    if (!modelId.trim() || modelId.includes("\0")) return undefined;
+    if (this.providerId === "openai") return (await this.listModels()).find((model) => model.id === modelId);
+    if (executionOptions && executionOptions.kind !== "provider_default" && !this.modelCapabilities(modelId)?.execution) await this.listModels();
+    const capabilities = this.modelCapabilities(modelId);
+    return { id: modelId, name: modelId, provider: this.id, ...(capabilities ? { capabilities } : {}) };
   }
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {

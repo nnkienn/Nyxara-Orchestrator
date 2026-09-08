@@ -335,6 +335,7 @@ export type {
 } from "./review/reviewer.types.js";
 export { NyxaraOrchestrator } from "./orchestrator/orchestrator.js";
 export type {
+  ApprovedWorkflowRecoveryInput,
   ModelGenerateInput,
   NyxaraOrchestratorConfig,
   RepairTaskInput,

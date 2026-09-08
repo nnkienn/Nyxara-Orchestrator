@@ -71,6 +71,19 @@ export class WorkflowEngine {
     return state;
   }
 
+  restore(state: WorkflowState, tasks: readonly WorkflowTaskRecord[] = []): WorkflowState {
+    const parsed = startInputSchema.safeParse(state);
+    if (!parsed.success) {
+      throw new WorkflowStateError(
+        "invalid_workflow_input",
+        parsed.error.issues[0]?.message ?? "Restored workflow input is invalid",
+      );
+    }
+    if (this.has(state.id)) return this.get(state.id);
+    this.store.restore(state, tasks);
+    return this.get(state.id);
+  }
+
   has(workflowId: string): boolean {
     return this.store.has(workflowId);
   }
@@ -96,9 +109,14 @@ export class WorkflowEngine {
       );
     }
 
+    return this.applyTransition(workflowId, next, patch);
+  }
+
+  private applyTransition(workflowId: string, next: WorkflowStatus, patch: WorkflowTransitionInput): WorkflowState {
+    const current = this.store.require(workflowId);
     const planId = patch.planId ?? current.planId;
     const currentTaskId = patch.currentTaskId === null ? undefined : (patch.currentTaskId ?? current.currentTaskId);
-    const error = patch.error ?? current.error;
+    const error = patch.error === null ? undefined : patch.error ?? current.error;
     const timestamp = this.now();
     // A status change is a stage entry, so the authoritative stage clock resets
     // here. Clients format elapsed time from it and never poll Core.
@@ -117,7 +135,7 @@ export class WorkflowEngine {
       ...(currentTaskId ? { currentTaskId } : {}),
       ...(error ? { error } : {}),
       ...(patch.progress ? { progress: patch.progress } : ("progress" in current ? { progress: current.progress } : {})),
-      ...(patch.failedTaskId ? { failedTaskId: patch.failedTaskId } : ("failedTaskId" in current ? { failedTaskId: current.failedTaskId } : {})),
+      ...(patch.failedTaskId === null ? {} : patch.failedTaskId ? { failedTaskId: patch.failedTaskId } : ("failedTaskId" in current ? { failedTaskId: current.failedTaskId } : {})),
       ...(patch.blockedTaskIds ? { blockedTaskIds: [...patch.blockedTaskIds] } : ("blockedTaskIds" in current ? { blockedTaskIds: current.blockedTaskIds } : {})),
       ...(patch.pauseRequested !== undefined ? (patch.pauseRequested ? { pauseRequested: true } : {}) : (current.pauseRequested ? { pauseRequested: true } : {})),
       ...(patch.pendingPermission !== undefined ? (patch.pendingPermission ? { pendingPermission: patch.pendingPermission } : {}) : (current.pendingPermission ? { pendingPermission: current.pendingPermission } : {})),
@@ -142,6 +160,18 @@ export class WorkflowEngine {
     return state;
   }
 
+  retryExecution(workflowId: string, taskId: string): WorkflowState {
+    const current = this.store.require(workflowId);
+    const tasks = this.store.tasks(workflowId);
+    if (current.status !== "failed" || !current.planId || !tasks.some((task) => task.taskId === taskId && task.executionStatus === "failed")) {
+      throw new WorkflowStateError("invalid_workflow_transition", "No failed execution is available to retry");
+    }
+    for (const task of tasks) {
+      if (task.executionStatus === "blocked") this.store.recordTask(workflowId, { taskId: task.taskId, executionStatus: "pending" });
+    }
+    return this.applyTransition(workflowId, "running", { currentTaskId: taskId, error: null, failedTaskId: null, blockedTaskIds: [], pauseRequested: false, pendingPermission: null });
+  }
+
   setPlan(workflowId: string, planId: string): WorkflowState {
     const current = this.store.require(workflowId);
     const state: WorkflowState = Object.freeze({
@@ -160,8 +190,9 @@ export class WorkflowEngine {
   fail(
     workflowId: string,
     error: { readonly code: string; readonly message: string },
+    failedTaskId?: string,
   ): WorkflowState {
-    return this.transition(workflowId, "failed", { error });
+    return this.transition(workflowId, "failed", { error, ...(failedTaskId ? { failedTaskId } : {}) });
   }
 
   abort(workflowId: string): WorkflowState {

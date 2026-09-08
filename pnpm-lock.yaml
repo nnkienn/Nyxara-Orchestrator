@@ -47,6 +47,9 @@ importers:
       '@nyxara/providers':
         specifier: workspace:*
         version: link:../../packages/providers
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
 
   packages/core:
     dependencies:

@@ -42,9 +42,9 @@ export interface WorkflowTaskRecord {
 export interface WorkflowTransitionInput {
   readonly planId?: string;
   readonly currentTaskId?: string | null;
-  readonly error?: { readonly code: string; readonly message: string };
+  readonly error?: { readonly code: string; readonly message: string } | null;
   readonly progress?: { readonly completed: number; readonly total: number };
-  readonly failedTaskId?: string;
+  readonly failedTaskId?: string | null;
   readonly blockedTaskIds?: readonly string[];
   readonly pauseRequested?: boolean;
   readonly pendingPermission?: import("@nyxara/shared").PendingWorkflowPermission | null;
