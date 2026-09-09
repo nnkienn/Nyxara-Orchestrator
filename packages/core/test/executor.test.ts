@@ -373,8 +373,16 @@ describe("Executor", () => {
     expect(generate).toHaveBeenCalledTimes(1);
   });
 
+  it("returns invalid unknown tools to the model without executing them", async () => {
+    const generate = vi.fn(async () => response({ toolCalls: [{ id: "unknown", name: "unknown_tool", arguments: {} }] }));
+    const nyxara = orchestrator(generate);
+    const started = vi.fn();
+    nyxara.events.on("tool.started", started);
+    await expect(nyxara.executeTask({ plan: executionPlan(), taskId: "T1", workspaceRoot: workspace })).rejects.toMatchObject({ code: "executor_stalled" });
+    expect(started).not.toHaveBeenCalledWith(expect.objectContaining({ tool: "unknown_tool" }));
+  });
+
   it.each([
-    ["unknown tool", "unknown_tool", {}],
     ["sudo", "run_command", { command: "sudo", args: ["ls"] }],
     ["git push", "run_command", { command: "git", args: ["push"] }],
     ["destructive command", "run_command", { command: "rm", args: ["-rf", "/"] }],

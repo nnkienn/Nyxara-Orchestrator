@@ -116,8 +116,14 @@ export type { AgentModelConfig, AgentRole } from "./agents/agent.types.js";
 export { Executor } from "./executor/executor.js";
 export { ExecutorError } from "./executor/executor-error.js";
 export type { ExecutorErrorCode } from "./executor/executor-error.js";
+export {
+  DEFAULT_EXECUTOR_LIMITS,
+  EXECUTOR_SAFETY_CEILINGS,
+  resolveExecutorLimits,
+} from "./executor/executor-limits.js";
+export type { ResolvedExecutorLimits } from "./executor/executor-limits.js";
 export { ExecutorPromptBuilder } from "./executor/executor-prompt-builder.js";
-export { EXECUTOR_TOOL_DEFINITIONS } from "./executor/executor-tools.js";
+export { createExecutorToolDefinitions, EXECUTOR_TOOL_DEFINITIONS } from "./executor/executor-tools.js";
 export {
   canTransitionTask,
   DEFAULT_TASK_EXECUTION_STORE_LIMITS,

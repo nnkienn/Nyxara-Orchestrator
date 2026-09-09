@@ -41,9 +41,18 @@ export interface ExecutorLimits {
   /** @deprecated Use maxProviderCallsPerTask. Accepted as a compatibility alias. */
   readonly maxModelTurnsPerTask?: number;
   readonly maxToolResultBytes: number;
+  readonly maxToolArgumentBytes: number;
   readonly maxRetainedEvidenceBytes: number;
   readonly maxExecutorContextBytes: number;
+  /** Initial repository context retained after the first provider round. */
+  readonly maxCarryoverContextBytes: number;
   readonly maxEstimatedInputTokens: number;
+  /** Cumulative estimated input ceiling across one attempt, not one request. */
+  readonly maxTotalEstimatedInputTokens: number;
+  readonly maxSearchResults: number;
+  readonly maxSearchFileBytes: number;
+  readonly maxDirectoryDepth: number;
+  readonly maxAssistantMessageBytes: number;
   readonly maxConsecutiveNoProgressToolCalls: number;
   readonly maxNoProgressModelTurns: number;
 }
@@ -58,6 +67,7 @@ export interface ExecutorContextMetrics {
   readonly duplicateEvidenceRemoved: number;
   readonly estimatedInputTokens: number;
   readonly providerReportedInputTokens: number;
+  readonly totalEstimatedInputTokens: number;
   readonly providerCalls: number;
   readonly contextBytesPerRound: readonly number[];
   readonly estimatedInputTokensPerRound: readonly number[];
@@ -102,11 +112,15 @@ export interface ExecutionResult {
   readonly status: "completed" | "failed";
   readonly summary: string;
   readonly changedFiles: readonly string[];
+  /** All model-requested calls; equals executedToolCalls + invalidToolCalls. */
   readonly toolCalls: number;
+  /** Tool requests that reached the ToolRegistry boundary. */
+  readonly executedToolCalls?: number;
   readonly toolDurationMs?: number;
   /** Model-requested tool calls, with execution outcome semantics. */
   readonly successfulToolCalls?: number;
   readonly failedToolCalls?: number;
+  /** Malformed, duplicate, or guard-rejected requests that were not executed. */
   readonly invalidToolCalls?: number;
   readonly toolCallsByName?: Readonly<Record<string, number>>;
   readonly modelTurns: number;

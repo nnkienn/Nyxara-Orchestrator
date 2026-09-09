@@ -9,7 +9,7 @@ export type {
   ToolRegistryErrorCode,
 } from "./errors.js";
 export { LocalExecutionRuntime } from "./execution/local-execution-runtime.js";
-export { RunCommandTool, MAX_COMMAND_TIMEOUT_MS, MAX_COMMAND_OUTPUT_BYTES } from "./execution/run-command-tool.js";
+export { RunCommandTool, MAX_COMMAND_ARGUMENT_BYTES, MAX_COMMAND_TIMEOUT_MS, MAX_COMMAND_OUTPUT_BYTES } from "./execution/run-command-tool.js";
 export type { RunCommandInput } from "./execution/run-command-tool.js";
 export type {
   CommandRequest,

@@ -10,7 +10,9 @@ import type {
 } from "@nyxara/provider-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  EXECUTOR_SAFETY_CEILINGS,
   NyxaraOrchestrator,
+  resolveExecutorLimits,
   type ContextBundle,
   type ExecutionPlan,
   type PlannedTask,
@@ -40,6 +42,12 @@ describe("Executor bounded progress loop", () => {
 
   afterEach(async () => {
     await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("rejects Executor configuration above the non-configurable safety ceilings", () => {
+    expect(() => resolveExecutorLimits({
+      maxToolCallsPerTask: EXECUTOR_SAFETY_CEILINGS.maxToolCallsPerTask + 1,
+    })).toThrow(/hard safety ceiling/);
   });
 
   it("allows more than the old read ceiling while progress continues, then patches", async () => {
@@ -113,6 +121,8 @@ describe("Executor bounded progress loop", () => {
       status: "completed",
       changedFiles: ["src/target.ts"],
       toolCalls: 31,
+      executedToolCalls: 30,
+      invalidToolCalls: 1,
       modelTurns: 8,
       toolCallsByCategory: { read: 30, mutation: 1, validation: 0 },
       contextMetrics: {
@@ -126,6 +136,7 @@ describe("Executor bounded progress loop", () => {
     expect(Math.max(...metrics.contextBytesPerRound)).toBeLessThanOrEqual(192 * 1024);
     expect(Math.max(...metrics.estimatedInputTokensPerRound)).toBeLessThanOrEqual(48 * 1024);
     expect(metrics.droppedEvidenceCount).toBeGreaterThan(0);
+    expect(executed.result.toolCalls).toBe(executed.result.executedToolCalls! + executed.result.invalidToolCalls!);
     expect(requests.slice(1).every((request) => (request.conversation?.length ?? 0) <= 6)).toBe(true);
 
     const legacyRounds = requests.slice(0, 6);
@@ -252,7 +263,7 @@ describe("Executor bounded progress loop", () => {
     expect(executed.result).toMatchObject({ status: "completed", toolCalls: 8 });
   });
 
-  it("bounds file evidence and retains only the latest raw tool exchange", async () => {
+  it("rejects oversized read arguments before execution and retains only the bounded error exchange", async () => {
     await writeFile(join(workspace, "src", "huge.ts"), "x".repeat(100_000));
     const requests: GenerateRequest[] = [];
     let turn = 0;
@@ -267,9 +278,101 @@ describe("Executor bounded progress loop", () => {
     });
     const toolResult = requests[1]!.conversation?.at(-1);
     expect(Buffer.byteLength(JSON.stringify(toolResult), "utf8")).toBeLessThanOrEqual(24 * 1024);
+    expect(toolResult).toMatchObject({ role: "tool", toolResult: { error: { code: "invalid_tool_arguments" } } });
     expect(requests[1]!.conversation).toHaveLength(2);
     expect(requests[1]!.prompt).not.toContain("x".repeat(30_000));
     expect(executed.result.contextMetrics?.executorContextBytes).toBeLessThanOrEqual(192 * 1024);
+    expect(executed.result).toMatchObject({ toolCalls: 1, executedToolCalls: 0, invalidToolCalls: 1 });
+  });
+
+  it("compacts initial repository context after the first round", async () => {
+    const base = await emptyContext(orchestrator(async () => response({})), workspace);
+    const content = Array.from({ length: 6_000 }, (_, index) => `export const line${index} = ${index};`).join("\n");
+    const plannerContext: ContextBundle = {
+      ...base,
+      files: [{ path: "src/large-context.ts", content, reason: "target", size: Buffer.byteLength(content), truncated: false }],
+      totalBytes: Buffer.byteLength(content, "utf8"),
+      estimatedTokens: Math.ceil(content.length / 4),
+    };
+    const requests: GenerateRequest[] = [];
+    let turn = 0;
+    const core = orchestrator(async (request) => {
+      requests.push(request);
+      if (turn++ === 0) return response({ toolCalls: [{ id: "status", name: "git_status", arguments: {} }] });
+      return response({ text: JSON.stringify({ status: "completed", summary: "Inspected bounded context" }) });
+    });
+    const executed = await core.executeTask({
+      plan: plan({ executionMode: "read_only", relevantFiles: ["src/large-context.ts"] }),
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext,
+      contextBudget: { maxFiles: 1, maxBytes: 160 * 1024, maxBytesPerFile: 160 * 1024 },
+    });
+    const sizes = requests.map((request) => Buffer.byteLength(JSON.stringify(request), "utf8"));
+    expect(sizes).toHaveLength(2);
+    expect(sizes[0]).toBeGreaterThan(100 * 1024);
+    expect(sizes[1]).toBeLessThan(48 * 1024);
+    expect(executed.result.contextMetrics?.contextBytesPerRound).toEqual(sizes);
+  });
+
+  it("enforces a cumulative estimated input budget across provider rounds", async () => {
+    let turn = 0;
+    const core = orchestrator(async () => response({
+      toolCalls: [{ id: `read-${turn}`, name: "read_file", arguments: { path: `src/evidence-${turn++}.ts`, maxBytes: 1024 } }],
+    }));
+    const failed = vi.fn();
+    core.events.on("executor.failed", failed);
+    await expect(core.executeTask({
+      plan: plan({ executionMode: "read_only" }),
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext: await emptyContext(core, workspace),
+      limits: {
+        maxEstimatedInputTokens: 4096,
+        maxTotalEstimatedInputTokens: 8192,
+        maxCarryoverContextBytes: 4096,
+      },
+    })).rejects.toMatchObject({ code: "executor_total_input_limit_exceeded" });
+    const metrics = failed.mock.calls.at(-1)?.[0].contextMetrics;
+    expect(metrics.totalEstimatedInputTokens).toBeLessThanOrEqual(8192);
+    expect(metrics.estimatedInputTokensPerRound.every((tokens: number) => tokens <= 4096)).toBe(true);
+    expect(turn).toBeLessThan(16);
+  });
+
+  it("reconciles requested, executed, and invalid metrics for rejected arguments", async () => {
+    const requests: GenerateRequest[] = [];
+    const core = orchestrator(async (request) => {
+      requests.push(request);
+      return request.conversation
+        ? response({ text: JSON.stringify({ status: "completed", summary: "Handled invalid request" }) })
+        : response({ toolCalls: [{ id: "invalid-read", name: "read_file", arguments: { path: "src/target.ts", startLine: "one" } }] });
+    });
+    const approvedPlan = plan({ executionMode: "read_only", relevantFiles: ["src/target.ts"] });
+    const workflow = core.startWorkflow({ workspace, prompt: "Audit the target file without changes" });
+    const internal = core as unknown as {
+      planRuntime: { register(plan: ExecutionPlan, workflowId: string): unknown };
+      workflowEngine: { transition(workflowId: string, status: string, patch?: object): unknown };
+    };
+    internal.planRuntime.register(approvedPlan, workflow.id);
+    internal.workflowEngine.transition(workflow.id, "planning");
+    internal.workflowEngine.transition(workflow.id, "awaiting_plan_approval", { planId: approvedPlan.id });
+    core.approvePlan(workflow.id, approvedPlan.id);
+    const outcome = await core.runApprovedPlan({ workflowId: workflow.id, planId: approvedPlan.id });
+    expect(outcome).toMatchObject({
+      status: "completed",
+      usage: {
+        modelRequestedToolCalls: 1,
+        executedToolCalls: 0,
+        successfulToolCalls: 0,
+        failedToolCalls: 0,
+        invalidToolCalls: 1,
+        totalToolCalls: 0,
+      },
+    });
+    if (!("usage" in outcome) || !outcome.usage) throw new Error("Expected finalized usage");
+    expect(outcome.usage.modelRequestedToolCalls).toBe(outcome.usage.executedToolCalls! + outcome.usage.invalidToolCalls!);
+    expect(outcome.usage.executedToolCalls).toBe(outcome.usage.successfulToolCalls! + outcome.usage.failedToolCalls!);
+    expect(requests[1]?.conversation?.[0]?.toolCalls?.[0]?.arguments).toEqual({ rejected: true });
   });
 
   it("accepts zero additional changes on retry when a relevant partial change is present", async () => {

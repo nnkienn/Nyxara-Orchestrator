@@ -7,30 +7,22 @@ import { truncateUtf8 } from "../internal/text.js";
 import { ApproximateTokenEstimator } from "../context/token-estimator.js";
 import type { ContextBundle, ContextFile } from "../context/context.types.js";
 import { ExecutorError } from "./executor-error.js";
+import {
+  EXECUTOR_COMPACTION_POLICY,
+  type ResolvedExecutorLimits,
+} from "./executor-limits.js";
+import { validateExecutorToolCall } from "./executor-tools.js";
 import type {
   ExecutorContextMetrics,
   ExecutorToolCategory,
 } from "./executor.types.js";
-
-export interface ResolvedExecutorLimits {
-  readonly maxToolCallsPerTask: number;
-  readonly maxReadToolCallsPerTask: number;
-  readonly maxMutatingToolCallsPerTask: number;
-  readonly maxValidationToolCallsPerTask: number;
-  readonly maxProviderCallsPerTask: number;
-  readonly maxToolResultBytes: number;
-  readonly maxRetainedEvidenceBytes: number;
-  readonly maxExecutorContextBytes: number;
-  readonly maxEstimatedInputTokens: number;
-  readonly maxConsecutiveNoProgressToolCalls: number;
-  readonly maxNoProgressModelTurns: number;
-}
 
 export interface PreparedExecutorToolCall {
   readonly call: ModelToolCall;
   readonly fingerprint: string;
   readonly category: ExecutorToolCategory;
   readonly duplicateResult?: ModelToolResult;
+  readonly invalidResult?: ModelToolResult;
 }
 
 interface EvidenceEntry {
@@ -86,6 +78,7 @@ export class ExecutorSession {
   private droppedEvidenceCount = 0;
   private providerCalls = 0;
   private providerReportedInputTokens = 0;
+  private totalEstimatedInputTokens = 0;
   private readonly contextBytesPerRound: number[] = [];
   private readonly estimatedInputTokensPerRound: number[] = [];
 
@@ -95,9 +88,17 @@ export class ExecutorSession {
   ) {
     for (const file of context.files) {
       const path = normalizePath(file.path);
-      this.initialFiles.set(path, file);
       this.contextPaths.add(path);
       this.evidenceIds.add(`file:${path}:${digest(file.content)}`);
+    }
+    this.setCurrentContext(context);
+  }
+
+  /** Keeps initial-context deduplication aligned with the context actually sent this round. */
+  setCurrentContext(context: ContextBundle): void {
+    this.initialFiles.clear();
+    for (const file of context.files) {
+      if (!file.truncated) this.initialFiles.set(normalizePath(file.path), file);
     }
   }
 
@@ -105,7 +106,7 @@ export class ExecutorSession {
     const fingerprintsInBatch = new Set<string>();
     const prepared = calls.map((call) => {
       const item = this.prepare(call);
-      if (!item.duplicateResult && fingerprintsInBatch.has(item.fingerprint)) {
+      if (!item.duplicateResult && !item.invalidResult && fingerprintsInBatch.has(item.fingerprint)) {
         return {
           ...item,
           duplicateResult: {
@@ -114,7 +115,7 @@ export class ExecutorSession {
             result: {
               deduplicated: true,
               reason: "equivalent_call_already_requested_in_round",
-              evidenceRef: digest(item.fingerprint).slice(0, 12),
+              evidenceRef: digest(item.fingerprint).slice(0, EXECUTOR_COMPACTION_POLICY.evidenceReferenceCharacters),
             },
           },
         };
@@ -168,6 +169,10 @@ export class ExecutorSession {
     this.consecutiveNoProgress += 1;
   }
 
+  recordInvalid(): void {
+    this.consecutiveNoProgress += 1;
+  }
+
   finishToolRound(progress: boolean): void {
     this.noProgressRounds = progress ? 0 : this.noProgressRounds + 1;
     if (
@@ -191,13 +196,31 @@ export class ExecutorSession {
   }
 
   recordProviderRequest(bytes: number, estimatedTokens: number): void {
+    if (this.totalEstimatedInputTokens + estimatedTokens > this.limits.maxTotalEstimatedInputTokens) {
+      throw new ExecutorError(
+        "executor_total_input_limit_exceeded",
+        "Executor reached the cumulative input safety ceiling for this attempt",
+      );
+    }
     this.providerCalls += 1;
+    this.totalEstimatedInputTokens += estimatedTokens;
     this.contextBytesPerRound.push(bytes);
     this.estimatedInputTokensPerRound.push(estimatedTokens);
   }
 
   recordProviderUsage(inputTokens: number | undefined): void {
-    if (inputTokens !== undefined) this.providerReportedInputTokens += inputTokens;
+    if (inputTokens === undefined) return;
+    this.providerReportedInputTokens += inputTokens;
+    if (this.providerReportedInputTokens > this.limits.maxTotalEstimatedInputTokens) {
+      throw new ExecutorError(
+        "executor_total_input_limit_exceeded",
+        "Executor reached the provider-reported cumulative input safety ceiling for this attempt",
+      );
+    }
+  }
+
+  remainingEstimatedInputTokens(): number {
+    return Math.max(0, this.limits.maxTotalEstimatedInputTokens - this.totalEstimatedInputTokens);
   }
 
   evidence(excluding: ReadonlySet<string> = new Set()): string {
@@ -241,6 +264,7 @@ export class ExecutorSession {
       duplicateEvidenceRemoved: this.duplicateEvidenceRemoved,
       estimatedInputTokens: Math.max(0, ...this.estimatedInputTokensPerRound),
       providerReportedInputTokens: this.providerReportedInputTokens,
+      totalEstimatedInputTokens: this.totalEstimatedInputTokens,
       providerCalls: this.providerCalls,
       contextBytesPerRound: [...this.contextBytesPerRound],
       estimatedInputTokensPerRound: [...this.estimatedInputTokensPerRound],
@@ -252,8 +276,17 @@ export class ExecutorSession {
   }
 
   private prepare(call: ModelToolCall): PreparedExecutorToolCall {
-    const normalized = normalizeCall(call, this.limits.maxToolResultBytes);
+    const validated = validateExecutorToolCall(call, this.limits);
+    const normalized = validated.call;
     const category = toolCategory(normalized);
+    if (validated.invalidResult) {
+      return {
+        call: normalized,
+        fingerprint: `invalid:${normalized.id}:${normalized.name}`,
+        category,
+        invalidResult: validated.invalidResult,
+      };
+    }
     const versioned = category === "read" || category === "validation";
     const fingerprint = `${normalized.name}:${stableStringify(normalized.arguments)}${versioned ? `:r${this.revision}` : ""}`;
     const initial = this.initialDuplicate(normalized);
@@ -273,7 +306,7 @@ export class ExecutorSession {
           deduplicated: true,
           reason: "equivalent_call_already_processed",
           priorOutcome: seen.failed ? "failed" : "successful",
-          evidenceRef: digest(fingerprint).slice(0, 12),
+          evidenceRef: digest(fingerprint).slice(0, EXECUTOR_COMPACTION_POLICY.evidenceReferenceCharacters),
         },
       },
     };
@@ -329,12 +362,12 @@ export class ExecutorSession {
 
 export function compactExecutorContext(context: ContextBundle, maxBytes: number): ContextBundle {
   if (context.totalBytes <= maxBytes) return context;
-  const boundedDiff = truncateUtf8(context.git.diff.diff, Math.max(1, Math.floor(maxBytes / 5)));
+  const boundedDiff = truncateUtf8(context.git.diff.diff, Math.max(1, Math.floor(maxBytes / EXECUTOR_COMPACTION_POLICY.diffBudgetDivisor)));
   let used = Buffer.byteLength(boundedDiff.value, "utf8");
   const files: ContextFile[] = [];
   for (const file of context.files) {
     if (used >= maxBytes) break;
-    const bounded = truncateUtf8(file.content, Math.min(24 * 1024, maxBytes - used));
+    const bounded = truncateUtf8(file.content, Math.min(maxBytes, maxBytes - used));
     if (!bounded.value) break;
     files.push({ ...file, content: bounded.value, truncated: file.truncated || bounded.truncated });
     used += Buffer.byteLength(bounded.value, "utf8");
@@ -356,30 +389,6 @@ export function estimateExecutorRequest(input: unknown): { readonly bytes: numbe
 
 export function taskIsReadOnly(task: { readonly executionMode?: "implementation" | "read_only" | undefined; readonly title: string; readonly description: string; readonly acceptanceCriteria: readonly string[] }): boolean {
   return task.executionMode === "read_only";
-}
-
-function normalizeCall(call: ModelToolCall, maxToolResultBytes: number): ModelToolCall {
-  if (!isRecord(call.arguments)) return call;
-  const args = { ...call.arguments };
-  if (call.name === "search_code") {
-    args.maxResults = boundedInteger(args.maxResults, 20, 20);
-    args.maxFileBytes = boundedInteger(args.maxFileBytes, 256 * 1024, 256 * 1024);
-  } else if (call.name === "search_files") {
-    args.maxResults = boundedInteger(args.maxResults, 20, 20);
-  } else if (call.name === "read_file") {
-    args.maxBytes = boundedInteger(args.maxBytes, 24 * 1024, Math.min(24 * 1024, maxToolResultBytes));
-  } else if (call.name === "run_command") {
-    args.maxOutputBytes = boundedInteger(args.maxOutputBytes, maxToolResultBytes, maxToolResultBytes);
-  } else if (call.name === "git_diff") {
-    args.maxBytes = boundedInteger(args.maxBytes, maxToolResultBytes, maxToolResultBytes);
-  }
-  return { ...call, arguments: args };
-}
-
-function boundedInteger(value: unknown, maximum: number, fallback: number): number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0
-    ? Math.min(value, maximum)
-    : fallback;
 }
 
 function toolCategory(call: ModelToolCall): ExecutorToolCategory {
@@ -449,7 +458,7 @@ function evidenceText(prepared: PreparedExecutorToolCall, result: ModelToolResul
 function safeCallLabel(call: ModelToolCall): string {
   if (!isRecord(call.arguments)) return "invalid arguments";
   if (call.name === "read_file") return `${String(call.arguments.path ?? "")} lines ${String(call.arguments.startLine ?? 1)}-${String(call.arguments.endLine ?? "end")}`;
-  if (call.name === "search_code" || call.name === "search_files") return `query=${JSON.stringify(String(call.arguments.query ?? "").slice(0, 256))}`;
+  if (call.name === "search_code" || call.name === "search_files") return `query=${JSON.stringify(String(call.arguments.query ?? "").slice(0, EXECUTOR_COMPACTION_POLICY.searchLabelCharacters))}`;
   if (call.name === "write_file") return `path=${String(call.arguments.path ?? "")}`;
   if (call.name === "apply_patch") {
     const patch = typeof call.arguments.patch === "string" ? call.arguments.patch : "";
@@ -457,9 +466,9 @@ function safeCallLabel(call: ModelToolCall): string {
     return `paths=${paths.join(",") || "unknown"}`;
   }
   if (call.name === "run_command") {
-    return JSON.stringify([call.arguments.command, ...(Array.isArray(call.arguments.args) ? call.arguments.args : [])]).slice(0, 512);
+    return JSON.stringify([call.arguments.command, ...(Array.isArray(call.arguments.args) ? call.arguments.args : [])]).slice(0, EXECUTOR_COMPACTION_POLICY.evidenceLabelCharacters);
   }
-  return stableStringify(call.arguments).slice(0, 512);
+  return stableStringify(call.arguments).slice(0, EXECUTOR_COMPACTION_POLICY.evidenceLabelCharacters);
 }
 
 function evidencePaths(result: ModelToolResult, changedPaths: readonly string[]): string[] {

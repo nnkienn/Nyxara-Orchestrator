@@ -225,10 +225,16 @@ describe("CliSubscriptionProvider", () => {
     await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process }).generate({ model: "default", prompt: "work", tools: [{ name: "read_file", description: "read", inputSchema: {} }] })).rejects.toMatchObject({ code: "invalid_response" });
   });
 
-  it("rejects the retired object-valued CLI tool argument envelope", async () => {
+  it("accepts an object-valued CLI tool argument envelope from non-schema CLIs", async () => {
     const legacyEnvelope = JSON.stringify({ text: "", toolCalls: [{ id: "call-1", name: "read_file", arguments: { path: "src/a.ts" } }], finishReason: "tool_calls" });
     const process = runner(ok(JSON.stringify({ result: legacyEnvelope, structured_output: JSON.parse(legacyEnvelope), usage: {} })));
-    await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process }).generate({ model: "default", prompt: "work", tools: [{ name: "read_file", description: "read", inputSchema: {} }] })).rejects.toMatchObject({ code: "invalid_response", message: "CLI returned an invalid tool call" });
+    await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process }).generate({ model: "default", prompt: "work", tools: [{ name: "read_file", description: "read", inputSchema: {} }] })).resolves.toMatchObject({ toolCalls: [{ id: "call-1", name: "read_file", arguments: { path: "src/a.ts" } }] });
+  });
+
+  it("preserves malformed CLI argument JSON for Executor validation", async () => {
+    const malformed = JSON.stringify({ text: "", toolCalls: [{ id: "call-1", name: "read_file", argumentsJson: "{not-json" }], finishReason: "tool_calls" });
+    const process = runner(ok(JSON.stringify({ result: malformed, structured_output: JSON.parse(malformed), usage: {} })));
+    await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process }).generate({ model: "default", prompt: "work", tools: [{ name: "read_file", description: "read", inputSchema: {} }] })).resolves.toMatchObject({ toolCalls: [{ id: "call-1", name: "read_file", arguments: "{not-json" }] });
   });
   it("consumes documented Codex JSONL events as safe progress and never scrapes human output", async () => {
     const lines = [

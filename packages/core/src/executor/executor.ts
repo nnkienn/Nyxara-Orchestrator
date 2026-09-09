@@ -20,16 +20,19 @@ import { errorCodeOr } from "../internal/error-code.js";
 import { truncateUtf8 } from "../internal/text.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { ExecutorError } from "./executor-error.js";
+import {
+  EXECUTOR_COMPACTION_POLICY,
+  resolveExecutorLimits,
+} from "./executor-limits.js";
 import { ExecutorPromptBuilder } from "./executor-prompt-builder.js";
 import {
   compactExecutorContext,
   estimateExecutorRequest,
   ExecutorSession,
   taskIsReadOnly,
-  type ResolvedExecutorLimits,
 } from "./executor-session.js";
 import {
-  EXECUTOR_TOOL_DEFINITIONS,
+  createExecutorToolDefinitions,
   EXECUTOR_TOOL_NAMES,
 } from "./executor-tools.js";
 import {
@@ -37,27 +40,12 @@ import {
   type ExecutionDecision,
   type ExecutionResult,
   type ExecutorContextMetrics,
-  type ExecutorLimits,
   type ExecutorRunInput,
   type ExecutorToolOutcome,
   type ExecutorToolCategory,
   type RepairExecutorInput,
   type RepairExecutorRunInput,
 } from "./executor.types.js";
-
-const DEFAULT_LIMITS: ResolvedExecutorLimits = {
-  maxToolCallsPerTask: 96,
-  maxReadToolCallsPerTask: 72,
-  maxMutatingToolCallsPerTask: 16,
-  maxValidationToolCallsPerTask: 12,
-  maxProviderCallsPerTask: 16,
-  maxToolResultBytes: 24 * 1024,
-  maxRetainedEvidenceBytes: 64 * 1024,
-  maxExecutorContextBytes: 192 * 1024,
-  maxEstimatedInputTokens: 48 * 1024,
-  maxConsecutiveNoProgressToolCalls: 6,
-  maxNoProgressModelTurns: 3,
-};
 
 export class Executor {
   constructor(
@@ -105,7 +93,8 @@ export class Executor {
     repairInput?: RepairExecutorInput,
   ): Promise<ExecutionResult> {
     const { input, model } = runInput;
-    const limits = resolveLimits(runInput.limits);
+    const limits = resolveExecutorLimits(runInput.limits);
+    const toolDefinitions = createExecutorToolDefinitions(limits);
     this.events.emit("executor.started", {
       taskId: input.task.id,
       providerId: model.providerId,
@@ -116,7 +105,8 @@ export class Executor {
 
     let phase: "model_resolution" | "generation" | "tools" | "response" = "model_resolution";
     const changedPaths = new Set<string>();
-    let toolCallCount = 0;
+    let requestedToolCalls = 0;
+    let executedToolCalls = 0;
     let successfulToolCalls = 0;
     let failedToolCalls = 0;
     let invalidToolCalls = 0;
@@ -162,6 +152,7 @@ export class Executor {
       }
 
       let executorContext = input.context;
+      let currentRepairInput = repairInput;
       let latestExchange: ModelConversationMessage[] | undefined;
       let latestEvidenceKeys = new Set<string>();
       const unresolvedToolErrors = new Map<string, { tool: string; code: string }>();
@@ -172,6 +163,14 @@ export class Executor {
           throw new ExecutorError("executor_aborted", "Executor run was aborted");
         }
         session.assertProviderCallAvailable();
+        if (modelTurn > 1 && executorContext.totalBytes > limits.maxCarryoverContextBytes) {
+          executorContext = compactExecutorContext(executorContext, limits.maxCarryoverContextBytes);
+        }
+        if (modelTurn > 1 && currentRepairInput) {
+          currentRepairInput = compactRepairInput(currentRepairInput, limits.maxCarryoverContextBytes);
+          executorContext = currentRepairInput.context;
+        }
+        session.setCurrentContext(executorContext);
         let prompt = "";
         let requestSize = { bytes: 0, tokens: 0 };
         while (true) {
@@ -180,28 +179,46 @@ export class Executor {
             retainedEvidence: session.evidence(latestEvidenceKeys),
             readOnly,
           };
-          prompt = repairInput
-            ? this.promptBuilder.buildRepair(repairInput, EXECUTOR_TOOL_DEFINITIONS, promptState)
-            : this.promptBuilder.build({ ...input, context: executorContext }, EXECUTOR_TOOL_DEFINITIONS, promptState);
+          prompt = currentRepairInput
+            ? this.promptBuilder.buildRepair(currentRepairInput, toolDefinitions, promptState)
+            : this.promptBuilder.build({ ...input, context: executorContext }, toolDefinitions, promptState);
           requestSize = estimateExecutorRequest({
             model: selectedModel.id,
             prompt,
-            tools: EXECUTOR_TOOL_DEFINITIONS,
-            ...(latestExchange ? { conversation: compactConversation(latestExchange) } : {}),
+            tools: toolDefinitions,
+            ...(latestExchange ? { conversation: compactConversation(latestExchange, limits.maxAssistantMessageBytes) } : {}),
             ...(model.executionOptions ? { executionOptions: model.executionOptions } : {}),
             responseFormat: selectedModel.capabilities?.structuredOutput || provider.capabilities().structuredOutput ? "json" : undefined,
           });
           if (
             requestSize.bytes <= limits.maxExecutorContextBytes &&
-            requestSize.tokens <= limits.maxEstimatedInputTokens
+            requestSize.tokens <= Math.min(limits.maxEstimatedInputTokens, session.remainingEstimatedInputTokens())
           ) break;
           if (session.dropOldestEvidence()) continue;
-          const nextBytes = Math.max(4 * 1024, executorContext.totalBytes - Math.max(8 * 1024, requestSize.bytes - limits.maxExecutorContextBytes));
+          const tokenOverage = Math.max(0, requestSize.tokens - Math.min(limits.maxEstimatedInputTokens, session.remainingEstimatedInputTokens()));
+          const nextBytes = Math.max(
+            EXECUTOR_COMPACTION_POLICY.minimumContextBytes,
+            executorContext.totalBytes - Math.max(
+              EXECUTOR_COMPACTION_POLICY.minimumCompactionStepBytes,
+              requestSize.bytes - limits.maxExecutorContextBytes,
+              tokenOverage * 4,
+            ),
+          );
+          if (currentRepairInput) {
+            const compactedRepair = compactRepairInput(currentRepairInput, nextBytes);
+            if (repairPromptEvidenceBytes(compactedRepair) < repairPromptEvidenceBytes(currentRepairInput)) {
+              currentRepairInput = compactedRepair;
+              executorContext = compactedRepair.context;
+              continue;
+            }
+          }
           const compacted = compactExecutorContext(executorContext, nextBytes);
           if (compacted.totalBytes >= executorContext.totalBytes) {
             throw new ExecutorError(
-              "executor_context_limit_exceeded",
-              "Executor request cannot fit the safe input budget after compacting optional evidence",
+              session.remainingEstimatedInputTokens() < requestSize.tokens
+                ? "executor_total_input_limit_exceeded"
+                : "executor_context_limit_exceeded",
+              "Executor request cannot fit the remaining safe input budget after compacting optional evidence",
             );
           }
           executorContext = compacted;
@@ -213,10 +230,10 @@ export class Executor {
         const response = await provider.generate({
           model: selectedModel.id,
           prompt,
-          tools: EXECUTOR_TOOL_DEFINITIONS,
+          tools: toolDefinitions,
           ...(input.signal ? { signal: input.signal } : {}),
           ...(model.executionOptions ? { executionOptions: model.executionOptions } : {}),
-          ...(latestExchange ? { conversation: compactConversation(latestExchange) } : {}),
+          ...(latestExchange ? { conversation: compactConversation(latestExchange, limits.maxAssistantMessageBytes) } : {}),
           ...(streaming && runInput.workflowId ? { onProgress: (event) => this.events.emit("provider.generation.progress", {
             providerId: provider.providerId ?? provider.id,
             providerConfigId: model.providerId,
@@ -256,8 +273,14 @@ export class Executor {
           duplicateEvidenceRemoved: session.metrics().duplicateEvidenceRemoved,
           ...(response.usage ? { usage: response.usage } : {}),
         });
-        session.recordProviderUsage(response.usage?.inputTokens);
         const requestedCalls = response.toolCalls ?? [];
+        requestedToolCalls += requestedCalls.length;
+        try {
+          session.recordProviderUsage(response.usage?.inputTokens);
+        } catch (error) {
+          invalidToolCalls += requestedCalls.length;
+          throw error;
+        }
 
         if (requestedCalls.length === 0) {
           const modelDecision = this.parseDecision(response.text);
@@ -281,7 +304,8 @@ export class Executor {
             initialStatus,
             initialDiff,
             changedPaths,
-            toolCallCount,
+            requestedToolCalls,
+            executedToolCalls,
             toolDurationMs,
             modelTurns: modelTurn,
             successfulToolCalls,
@@ -304,6 +328,7 @@ export class Executor {
               modelId: model.modelId,
               changedFileCount: result.changedFiles.length,
               toolCalls: result.toolCalls,
+              executedToolCalls,
               ...(result.toolDurationMs !== undefined ? { toolDurationMs: result.toolDurationMs } : {}),
               modelTurns: result.modelTurns,
               ...(runInput.workflowId ? { workflowId: runInput.workflowId, successfulToolCalls: result.successfulToolCalls, failedToolCalls: result.failedToolCalls, invalidToolCalls: result.invalidToolCalls, toolCallsByName: result.toolCallsByName } : {}),
@@ -317,6 +342,7 @@ export class Executor {
               modelId: model.modelId,
               code: "executor_error",
               toolCalls: result.toolCalls,
+              executedToolCalls,
               ...(result.toolDurationMs !== undefined ? { toolDurationMs: result.toolDurationMs } : {}),
               ...(runInput.workflowId ? { workflowId: runInput.workflowId, successfulToolCalls: result.successfulToolCalls, failedToolCalls: result.failedToolCalls, invalidToolCalls: result.invalidToolCalls, toolCallsByName: result.toolCallsByName } : {}),
               toolCallsByCategory: session.counts(),
@@ -327,6 +353,7 @@ export class Executor {
         }
 
         if (modelTurn === limits.maxProviderCallsPerTask) {
+          invalidToolCalls += requestedCalls.length;
           throw new ExecutorError(
             runInput.limits?.maxModelTurnsPerTask !== undefined
               ? "model_turn_limit_exceeded"
@@ -338,6 +365,7 @@ export class Executor {
         const roundCallIds = new Set<string>();
         for (const call of requestedCalls) {
           if (roundCallIds.has(call.id)) {
+            invalidToolCalls += requestedCalls.length;
             throw new ExecutorError(
               "executor_error",
               `Executor returned a duplicate tool-call ID: ${call.id}`,
@@ -346,34 +374,50 @@ export class Executor {
           roundCallIds.add(call.id);
         }
 
-        const preparedCalls = session.prepareBatch(requestedCalls);
+        let preparedCalls: ReturnType<ExecutorSession["prepareBatch"]>;
+        try {
+          preparedCalls = session.prepareBatch(requestedCalls);
+        } catch (error) {
+          invalidToolCalls += requestedCalls.length;
+          throw error;
+        }
         if (readOnly && preparedCalls.some((item) => ["apply_patch", "write_file"].includes(item.call.name))) {
+          invalidToolCalls += requestedCalls.length;
           throw new ExecutorError("executor_error", "Read-only Executor task requested a mutating tool");
         }
         const roundConversation: ModelConversationMessage[] = [{
           role: "assistant",
-          ...(response.text ? { content: boundAssistantText(response.text) } : {}),
-          toolCalls: preparedCalls.map((item) => compactHistoricalToolCall(item.call)),
+          ...(response.text ? { content: boundAssistantText(response.text, limits.maxAssistantMessageBytes) } : {}),
+          toolCalls: preparedCalls.map((item) => compactHistoricalToolCall(item.call, limits.maxAssistantMessageBytes)),
         }];
         let roundProgress = false;
         const roundEvidenceKeys = new Set<string>();
         for (const prepared of preparedCalls) {
           const call = prepared.call;
           session.acceptRequest(prepared);
-          toolCallCount += 1;
-          toolCallsByName[call.name] = (toolCallsByName[call.name] ?? 0) + 1;
-          if (!EXECUTOR_TOOL_NAMES.has(call.name) || !isRecord(call.arguments)) invalidToolCalls += 1;
+          if (prepared.invalidResult) {
+            invalidToolCalls += 1;
+            session.recordInvalid();
+            roundConversation.push({ role: "tool", toolResult: prepared.invalidResult });
+            continue;
+          }
           if (prepared.duplicateResult) {
+            invalidToolCalls += 1;
             session.recordDuplicate();
             roundConversation.push({ role: "tool", toolResult: prepared.duplicateResult });
             continue;
           }
+          executedToolCalls += 1;
+          toolCallsByName[call.name] = (toolCallsByName[call.name] ?? 0) + 1;
           const toolStarted = performance.now();
-          const outcome = await this.executeToolCall(
-            call,
-            context,
-            limits.maxToolResultBytes,
-          );
+          let outcome: ExecutorToolOutcome;
+          try {
+            outcome = await this.executeToolCall(call, context, limits.maxToolResultBytes);
+          } catch (error) {
+            toolDurationMs += Math.max(0, performance.now() - toolStarted);
+            failedToolCalls += 1;
+            throw error;
+          }
           toolDurationMs += Math.max(0, performance.now() - toolStarted);
           const errorKey = call.name === "run_command" && isRecord(call.arguments)
             ? JSON.stringify([call.name, call.arguments.command, call.arguments.args ?? []]) : call.name;
@@ -408,7 +452,8 @@ export class Executor {
         modelId: runInput.model.modelId,
         code: executorErrorCode(error),
         phase,
-        toolCalls: toolCallCount,
+        toolCalls: requestedToolCalls,
+        executedToolCalls,
         toolDurationMs,
         successfulToolCalls,
         failedToolCalls,
@@ -482,7 +527,10 @@ export class Executor {
       const commandFailed = call.name === "run_command" && commandExitCode !== 0;
       // Reserve space for the tool response envelope so the complete message
       // returned to the provider remains within the configured result bound.
-      const boundedOutput = boundToolResult(output, maxResultBytes - 512);
+      const boundedOutput = boundToolResult(
+        output,
+        maxResultBytes - EXECUTOR_COMPACTION_POLICY.toolResultEnvelopeReserveBytes,
+      );
       return {
         result: {
           callId: call.id,
@@ -559,7 +607,8 @@ export class Executor {
     readonly initialStatus: GitStatusResult;
     readonly initialDiff: GitDiffResult;
     readonly changedPaths: ReadonlySet<string>;
-    readonly toolCallCount: number;
+    readonly requestedToolCalls: number;
+    readonly executedToolCalls: number;
     readonly toolDurationMs: number;
     readonly modelTurns: number;
     readonly successfulToolCalls: number;
@@ -632,7 +681,8 @@ export class Executor {
       status: decision.status,
       summary: decision.summary,
       changedFiles,
-      toolCalls: input.toolCallCount,
+      toolCalls: input.requestedToolCalls,
+      executedToolCalls: input.executedToolCalls,
       toolDurationMs: input.toolDurationMs,
       successfulToolCalls: input.successfulToolCalls,
       failedToolCalls: input.failedToolCalls,
@@ -655,66 +705,23 @@ export class Executor {
   }
 }
 
-function resolveLimits(input: Partial<ExecutorLimits> | undefined): ResolvedExecutorLimits {
-  const providerCalls = input?.maxProviderCallsPerTask ?? input?.maxModelTurnsPerTask ?? DEFAULT_LIMITS.maxProviderCallsPerTask;
-  const limits: ResolvedExecutorLimits = {
-    maxToolCallsPerTask: input?.maxToolCallsPerTask ?? DEFAULT_LIMITS.maxToolCallsPerTask,
-    maxReadToolCallsPerTask: input?.maxReadToolCallsPerTask ?? DEFAULT_LIMITS.maxReadToolCallsPerTask,
-    maxMutatingToolCallsPerTask: input?.maxMutatingToolCallsPerTask ?? DEFAULT_LIMITS.maxMutatingToolCallsPerTask,
-    maxValidationToolCallsPerTask: input?.maxValidationToolCallsPerTask ?? DEFAULT_LIMITS.maxValidationToolCallsPerTask,
-    maxProviderCallsPerTask: providerCalls,
-    maxToolResultBytes: input?.maxToolResultBytes ?? DEFAULT_LIMITS.maxToolResultBytes,
-    maxRetainedEvidenceBytes: input?.maxRetainedEvidenceBytes ?? DEFAULT_LIMITS.maxRetainedEvidenceBytes,
-    maxExecutorContextBytes: input?.maxExecutorContextBytes ?? DEFAULT_LIMITS.maxExecutorContextBytes,
-    maxEstimatedInputTokens: input?.maxEstimatedInputTokens ?? DEFAULT_LIMITS.maxEstimatedInputTokens,
-    maxConsecutiveNoProgressToolCalls: input?.maxConsecutiveNoProgressToolCalls ?? DEFAULT_LIMITS.maxConsecutiveNoProgressToolCalls,
-    maxNoProgressModelTurns: input?.maxNoProgressModelTurns ?? DEFAULT_LIMITS.maxNoProgressModelTurns,
-  };
-  if (Object.values(limits).some((value) => !Number.isInteger(value) || value <= 0)) {
-    throw new ExecutorError("executor_error", "Executor limits are invalid");
-  }
-  if (
-    limits.maxToolResultBytes < 1024 ||
-    limits.maxRetainedEvidenceBytes < 1024 ||
-    limits.maxExecutorContextBytes < 16 * 1024 ||
-    limits.maxEstimatedInputTokens < 4096
-  ) {
-    throw new ExecutorError("executor_error", "Executor byte and token limits are below safe bounded minima");
-  }
-  if (
-    limits.maxToolCallsPerTask > 512 ||
-    limits.maxReadToolCallsPerTask > 512 ||
-    limits.maxMutatingToolCallsPerTask > 512 ||
-    limits.maxValidationToolCallsPerTask > 512 ||
-    limits.maxProviderCallsPerTask > 64 ||
-    limits.maxToolResultBytes > 64 * 1024 ||
-    limits.maxRetainedEvidenceBytes > 256 * 1024 ||
-    limits.maxExecutorContextBytes > 512 * 1024 ||
-    limits.maxEstimatedInputTokens > 128 * 1024 ||
-    limits.maxConsecutiveNoProgressToolCalls > 64 ||
-    limits.maxNoProgressModelTurns > 64
-  ) {
-    throw new ExecutorError("executor_error", "Executor limits exceed provider-neutral safety maxima");
-  }
-  return limits;
-}
-
 function compactConversation(
   conversation: readonly ModelConversationMessage[],
+  maxMessageBytes: number,
 ): readonly ModelConversationMessage[] {
   return conversation.map((message) => {
     if (message.role === "tool") return message;
     return {
       role: "assistant" as const,
-      ...(message.content ? { content: boundAssistantText(message.content) } : {}),
+      ...(message.content ? { content: boundAssistantText(message.content, maxMessageBytes) } : {}),
       ...(message.toolCalls
-        ? { toolCalls: message.toolCalls.map(compactHistoricalToolCall) }
+        ? { toolCalls: message.toolCalls.map((call) => compactHistoricalToolCall(call, maxMessageBytes)) }
         : {}),
     };
   });
 }
 
-function compactHistoricalToolCall(call: ModelToolCall): ModelToolCall {
+function compactHistoricalToolCall(call: ModelToolCall, maxBytes: number): ModelToolCall {
   if (!isRecord(call.arguments)) return call;
   if (call.name === "write_file" && typeof call.arguments.content === "string") {
     return {
@@ -733,14 +740,65 @@ function compactHistoricalToolCall(call: ModelToolCall): ModelToolCall {
       },
     };
   }
+  const serialized = JSON.stringify(call.arguments);
+  if (Buffer.byteLength(serialized, "utf8") > maxBytes) {
+    return {
+      ...call,
+      arguments: {
+        compacted: true,
+        originalBytes: Buffer.byteLength(serialized, "utf8"),
+      },
+    };
+  }
   return call;
 }
 
-function boundAssistantText(text: string): string {
+function boundAssistantText(text: string, maxBytes: number): string {
   const bytes = Buffer.from(text, "utf8");
-  return bytes.byteLength <= 2_048
+  return bytes.byteLength <= maxBytes
     ? text
-    : `${bytes.subarray(0, 2_048).toString("utf8")}\n[assistant text truncated]`;
+    : `${bytes.subarray(0, maxBytes).toString("utf8")}\n[assistant text truncated]`;
+}
+
+function compactRepairInput(
+  input: RepairExecutorInput,
+  maxBytes: number,
+): RepairExecutorInput {
+  const diffBudget = Math.max(1, Math.floor(maxBytes / EXECUTOR_COMPACTION_POLICY.diffBudgetDivisor));
+  const boundedDiff = input.evidence.diff
+    ? truncateUtf8(input.evidence.diff.content, diffBudget)
+    : undefined;
+  let used = boundedDiff ? Buffer.byteLength(boundedDiff.value, "utf8") : 0;
+  const relevantContext = [] as Array<RepairExecutorInput["evidence"]["relevantContext"][number]>;
+  for (const file of input.evidence.relevantContext) {
+    if (used >= maxBytes) break;
+    const bounded = truncateUtf8(file.content, maxBytes - used);
+    if (!bounded.value) break;
+    relevantContext.push({
+      ...file,
+      content: bounded.value,
+      truncated: file.truncated || bounded.truncated,
+    });
+    used += Buffer.byteLength(bounded.value, "utf8");
+  }
+  return {
+    ...input,
+    context: compactExecutorContext(input.context, maxBytes),
+    evidence: {
+      ...input.evidence,
+      relevantContext,
+      ...(input.evidence.diff && boundedDiff
+        ? { diff: { content: boundedDiff.value, truncated: input.evidence.diff.truncated || boundedDiff.truncated } }
+        : {}),
+    },
+  };
+}
+
+function repairPromptEvidenceBytes(input: RepairExecutorInput): number {
+  return Buffer.byteLength(JSON.stringify({
+    diff: input.evidence.diff,
+    relevantContext: input.evidence.relevantContext,
+  }), "utf8");
 }
 
 function hasRelevantInitialChanges(
@@ -819,7 +877,7 @@ function fitStringFields(
     if (typeof output[field] !== "string") continue;
     while (Buffer.byteLength(JSON.stringify(output), "utf8") > maxBytes && output[field]) {
       const value = output[field] as string;
-      const target = Math.max(0, Math.floor(Buffer.byteLength(value, "utf8") * 0.7));
+      const target = Math.max(0, Math.floor(Buffer.byteLength(value, "utf8") * EXECUTOR_COMPACTION_POLICY.stringShrinkRatio));
       output[field] = keepTail
         ? tailUtf8(value, target)
         : truncateUtf8(value, target).value;

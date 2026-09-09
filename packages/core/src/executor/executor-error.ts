@@ -13,6 +13,7 @@ export type ExecutorErrorCode =
   | "model_turn_limit_exceeded"
   | "provider_call_limit_exceeded"
   | "executor_context_limit_exceeded"
+  | "executor_total_input_limit_exceeded"
   | "executor_stalled"
   | "write_permission_denied"
   | "patch_failed"

@@ -9,6 +9,7 @@ import type {
 
 export const MAX_COMMAND_TIMEOUT_MS = 30 * 60_000;
 export const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
+export const MAX_COMMAND_ARGUMENT_BYTES = 16 * 1024;
 
 export interface RunCommandInput {
   readonly command: string;
@@ -90,7 +91,7 @@ function validateCommandInput(input: unknown): asserts input is RunCommandInput 
     (value.args !== undefined && (!Array.isArray(value.args) || [...value.args].some((argument) => typeof argument !== "string" || argument.includes("\0")))) ||
     (value.timeoutMs !== undefined && !validLimit(value.timeoutMs, MAX_COMMAND_TIMEOUT_MS)) ||
     (value.maxOutputBytes !== undefined && !validLimit(value.maxOutputBytes, MAX_COMMAND_OUTPUT_BYTES)) ||
-    Buffer.byteLength(JSON.stringify([value.command, value.args ?? []]), "utf8") > 16 * 1024
+    Buffer.byteLength(JSON.stringify([value.command, value.args ?? []]), "utf8") > MAX_COMMAND_ARGUMENT_BYTES
   ) {
     throw new NyxaraToolError("tool_error", "Invalid command, arguments, timeout, or output limit", "run_command");
   }

@@ -113,6 +113,10 @@ describe("manual recovery of an approved Executor attempt", () => {
     expect(requests.at(-1)!.prompt).toContain("partial = true");
     expect(requests.at(-1)!.conversation).toBeUndefined();
     expect(requests.at(-1)!.prompt).not.toContain("Prior conversation");
+    expect(Buffer.byteLength(JSON.stringify(requests.at(-1)), "utf8")).toBeLessThanOrEqual(192 * 1024);
+    const retriedTask = run.core.getTaskExecutionStates(run.plan).find((task) => task.taskId === "T2");
+    expect(retriedTask?.resultSummary?.contextMetrics).toMatchObject({ providerCalls: 1 });
+    expect(retriedTask?.resultSummary?.contextMetrics?.totalEstimatedInputTokens).toBeLessThanOrEqual(256 * 1024);
     expect(run.pipeline.mock.calls.map(([input]) => input.taskId)).toEqual(["T1", "T2", "T2", "T3"]);
   });
 

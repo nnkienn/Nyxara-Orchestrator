@@ -267,18 +267,20 @@ export interface ExecutorCompletedEvent {
   readonly modelId: string;
   readonly changedFileCount: number;
   readonly toolCalls: number;
+  readonly executedToolCalls?: number;
   readonly toolDurationMs?: number;
   readonly modelTurns: number;
   readonly workflowId?: string;
   readonly successfulToolCalls?: number;
   readonly failedToolCalls?: number;
+  /** Requested calls not executed because they were malformed, duplicate, or rejected by an Executor guard. */
   readonly invalidToolCalls?: number;
   readonly toolCallsByName?: Readonly<Record<string, number>>;
   readonly toolCallsByCategory?: import("../executor/executor.types.js").ExecutionResult["toolCallsByCategory"];
   readonly contextMetrics?: import("../executor/executor.types.js").ExecutorContextMetrics;
 }
 
-export interface ExecutorFailedEvent extends Partial<Pick<ExecutorCompletedEvent, "workflowId" | "toolCalls" | "toolDurationMs" | "successfulToolCalls" | "failedToolCalls" | "invalidToolCalls" | "toolCallsByName" | "toolCallsByCategory" | "contextMetrics">> {
+export interface ExecutorFailedEvent extends Partial<Pick<ExecutorCompletedEvent, "workflowId" | "toolCalls" | "executedToolCalls" | "toolDurationMs" | "successfulToolCalls" | "failedToolCalls" | "invalidToolCalls" | "toolCallsByName" | "toolCallsByCategory" | "contextMetrics">> {
   readonly taskId: string;
   readonly providerId: string;
   readonly modelId: string;

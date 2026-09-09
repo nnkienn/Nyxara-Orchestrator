@@ -531,7 +531,7 @@ function providerPrompt(request: GenerateRequest, toolEnvelope: boolean): string
     "You are the model backend inside Nyxara Orchestrator.",
     "Do not call or execute any CLI built-in tools. Nyxara alone executes tools after explicit policy checks.",
     "Return exactly one JSON object with this shape and no markdown: {\"text\":string,\"toolCalls\":[{\"id\":string,\"name\":string,\"argumentsJson\":string}],\"finishReason\":string}.",
-    "When tools are needed, encode each arguments object as JSON in argumentsJson and leave execution to Nyxara. Otherwise return an empty toolCalls array.",
+    "When tools are needed, encode each arguments object as JSON in argumentsJson and leave execution to Nyxara. Nyxara also accepts an object-valued arguments field from CLIs that cannot enforce this schema. Otherwise return an empty toolCalls array.",
     `Requested response format: ${request.responseFormat ?? "text"}`,
     `Available Nyxara tools: ${JSON.stringify(request.tools ?? [])}`,
     `Prior conversation: ${JSON.stringify(request.conversation ?? [])}`,
@@ -546,11 +546,16 @@ function parseToolEnvelope(value: string, providerId: string): { text: string; t
   catch { throw new ProviderError("CLI returned invalid structured output", { code: "invalid_response", providerId }); }
   if (!isRecord(parsed) || typeof parsed.text !== "string" || !Array.isArray(parsed.toolCalls)) throw new ProviderError("CLI returned an invalid response envelope", { code: "invalid_response", providerId });
   const toolCalls = parsed.toolCalls.map((value): ModelToolCall => {
-    if (!isRecord(value) || typeof value.id !== "string" || !value.id || typeof value.name !== "string" || !value.name || typeof value.argumentsJson !== "string") throw new ProviderError("CLI returned an invalid tool call", { code: "invalid_response", providerId });
+    if (!isRecord(value) || typeof value.id !== "string" || !value.id || typeof value.name !== "string" || !value.name) throw new ProviderError("CLI returned an invalid tool call", { code: "invalid_response", providerId });
     let args: unknown;
-    try { args = JSON.parse(value.argumentsJson); }
-    catch { throw new ProviderError("CLI returned invalid tool call arguments", { code: "invalid_response", providerId }); }
-    if (!isRecord(args)) throw new ProviderError("CLI returned invalid tool call arguments", { code: "invalid_response", providerId });
+    if (typeof value.argumentsJson === "string" && value.arguments === undefined) {
+      try { args = JSON.parse(value.argumentsJson); }
+      catch { args = value.argumentsJson; }
+    } else if (value.argumentsJson === undefined && value.arguments !== undefined) {
+      args = value.arguments;
+    } else {
+      throw new ProviderError("CLI returned invalid tool call arguments", { code: "invalid_response", providerId });
+    }
     return { id: value.id, name: value.name, arguments: args };
   });
   return { text: parsed.text, toolCalls, ...(typeof parsed.finishReason === "string" && parsed.finishReason ? { finishReason: parsed.finishReason } : {}) };

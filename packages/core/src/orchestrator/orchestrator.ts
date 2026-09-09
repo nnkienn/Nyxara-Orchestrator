@@ -209,13 +209,13 @@ export class NyxaraOrchestrator {
       prior.successful += event.successfulToolCalls ?? 0;
       prior.failed += event.failedToolCalls ?? 0;
       prior.invalid += event.invalidToolCalls ?? 0;
-      prior.executed += (event.successfulToolCalls ?? 0) + (event.failedToolCalls ?? 0);
+      prior.executed += event.executedToolCalls ?? (event.successfulToolCalls ?? 0) + (event.failedToolCalls ?? 0);
       prior.durationMs += event.toolDurationMs ?? 0;
       for (const [name, count] of Object.entries(event.toolCallsByName ?? {})) prior.byName[name] = (prior.byName[name] ?? 0) + count;
       this.workflowTools.set(event.workflowId, prior);
       const tasks = this.workflowTaskTools.get(event.workflowId) ?? new Map();
       const task = tasks.get(event.taskId) ?? { modelRequested: 0, executed: 0, successful: 0, failed: 0, invalid: 0, durationMs: 0, byName: {} };
-      task.modelRequested += event.toolCalls; task.successful += event.successfulToolCalls ?? 0; task.failed += event.failedToolCalls ?? 0; task.invalid += event.invalidToolCalls ?? 0; task.executed += (event.successfulToolCalls ?? 0) + (event.failedToolCalls ?? 0);
+      task.modelRequested += event.toolCalls; task.successful += event.successfulToolCalls ?? 0; task.failed += event.failedToolCalls ?? 0; task.invalid += event.invalidToolCalls ?? 0; task.executed += event.executedToolCalls ?? (event.successfulToolCalls ?? 0) + (event.failedToolCalls ?? 0);
       task.durationMs += event.toolDurationMs ?? 0;
       for (const [name, count] of Object.entries(event.toolCallsByName ?? {})) task.byName[name] = (task.byName[name] ?? 0) + count;
       tasks.set(event.taskId, task); this.workflowTaskTools.set(event.workflowId, tasks);
@@ -929,7 +929,7 @@ export class NyxaraOrchestrator {
     const usage = this.workflowUsage.get(runtime.workflowId);
     const finalUsage = usage && tools ? { ...usage, totalToolCalls: tools.executed, toolDurationMs: tools.durationMs, modelRequestedToolCalls: tools.modelRequested, executedToolCalls: tools.executed, successfulToolCalls: tools.successful, failedToolCalls: tools.failed, invalidToolCalls: tools.invalid, toolCallsByName: { ...tools.byName } } : usage;
     const taskTools = this.workflowTaskTools.get(runtime.workflowId);
-    const withTaskTools = finalUsage && taskTools ? { ...finalUsage, tasks: finalUsage.tasks.map(task => { const stats = taskTools.get(task.taskId); return stats ? { ...task, toolCalls: stats.executed, toolDurationMs: stats.durationMs, modelRequestedToolCalls: stats.modelRequested, successfulToolCalls: stats.successful, failedToolCalls: stats.failed, invalidToolCalls: stats.invalid, toolCallsByName: { ...stats.byName } } : task; }) } : finalUsage;
+    const withTaskTools = finalUsage && taskTools ? { ...finalUsage, tasks: finalUsage.tasks.map(task => { const stats = taskTools.get(task.taskId); return stats ? { ...task, toolCalls: stats.executed, executedToolCalls: stats.executed, toolDurationMs: stats.durationMs, modelRequestedToolCalls: stats.modelRequested, successfulToolCalls: stats.successful, failedToolCalls: stats.failed, invalidToolCalls: stats.invalid, toolCallsByName: { ...stats.byName } } : task; }) } : finalUsage;
     if (withTaskTools) this.workflowUsage.set(runtime.workflowId, withTaskTools);
     runtime.terminalResult = withTaskTools ? { ...result, usage: withTaskTools } : result;
     this.finalizedUsage.add(runtime.workflowId);
