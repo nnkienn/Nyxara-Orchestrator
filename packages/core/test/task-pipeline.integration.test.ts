@@ -8,7 +8,7 @@ import type {
   GenerateResponse,
   ModelProvider,
 } from "@nyxara/provider-sdk";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NyxaraOrchestrator,
   type ContextBundle,
@@ -214,6 +214,276 @@ describe("Core runTaskPipeline end to end", () => {
     expect(result.repair).toBeUndefined();
     expect(result.reviewSkipped).toBe(false);
     expect(reviewerCalls).toBe(1);
+  });
+
+  it("stops at a zero-change Executor failure without Validation, Review, or Repair", async () => {
+    let reviewerCalls = 0;
+    let repairCalls = 0;
+    const nyxara = orchestrator(
+      provider(async (request) => {
+        if (request.prompt.includes("You are the Reviewer role")) {
+          reviewerCalls += 1;
+          return reviewResponse("passed");
+        }
+        if (request.prompt.includes("You are repairing an existing implementation.")) {
+          repairCalls += 1;
+        }
+        return response({
+          text: JSON.stringify({
+            status: "failed",
+            summary: "Required repository evidence is unavailable",
+          }),
+        });
+      }),
+    );
+    const validate = vi.spyOn(nyxara, "validate");
+
+    const result = await nyxara.runTaskPipeline({
+      requirement: "Implement the feature",
+      plan: plan(),
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext: await context(nyxara),
+      allowRepair: true,
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      execution: { status: "failed", changedFiles: [] },
+      validation: {
+        status: "not_applicable",
+        reason: "executor_failed_before_task_completion",
+        steps: [],
+      },
+      reviewSkipped: true,
+    });
+    expect(result.review).toBeUndefined();
+    expect(result.repair).toBeUndefined();
+    expect(validate).not.toHaveBeenCalled();
+    expect(reviewerCalls).toBe(0);
+    expect(repairCalls).toBe(0);
+  });
+
+  it("turns an explicit implementation completion with zero changes into a terminal execution failure", async () => {
+    let reviewerCalls = 0;
+    const nyxara = orchestrator(provider(async (request) => {
+      if (request.prompt.includes("You are the Reviewer role")) reviewerCalls += 1;
+      return response({ text: JSON.stringify({ status: "completed", summary: "Claimed implementation" }) });
+    }));
+    const validate = vi.spyOn(nyxara, "validate");
+    const base = plan();
+    const implementationPlan: ExecutionPlan = {
+      ...base,
+      tasks: [{ ...base.tasks[0]!, executionMode: "implementation" }],
+    };
+
+    const result = await nyxara.runTaskPipeline({
+      requirement: "Implement the feature",
+      plan: implementationPlan,
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext: await context(nyxara),
+      allowRepair: true,
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      execution: {
+        status: "failed",
+        changedFiles: [],
+        unresolvedIssues: ["Implementation task completed with zero files changed"],
+      },
+      validation: { status: "not_applicable", reason: "executor_failed_before_task_completion" },
+      reviewSkipped: true,
+    });
+    expect(validate).not.toHaveBeenCalled();
+    expect(reviewerCalls).toBe(0);
+    expect(result.repair).toBeUndefined();
+  });
+
+  it("allows an explicit read-only audit to complete with zero changes", async () => {
+    let reviewerCalls = 0;
+    const nyxara = orchestrator(provider(async (request) => {
+      if (request.prompt.includes("You are the Reviewer role")) reviewerCalls += 1;
+      return response({ text: JSON.stringify({ status: "completed", summary: "Audit complete" }) });
+    }));
+    const validate = vi.spyOn(nyxara, "validate");
+    const base = plan();
+    const auditPlan: ExecutionPlan = {
+      ...base,
+      tasks: [{
+        ...base.tasks[0]!,
+        title: "Audit feature",
+        description: "Inspect the current feature without changing it.",
+        executionMode: "read_only",
+      }],
+    };
+
+    const result = await nyxara.runTaskPipeline({
+      requirement: "Audit the feature",
+      plan: auditPlan,
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext: await context(nyxara),
+      allowRepair: true,
+    });
+
+    expect(result).toMatchObject({
+      status: "passed",
+      execution: { status: "completed", changedFiles: [] },
+      validation: { status: "not_applicable", reason: "read_only_task" },
+      reviewSkipped: true,
+    });
+    expect(validate).not.toHaveBeenCalled();
+    expect(reviewerCalls).toBe(0);
+    expect(result.repair).toBeUndefined();
+  });
+
+  it("does not duplicate the full Planner bundle into Executor or Reviewer prompts", async () => {
+    const prompts: string[] = [];
+    const nyxara = orchestrator(
+      provider(async (request) => {
+        prompts.push(request.prompt);
+        if (request.prompt.includes("You are the Reviewer role")) {
+          return reviewResponse("passed");
+        }
+        return executorTurn(
+          request,
+          "export const value = 1;\n",
+          "export const value = 2;\n",
+        );
+      }),
+    );
+    const plannerContext = await context(nyxara);
+    const plannerOnlyMarker = "PLANNER_ONLY_CONTEXT_MUST_NOT_BE_FORWARDED";
+    const oversizedPlannerContext: ContextBundle = {
+      ...plannerContext,
+      files: [
+        ...plannerContext.files,
+        {
+          path: "src/planner-only.js",
+          content: plannerOnlyMarker.repeat(2_000),
+          reason: "Planner-only evidence",
+          size: plannerOnlyMarker.length * 2_000,
+          truncated: false,
+        },
+      ],
+      estimatedTokens: 316_000,
+    };
+
+    const result = await nyxara.runTaskPipeline({
+      requirement: "Implement the feature",
+      plan: plan(),
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext: oversizedPlannerContext,
+      contextBudget: {
+        maxFiles: 1,
+        maxBytes: 4 * 1024,
+        maxBytesPerFile: 4 * 1024,
+      },
+      allowRepair: false,
+    });
+
+    expect(result.status).toBe("passed");
+    expect(result.executorContext.files).toHaveLength(1);
+    expect(result.executorContext.totalBytes).toBeLessThanOrEqual(4 * 1024);
+    expect(result.executorContext.estimatedTokens).toBeLessThan(316_000);
+    expect(prompts.filter((prompt) =>
+      prompt.includes("You are the Executor role") ||
+      prompt.includes("You are the Reviewer role")
+    ).every((prompt) => !prompt.includes(plannerOnlyMarker))).toBe(true);
+  });
+
+  it("projects 0/6 as execution failure with no successful validation or review stage", async () => {
+    let reviewerCalls = 0;
+    let repairCalls = 0;
+    const taskList = Array.from({ length: 6 }, (_, index) => ({
+      id: `T${index + 1}`,
+      title: `Implement step ${index + 1}`,
+      description: "Update the feature implementation.",
+      dependencies: index === 0 ? [] : [`T${index}`],
+      acceptanceCriteria: ["The step is implemented"],
+      relevantFiles: ["src/feature.js"],
+    }));
+    const modelProvider = provider(async (request) => {
+      if (request.prompt.includes("You are the Planner role")) {
+        return response({
+          text: JSON.stringify({
+            objective: "Implement six steps",
+            tasks: taskList,
+          }),
+        });
+      }
+      if (request.prompt.includes("You are the Reviewer role")) {
+        reviewerCalls += 1;
+        return reviewResponse("passed");
+      }
+      if (request.prompt.includes("You are repairing an existing implementation.")) {
+        repairCalls += 1;
+      }
+      return response({
+        text: JSON.stringify({
+          status: "failed",
+          summary: "Executor could not obtain required evidence",
+        }),
+      });
+    });
+    const nyxara = new NyxaraOrchestrator({
+      providers: [modelProvider],
+      agents: ["planner", "executor", "reviewer"].map((role) => ({
+        role: role as "planner" | "executor" | "reviewer",
+        providerId: "fake",
+        modelId,
+      })),
+    });
+    const validate = vi.spyOn(nyxara, "validate");
+    const workflow = nyxara.startWorkflow({
+      workspace,
+      prompt: "Implement six sequential steps in src/feature.js",
+    });
+    const planned = await nyxara.createPlan({
+      workflowId: workflow.id,
+      workspaceRoot: workspace,
+      prompt: workflow.prompt,
+    });
+    nyxara.approvePlan(workflow.id, planned.plan.id);
+
+    const result = await nyxara.runApprovedPlan({
+      workflowId: workflow.id,
+      planId: planned.plan.id,
+      allowRepair: true,
+    });
+    const snapshot = nyxara.getWorkflowSnapshot(workflow.id);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      completedTasks: 0,
+      totalTasks: 6,
+      changedFiles: [],
+      repairCycles: 0,
+    });
+    expect(snapshot.occurredStages).toEqual([
+      "planning",
+      "approval",
+      "execution",
+    ]);
+    const failedTask = snapshot.tasks.find((task) => task.taskId === "T1");
+    expect(failedTask).toMatchObject({
+      taskId: "T1",
+      executionStatus: "failed",
+    });
+    expect(failedTask).not.toHaveProperty("validationStatus");
+    expect(failedTask).not.toHaveProperty("reviewStatus");
+    expect(failedTask).not.toHaveProperty("repairStatus");
+    expect(snapshot.executionRetry).toEqual({
+      planId: planned.plan.id,
+      taskId: "T1",
+      attempt: 2,
+    });
+    expect(validate).not.toHaveBeenCalled();
+    expect(reviewerCalls).toBe(0);
+    expect(repairCalls).toBe(0);
   });
 
   it("skips Reviewer on validation failure, repairs, then validates and reviews", async () => {

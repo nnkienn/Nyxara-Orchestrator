@@ -98,6 +98,10 @@ describe("Executor context reuse", () => {
       join(workspace, "src", "notification.ts"),
       "export const notifications = [];\n",
     );
+    await writeFile(
+      join(workspace, "src", "plan.ts"),
+      "export function createPlan() { return { tasks: [] }; }\n",
+    );
     await execFileAsync("git", ["init", "-b", "main"], { cwd: workspace });
     await execFileAsync("git", ["config", "user.email", "t@nyxara.local"], {
       cwd: workspace,
@@ -200,6 +204,81 @@ describe("Executor context reuse", () => {
     // Targeted expansion reads the missing path without a full repository scan.
     expect(executed.contextSource).toBe("targeted_expansion");
     expect(rebuilds).toBe(0);
+    expect(executed.context.files.map((file) => file.path)).toContain(
+      "src/notification.ts",
+    );
+  });
+
+  it("expands a symbol named by the approved task without Planner evidence", async () => {
+    const nyxara = orchestrator();
+    const context = await plannerContext(nyxara);
+    const symbolPlan: ExecutionPlan = {
+      ...plan,
+      tasks: [{
+        ...plan.tasks[0]!,
+        description: "Update function createPlan while preserving its snapshot contract.",
+        relevantFiles: [],
+      }],
+    };
+    const executed = await nyxara.executeTask({
+      plan: symbolPlan,
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext: context,
+      contextBudget: {
+        maxFiles: 1,
+        maxBytes: 4 * 1024,
+        maxBytesPerFile: 4 * 1024,
+      },
+    });
+
+    expect(executed.contextSource).toBe("targeted_expansion");
+    expect(executed.context.files.map((file) => file.path)).toEqual(["src/plan.ts"]);
+    expect(executed.context.totalBytes).toBeLessThanOrEqual(4 * 1024);
+  });
+
+  it("records a precise missing target without making a planned new file impossible", async () => {
+    const nyxara = orchestrator();
+    const context = await plannerContext(nyxara);
+    const createPlan: ExecutionPlan = {
+      ...plan,
+      tasks: [{ ...plan.tasks[0]!, relevantFiles: ["src/new-notification.ts"] }],
+    };
+
+    const executed = await nyxara.executeTask({
+      plan: createPlan,
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext: context,
+    });
+
+    expect(executed.contextSource).toBe("targeted_expansion");
+    expect(executed.context.targetIssues).toContainEqual(
+      expect.objectContaining({
+        kind: "path",
+        target: "src/new-notification.ts",
+        code: "file_not_found",
+      }),
+    );
+  });
+
+  it("fails locally with the safe repository error for an unavailable target", async () => {
+    const nyxara = orchestrator();
+    const context = await plannerContext(nyxara);
+    const invalidPlan: ExecutionPlan = {
+      ...plan,
+      tasks: [{ ...plan.tasks[0]!, relevantFiles: ["../outside.ts"] }],
+    };
+
+    await expect(nyxara.executeTask({
+      plan: invalidPlan,
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext: context,
+    })).rejects.toMatchObject({
+      code: "permission_error",
+      message: expect.stringContaining("Permission denied"),
+    });
   });
 });
 
@@ -248,6 +327,9 @@ describe("Deterministic task context filtering", () => {
     });
     expect(selection.context.files).toHaveLength(1);
     expect(selection.context.totalBytes).toBeLessThanOrEqual(2048);
+    expect(selection.context.estimatedTokens).toBeLessThan(
+      bundle.estimatedTokens,
+    );
   });
 
   it("flags a relevant file that is absent from Planner context", () => {

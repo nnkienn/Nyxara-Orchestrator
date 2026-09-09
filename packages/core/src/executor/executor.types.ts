@@ -9,6 +9,7 @@ import type {
   PlannedTask,
 } from "../planner/planner.types.js";
 import type { RepairEvidence, RepairTask } from "../repair/repair.types.js";
+import type { ResolvedRuleSet } from "../rules/engineering-rule.js";
 
 export type TaskExecutionStatus =
   | "pending"
@@ -24,15 +25,42 @@ export interface ExecutorInput {
   readonly workspaceRoot: string;
   readonly context: ContextBundle;
   readonly attempt: number;
+  readonly engineeringRules?: ResolvedRuleSet;
   readonly signal?: AbortSignal;
   readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;
   readonly checkpoint?: () => Promise<void>;
 }
 
 export interface ExecutorLimits {
+  /** Final provider-neutral safety ceiling across every requested tool. */
   readonly maxToolCallsPerTask: number;
-  readonly maxModelTurnsPerTask: number;
+  readonly maxReadToolCallsPerTask: number;
+  readonly maxMutatingToolCallsPerTask: number;
+  readonly maxValidationToolCallsPerTask: number;
+  readonly maxProviderCallsPerTask: number;
+  /** @deprecated Use maxProviderCallsPerTask. Accepted as a compatibility alias. */
+  readonly maxModelTurnsPerTask?: number;
   readonly maxToolResultBytes: number;
+  readonly maxRetainedEvidenceBytes: number;
+  readonly maxExecutorContextBytes: number;
+  readonly maxEstimatedInputTokens: number;
+  readonly maxConsecutiveNoProgressToolCalls: number;
+  readonly maxNoProgressModelTurns: number;
+}
+
+export type ExecutorToolCategory = "read" | "mutation" | "validation";
+
+/** Content-free measurements for one bounded Executor attempt. */
+export interface ExecutorContextMetrics {
+  readonly executorContextFiles: number;
+  readonly executorContextBytes: number;
+  readonly droppedEvidenceCount: number;
+  readonly duplicateEvidenceRemoved: number;
+  readonly estimatedInputTokens: number;
+  readonly providerReportedInputTokens: number;
+  readonly providerCalls: number;
+  readonly contextBytesPerRound: readonly number[];
+  readonly estimatedInputTokensPerRound: readonly number[];
 }
 
 export interface ExecutorRunInput {
@@ -49,6 +77,7 @@ export interface RepairExecutorInput {
   readonly context: ContextBundle;
   readonly evidence: RepairEvidence;
   readonly attempt: number;
+  readonly engineeringRules?: ResolvedRuleSet;
   readonly signal?: AbortSignal;
   readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;
   readonly checkpoint?: () => Promise<void>;
@@ -81,6 +110,8 @@ export interface ExecutionResult {
   readonly invalidToolCalls?: number;
   readonly toolCallsByName?: Readonly<Record<string, number>>;
   readonly modelTurns: number;
+  readonly toolCallsByCategory?: Readonly<Record<ExecutorToolCategory, number>>;
+  readonly contextMetrics?: ExecutorContextMetrics;
   readonly unresolvedIssues?: readonly string[];
   readonly diff: {
     readonly files: readonly string[];
@@ -102,6 +133,7 @@ export interface TaskExecutionSummary {
   readonly diffTruncated: boolean;
   readonly toolCalls: number;
   readonly modelTurns: number;
+  readonly contextMetrics?: ExecutorContextMetrics;
   readonly unresolvedIssues?: readonly string[];
 }
 
@@ -127,6 +159,7 @@ export interface ExecuteTaskInput {
    */
   readonly plannerContext?: ContextBundle;
   readonly contextBudget?: Partial<ContextBudget>;
+  readonly engineeringRules?: ResolvedRuleSet;
   readonly limits?: Partial<ExecutorLimits>;
   readonly signal?: AbortSignal;
   readonly resolvePermission?: (request: PermissionRequest) => Promise<"allow" | "deny">;

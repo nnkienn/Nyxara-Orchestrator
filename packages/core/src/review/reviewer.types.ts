@@ -172,7 +172,6 @@ export interface ReviewTaskInput {
   readonly execution: ExecutionResult;
   readonly validation: ValidationResult;
   readonly executorContext: ContextBundle;
-  readonly plannerContext?: ContextBundle;
   readonly evidenceBudget?: Partial<ReviewEvidenceBudget>;
   readonly limits?: Partial<ReviewerLimits>;
   readonly signal?: AbortSignal;

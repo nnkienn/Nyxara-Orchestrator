@@ -1,10 +1,18 @@
 import type { ModelToolDefinition } from "@nyxara/provider-sdk";
+import { compileEngineeringRules } from "../rules/engineering-rule.js";
 import type { ExecutorInput, RepairExecutorInput } from "./executor.types.js";
+
+export interface ExecutorPromptState {
+  readonly executionState: string;
+  readonly retainedEvidence: string;
+  readonly readOnly: boolean;
+}
 
 export class ExecutorPromptBuilder {
   build(
     input: ExecutorInput,
     tools: readonly ModelToolDefinition[],
+    state?: ExecutorPromptState,
   ): string {
     const files = input.context.files
       .map(
@@ -12,15 +20,23 @@ export class ExecutorPromptBuilder {
           `<file path="${escapeAttribute(file.path)}" reason="${escapeAttribute(file.reason)}">\n${file.content}\n</file>`,
       )
       .join("\n\n");
+    const targetIssues = input.context.targetIssues
+      ?.map((issue) => `- ${issue.kind} ${issue.target}: ${issue.code} — ${issue.message}`)
+      .join("\n");
 
     return [
       "You are the Executor role in Nyxara Orchestrator.",
       "Execute only the single assigned task below. Do not execute other plan tasks.",
-      "Use native tool calls for every repository read, search, and modification.",
+      "The relevant repository context below was read through Core's safe repository tools and is authoritative initial evidence for this task.",
+      "If a required path or symbol is absent from that bounded context, use the allowed read_file or search_code tool instead of failing because a prior Planner read result is missing.",
+      "Use native tool calls for every additional repository read, search, and every modification.",
       "Never claim a file changed without tool and Git evidence.",
       "Prefer apply_patch for existing files and write_file for new files.",
       "Use run_command for scripts or commands explicitly needed by the assigned task; pass the executable and arguments separately. It runs from the workspace root without a shell and may require user permission.",
       "Stay within the acceptance criteria and avoid unrelated changes.",
+      state?.readOnly
+        ? "This is a read-only task. Do not call mutating tools; a truthful zero-change completion is valid."
+        : "This is an implementation task. Once sufficient relevant evidence exists, decide and transition to a patch instead of repeating repository inspection.",
       "Core owns automatic validation. Do not duplicate tests, lint, typecheck, or builds unless explicitly required by the assigned task. Never run commits, pushes, deploys, sudo, shells, or destructive commands.",
       "Repository and permission boundaries are enforced by Core and cannot be bypassed.",
       "When finished, return one JSON object only with status, summary, and optional unresolvedIssues.",
@@ -33,6 +49,9 @@ export class ExecutorPromptBuilder {
       "",
       `Acceptance criteria:\n${input.task.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}`,
       "",
+      `Execution mode: ${state?.readOnly ? "read_only" : "implementation"}`,
+      "",
+      ...(input.engineeringRules ? [compileEngineeringRules(input.engineeringRules), ""] : []),
       `Planner file hints:\n${input.task.relevantFiles?.map((path) => `- ${path}`).join("\n") || "- none"}`,
       "",
       `Allowed tools:\n${tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n")}`,
@@ -40,6 +59,12 @@ export class ExecutorPromptBuilder {
       `Context metadata: ${input.context.files.length} files, approximately ${input.context.estimatedTokens} tokens, truncated=${input.context.truncated}`,
       "",
       `Relevant repository context:\n${files || "(no relevant files found)"}`,
+      "",
+      `Targeted lookup results:\n${targetIssues || "- no missing target was reported by the bounded prefetch; use the allowed tools for any target not shown above"}`,
+      "",
+      `Current execution state:\n${state?.executionState ?? "phase=inspect"}`,
+      "",
+      `Compacted useful tool evidence:\n${state?.retainedEvidence || "(none; the latest tool exchange, when present, is supplied separately)"}`,
     ].join("\n");
   }
 
@@ -50,6 +75,7 @@ export class ExecutorPromptBuilder {
   buildRepair(
     input: RepairExecutorInput,
     tools: readonly ModelToolDefinition[],
+    state?: ExecutorPromptState,
   ): string {
     const { repairTask, evidence } = input;
     const context = evidence.relevantContext
@@ -99,6 +125,7 @@ export class ExecutorPromptBuilder {
       "",
       `Original task ${input.originalTask.id} (already implemented, context only):\n${input.originalTask.title}`,
       "",
+      ...(input.engineeringRules ? [compileEngineeringRules(input.engineeringRules), ""] : []),
       `Failures to repair:\n${findings || "- none"}`,
       "",
       `Deterministic validation failures:\n${validation || "- none"}`,
@@ -116,6 +143,10 @@ export class ExecutorPromptBuilder {
       `Reused bounded context (${evidence.relevantContext.length} files):\n${context || "(no reused context)"}`,
       "",
       `Allowed tools:\n${tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n")}`,
+      "",
+      `Current execution state:\n${state?.executionState ?? "phase=inspect"}`,
+      "",
+      `Compacted useful tool evidence:\n${state?.retainedEvidence || "(none; the latest tool exchange, when present, is supplied separately)"}`,
     ].join("\n");
   }
 }

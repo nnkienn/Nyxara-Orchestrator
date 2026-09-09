@@ -92,6 +92,9 @@ export interface ProviderGenerationCompletedEvent {
   readonly contextBytes?: number | null;
   readonly contextFiles?: number | null;
   readonly contextTruncated?: boolean | null;
+  readonly estimatedInputTokens?: number;
+  readonly droppedEvidenceCount?: number;
+  readonly duplicateEvidenceRemoved?: number;
   readonly usage?: GenerateUsage;
   readonly executionProfileSummary?: ExecutionProfileSummary;
 }
@@ -271,9 +274,11 @@ export interface ExecutorCompletedEvent {
   readonly failedToolCalls?: number;
   readonly invalidToolCalls?: number;
   readonly toolCallsByName?: Readonly<Record<string, number>>;
+  readonly toolCallsByCategory?: import("../executor/executor.types.js").ExecutionResult["toolCallsByCategory"];
+  readonly contextMetrics?: import("../executor/executor.types.js").ExecutorContextMetrics;
 }
 
-export interface ExecutorFailedEvent extends Partial<Pick<ExecutorCompletedEvent, "workflowId" | "toolCalls" | "toolDurationMs" | "successfulToolCalls" | "failedToolCalls" | "invalidToolCalls" | "toolCallsByName">> {
+export interface ExecutorFailedEvent extends Partial<Pick<ExecutorCompletedEvent, "workflowId" | "toolCalls" | "toolDurationMs" | "successfulToolCalls" | "failedToolCalls" | "invalidToolCalls" | "toolCallsByName" | "toolCallsByCategory" | "contextMetrics">> {
   readonly taskId: string;
   readonly providerId: string;
   readonly modelId: string;

@@ -159,7 +159,6 @@ export interface RepairWorkflowInput {
   readonly validation: ValidationResult;
   readonly review?: ReviewResult;
   readonly executorContext: ContextBundle;
-  readonly plannerContext?: ContextBundle;
   readonly validationConfig?: ValidationConfig;
   readonly executorLimits?: Partial<ExecutorLimits>;
   readonly reviewerLimits?: Partial<ReviewerLimits>;
@@ -185,7 +184,6 @@ export interface RepairReviewRequest {
   readonly execution: ExecutionResult;
   readonly validation: ValidationResult;
   readonly executorContext: ContextBundle;
-  readonly plannerContext?: ContextBundle;
   readonly evidenceBudget?: Partial<ReviewEvidenceBudget>;
   readonly limits?: Partial<ReviewerLimits>;
   readonly signal?: AbortSignal;

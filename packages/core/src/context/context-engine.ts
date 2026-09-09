@@ -9,6 +9,7 @@ import type {
   ContextBundle,
   ContextFile,
   ContextFocus,
+  ContextTargetIssue,
   ExpandContextInput,
   ExpandedContext,
 } from "./context.types.js";
@@ -179,14 +180,23 @@ export class ContextEngine {
       input.signal,
     );
     const candidates = new Map<string, string>();
+    const targetIssues: ContextTargetIssue[] = [];
     for (const path of paths) {
-      candidates.set(path, "Reviewer requested this specific path");
+      candidates.set(path, "Targeted context requested this specific path");
     }
     for (const symbol of symbols) {
       const matches = await repository.searchCode(symbol, budget.maxFiles * 4);
+      if (matches.matches.length === 0) {
+        targetIssues.push({
+          kind: "symbol",
+          target: symbol,
+          code: "symbol_not_found",
+          message: `No repository match was found for symbol: ${symbol}`,
+        });
+      }
       for (const match of matches.matches) {
         if (!candidates.has(match.path)) {
-          candidates.set(match.path, `Reviewer requested symbol "${symbol}"`);
+          candidates.set(match.path, `Targeted context requested symbol "${symbol}"`);
         }
       }
     }
@@ -207,7 +217,21 @@ export class ContextEngine {
         truncated = true;
         break;
       }
-      const result = await repository.readFile(path, readLimit);
+      let result: Awaited<ReturnType<Repository["readFile"]>>;
+      try {
+        result = await repository.readFile(path, readLimit);
+      } catch (error: unknown) {
+        if (error instanceof NyxaraToolError && error.code === "file_not_found") {
+          targetIssues.push({
+            kind: "path",
+            target: path,
+            code: "file_not_found",
+            message: error.message,
+          });
+          continue;
+        }
+        throw error;
+      }
       const contentBytes = Buffer.byteLength(result.content, "utf8");
       files.push({
         path: result.path,
@@ -220,7 +244,7 @@ export class ContextEngine {
       truncated ||= result.truncated;
     }
 
-    return { files, totalBytes, truncated };
+    return { files, totalBytes, truncated, targetIssues };
   }
 
   private async findCandidates(

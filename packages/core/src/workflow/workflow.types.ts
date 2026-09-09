@@ -51,8 +51,9 @@ export interface WorkflowTransitionInput {
 }
 
 /**
- * The only legal workflow transitions. `validating -> executing` and
- * `reviewing -> executing` exist so Core can move to the next task of a plan;
+ * The only legal workflow transitions. `executing -> running` supports a
+ * completed read-only task that correctly skips Validation and Review.
+ * `validating -> executing` and `reviewing -> executing` let Core move to the next task;
  * `repairing` is reachable from validation or review failure and returns to
  * validation, which keeps validation-first authority explicit.
  */
@@ -65,7 +66,7 @@ export const WORKFLOW_TRANSITIONS: Readonly<
   approved: ["running", "executing", "completed", "failed", "aborted"],
   running: ["executing", "validating", "reviewing", "repairing", "running", "paused", "waiting_for_permission", "completed", "failed", "aborted"],
   planned: ["executing", "completed", "failed", "aborted"],
-  executing: ["validating", "paused", "waiting_for_permission", "failed", "aborted"],
+  executing: ["running", "validating", "paused", "waiting_for_permission", "failed", "aborted"],
   validating: ["reviewing", "repairing", "executing", "running", "paused", "waiting_for_permission", "completed", "failed", "aborted"],
   reviewing: ["repairing", "executing", "running", "paused", "waiting_for_permission", "completed", "failed", "aborted"],
   repairing: ["validating", "executing", "running", "paused", "waiting_for_permission", "completed", "failed", "aborted"],

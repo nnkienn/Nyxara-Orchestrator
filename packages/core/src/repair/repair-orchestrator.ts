@@ -210,6 +210,7 @@ export class RepairOrchestrator {
             context: state.context,
             evidence,
             attempt: state.executorAttempts,
+            ...(input.engineeringRules ? { engineeringRules: input.engineeringRules } : {}),
             ...(input.signal ? { signal: input.signal } : {}),
             ...(input.resolvePermission ? { resolvePermission: input.resolvePermission } : {}),
             ...(input.checkpoint ? { checkpoint: input.checkpoint } : {}),
@@ -391,7 +392,6 @@ export class RepairOrchestrator {
         execution: state.execution,
         validation: state.validation,
         executorContext: state.context,
-        ...(input.plannerContext ? { plannerContext: input.plannerContext } : {}),
         ...(input.reviewEvidenceBudget
           ? { evidenceBudget: input.reviewEvidenceBudget }
           : {}),
@@ -432,10 +432,7 @@ export class RepairOrchestrator {
       execution: state.execution,
       validation: state.validation,
       ...(state.review ? { review: state.review } : {}),
-      contexts: [
-        state.context,
-        ...(input.plannerContext ? [input.plannerContext] : []),
-      ],
+      contexts: [state.context],
       limits,
     });
   }
@@ -454,20 +451,15 @@ export class RepairOrchestrator {
     );
     if (missing.length === 0) return;
 
-    try {
-      const files = await operations.expandContext({
-        workspaceRoot: input.workspaceRoot,
-        paths: missing.slice(0, 4),
-        symbols: [],
-        ...(input.signal ? { signal: input.signal } : {}),
-      });
-      if (files.length === 0) return;
-      state.context = mergeContext(state.context, files);
-      state.contextExpansions += 1;
-    } catch {
-      // Targeted expansion is best-effort; the repair continues with the
-      // evidence already available.
-    }
+    const files = await operations.expandContext({
+      workspaceRoot: input.workspaceRoot,
+      paths: missing,
+      symbols: [],
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    if (files.length === 0) return;
+    state.context = mergeContext(state.context, files);
+    state.contextExpansions += 1;
   }
 
   private emitLimit(taskId: string, cycle: number): void {

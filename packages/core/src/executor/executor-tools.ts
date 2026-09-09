@@ -36,7 +36,7 @@ export const EXECUTOR_TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
       type: "object",
       properties: {
         query: { type: "string" },
-        maxResults: { type: "integer", minimum: 1, maximum: 100 },
+        maxResults: { type: "integer", minimum: 1, maximum: 20 },
       },
       required: ["query"],
       additionalProperties: false,
@@ -49,8 +49,8 @@ export const EXECUTOR_TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
       type: "object",
       properties: {
         query: { type: "string" },
-        maxResults: { type: "integer", minimum: 1, maximum: 100 },
-        maxFileBytes: { type: "integer", minimum: 1, maximum: 1048576 },
+        maxResults: { type: "integer", minimum: 1, maximum: 20 },
+        maxFileBytes: { type: "integer", minimum: 1, maximum: 262144 },
       },
       required: ["query"],
       additionalProperties: false,
@@ -65,7 +65,7 @@ export const EXECUTOR_TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
         path: { type: "string" },
         startLine: { type: "integer", minimum: 1 },
         endLine: { type: "integer", minimum: 1 },
-        maxBytes: { type: "integer", minimum: 1, maximum: 65536 },
+        maxBytes: { type: "integer", minimum: 1, maximum: 24576 },
       },
       required: ["path"],
       additionalProperties: false,

@@ -27,7 +27,6 @@ import type {
   BuildContextInput,
   ContextBudget,
   ContextBundle,
-  ContextFile,
 } from "../context/context.types.js";
 import {
   boundPlannerOutputTokens,
@@ -35,7 +34,6 @@ import {
   type PlanningContextDecision,
   type PlanningContextMode,
 } from "../context/planning-context-policy.js";
-import { ApproximateTokenEstimator } from "../context/token-estimator.js";
 import {
   selectTaskContext,
   taskContextQuery,
@@ -45,6 +43,7 @@ import { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
 import { Executor } from "../executor/executor.js";
 import { ExecutorError } from "../executor/executor-error.js";
+import { taskIsReadOnly } from "../executor/executor-session.js";
 import { TaskExecutionStore } from "../executor/task-execution-store.js";
 import type {
   ExecuteTaskInput,
@@ -124,8 +123,6 @@ import { randomUUID, createHash } from "node:crypto";
 import path from "node:path";
 import { EngineeringRuleRegistry } from "../rules/rule-registry.js";
 import { parseEngineeringRule, resolveEngineeringRules, type EngineeringRule, type ResolvedRuleSet } from "../rules/engineering-rule.js";
-
-const TOKEN_ESTIMATOR = new ApproximateTokenEstimator();
 
 export class NyxaraOrchestrator {
   readonly events = new EventBus<NyxaraEventMap>();
@@ -265,7 +262,7 @@ export class NyxaraOrchestrator {
       );
     }
     const retainedStates = input.taskExecutionStates ?? [];
-    const failedStates = retainedStates.filter((state) => state.status === "failed" && !state.result);
+    const failedStates = retainedStates.filter((state) => state.status === "failed");
     const retryableTaskId = input.workflow.failedTaskId
       ?? (failedStates.length === 1 ? failedStates[0]!.taskId : undefined);
     const retainedTasks = input.tasks ?? [];
@@ -475,7 +472,7 @@ export class NyxaraOrchestrator {
     const taskId = runtime?.retryableTaskId;
     if (!runtime || !taskId || (runtime.terminalResult && runtime.terminalResult.status !== "failed") || runtime.abortController.signal.aborted || this.workflowEngine.get(workflowId).status !== "failed") return undefined;
     const task = this.taskExecutions.getRetained(runtime.planId, taskId);
-    if (task?.status !== "failed" || task.result || runtime.completed.has(taskId) || [...runtime.completed].some((completed) => !this.taskExecutions.getRetained(runtime.planId, completed))) return undefined;
+    if (task?.status !== "failed" || runtime.completed.has(taskId) || [...runtime.completed].some((completed) => !this.taskExecutions.getRetained(runtime.planId, completed))) return undefined;
     if (this.planRuntime.workflowId(runtime.planId) !== workflowId || this.workflowEngine.get(workflowId).planId !== runtime.planId || this.planRuntime.get(runtime.planId).status !== "approved") return undefined;
     try { this.assertApprovedPlanIntegrity(runtime.planId, runtime.plan); } catch { return undefined; }
     return { planId: runtime.planId, taskId, attempt: task.attempts + 1 };
@@ -1026,6 +1023,11 @@ export class NyxaraOrchestrator {
         if (result.repair?.status === "aborted") { if (this.workflowEngine.get(runtime.workflowId).status !== "aborted") this.workflowEngine.abort(runtime.workflowId); this.finishRuntime(runtime, "aborted", { taskId: task.id, code: "aborted", message: "Workflow aborted" }); return; }
         if (result.status !== "passed") {
           runtime.failed.push(task.id);
+          if (result.execution.status === "failed") {
+            // A manual retry deliberately drops the stale Planner bundle and
+            // rebuilds bounded task context from the current workspace.
+            runtime.retryableTaskId = task.id;
+          }
           for (const dependent of runtime.graph.getDependents(task.id, true)) {
             if (!runtime.blocked.includes(dependent.id) && !runtime.completed.has(dependent.id) && !runtime.failed.includes(dependent.id)) {
               runtime.blocked.push(dependent.id);
@@ -1121,6 +1123,7 @@ export class NyxaraOrchestrator {
           workspaceRoot: input.workspaceRoot,
           context,
           attempt: started.state.attempts,
+          ...(input.engineeringRules ? { engineeringRules: input.engineeringRules } : {}),
           ...(input.signal ? { signal: input.signal } : {}),
           ...(input.resolvePermission ? { resolvePermission: input.resolvePermission } : {}),
           ...(input.checkpoint ? { checkpoint: input.checkpoint } : {}),
@@ -1192,28 +1195,39 @@ export class NyxaraOrchestrator {
       plannerContext: planner,
       ...(input.contextBudget ? { budget: input.contextBudget } : {}),
     });
-    if (selection.missingRelevantFiles.length === 0) {
+    if (
+      selection.missingRelevantFiles.length === 0 &&
+      selection.missingSymbols.length === 0
+    ) {
       return { context: selection.context, source: "planner_reuse" };
     }
 
-    try {
-      const expanded = await this.contextEngine.expandTargeted({
-        workspaceRoot: input.workspaceRoot,
-        paths: selection.missingRelevantFiles.slice(0, 4),
-        ...(input.contextBudget ? { budget: input.contextBudget } : {}),
-        ...(input.signal ? { signal: input.signal } : {}),
-      });
-      if (expanded.files.length === 0) {
-        return { context: selection.context, source: "planner_reuse" };
-      }
-      return {
-        context: mergeContextFiles(selection.context, expanded.files),
-        source: "targeted_expansion",
-      };
-    } catch {
-      // Targeted expansion is best-effort: the task still has planner evidence.
-      return { context: selection.context, source: "planner_reuse" };
-    }
+    const expanded = await this.contextEngine.expandTargeted({
+      workspaceRoot: input.workspaceRoot,
+      ...(selection.missingRelevantFiles.length > 0
+        ? { paths: selection.missingRelevantFiles }
+        : {}),
+      ...(selection.missingSymbols.length > 0
+        ? { symbols: selection.missingSymbols }
+        : {}),
+      ...(input.contextBudget ? { budget: input.contextBudget } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    const expandedSelection = selectTaskContext({
+      task,
+      plannerContext: {
+        ...planner,
+        files: [...expanded.files, ...planner.files],
+        ...(expanded.targetIssues.length > 0
+          ? { targetIssues: expanded.targetIssues }
+          : {}),
+      },
+      ...(input.contextBudget ? { budget: input.contextBudget } : {}),
+    });
+    return {
+      context: expandedSelection.context,
+      source: "targeted_expansion",
+    };
   }
 
   async validate(input: ValidateInput): Promise<ValidationResult> {
@@ -1233,9 +1247,7 @@ export class NyxaraOrchestrator {
   async reviewTask(input: ReviewTaskInput): Promise<ReviewTaskResult> {
     if (
       input.execution.taskId !== input.task.id ||
-      (input.validation.taskId && input.validation.taskId !== input.task.id) ||
-      (input.plannerContext &&
-        input.plannerContext.workspaceRoot !== input.executorContext.workspaceRoot)
+      (input.validation.taskId && input.validation.taskId !== input.task.id)
     ) {
       throw new ReviewerError(
         "invalid_review",
@@ -1281,10 +1293,7 @@ export class NyxaraOrchestrator {
       task: input.task,
       execution: input.execution,
       validation: input.validation,
-      contexts: [
-        input.executorContext,
-        ...(input.plannerContext ? [input.plannerContext] : []),
-      ],
+      contexts: [input.executorContext],
       budget,
     });
     const reviewerInput = {
@@ -1400,9 +1409,6 @@ export class NyxaraOrchestrator {
           execution: request.execution,
           validation: request.validation,
           executorContext: request.executorContext,
-          ...(request.plannerContext
-            ? { plannerContext: request.plannerContext }
-            : {}),
           ...(request.evidenceBudget
             ? { evidenceBudget: request.evidenceBudget }
             : {}),
@@ -1436,7 +1442,6 @@ export class NyxaraOrchestrator {
         validation: input.validation,
         ...(input.review ? { review: input.review } : {}),
         executorContext: input.executorContext,
-        ...(input.plannerContext ? { plannerContext: input.plannerContext } : {}),
         ...(input.validationConfig
           ? { validationConfig: input.validationConfig }
           : {}),
@@ -1491,6 +1496,9 @@ export class NyxaraOrchestrator {
           ? { plannerContext: input.plannerContext }
           : {}),
         ...(input.contextBudget ? { contextBudget: input.contextBudget } : {}),
+        ...((this.planRuleSets.get(plan.id)?.tasks.get(task.id) ?? input.engineeringRules)
+          ? { engineeringRules: this.planRuleSets.get(plan.id)?.tasks.get(task.id) ?? input.engineeringRules }
+          : {}),
         ...(input.executorLimits ? { limits: input.executorLimits } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
         ...(input.resolvePermission ? { resolvePermission: input.resolvePermission } : {}),
@@ -1501,6 +1509,51 @@ export class NyxaraOrchestrator {
         executionStatus: executed.result.status,
         attempts: executed.state.attempts,
       });
+
+      // A failed Executor result is terminal for this task. Validation cannot
+      // turn an absent implementation into success, and Review/Repair must not
+      // spend more model turns on the same failed handoff.
+      if (executed.result.status === "failed") {
+        const timestamp = new Date().toISOString();
+        return {
+          status: "failed",
+          taskId: task.id,
+          execution: executed.result,
+          validation: {
+            status: "not_applicable",
+            reason: "executor_failed_before_task_completion",
+            steps: [],
+            startedAt: timestamp,
+            completedAt: timestamp,
+            durationMs: 0,
+            planId: plan.id,
+            taskId: task.id,
+          },
+          executorContext: executed.context,
+          reviewSkipped: true,
+        };
+      }
+
+      if (taskIsReadOnly(task) && executed.result.changedFiles.length === 0) {
+        const timestamp = new Date().toISOString();
+        return {
+          status: "passed",
+          taskId: task.id,
+          execution: executed.result,
+          validation: {
+            status: "not_applicable",
+            reason: "read_only_task",
+            steps: [],
+            startedAt: timestamp,
+            completedAt: timestamp,
+            durationMs: 0,
+            planId: plan.id,
+            taskId: task.id,
+          },
+          executorContext: executed.context,
+          reviewSkipped: true,
+        };
+      }
 
       if (workflowId) await this.pauseAtBoundary(workflowId);
       this.enterWorkflowStatus(workflowId, "validating");
@@ -1533,9 +1586,6 @@ export class NyxaraOrchestrator {
           execution: executed.result,
           validation,
           executorContext: executed.context,
-          ...(input.plannerContext
-            ? { plannerContext: input.plannerContext }
-            : {}),
           ...(input.reviewEvidenceBudget
             ? { evidenceBudget: input.reviewEvidenceBudget }
             : {}),
@@ -1556,7 +1606,7 @@ export class NyxaraOrchestrator {
         reviewSkipped: validation.status !== "passed",
       } as const;
 
-      if (executed.result.status === "completed" && validation.status === "passed" && reviewed?.result.status === "passed") {
+      if (validation.status === "passed" && reviewed?.result.status === "passed") {
         return {
           ...base,
           status: "passed",
@@ -1591,9 +1641,6 @@ export class NyxaraOrchestrator {
         validation,
         ...(reviewed ? { review: reviewed.result } : {}),
         executorContext: executed.context,
-        ...(input.plannerContext
-          ? { plannerContext: input.plannerContext }
-          : {}),
         ...(input.validation ? { validationConfig: input.validation } : {}),
         ...(input.executorLimits
           ? { executorLimits: input.executorLimits }
@@ -1758,39 +1805,6 @@ function mergeValidationConfig(
     }
   }
   return merged;
-}
-
-/**
- * Folds targeted expansion results into a bundle already selected from Planner
- * context. Selection entries win, so expansion only supplies evidence the
- * selection was missing.
- */
-function mergeContextFiles(
-  base: ContextBundle,
-  extra: readonly ContextFile[],
-): ContextBundle {
-  const seen = new Set(base.files.map((file) => file.path));
-  const added = extra.filter((file) => !seen.has(file.path));
-  if (added.length === 0) return base;
-
-  const files = [...base.files, ...added];
-  const addedBytes = added.reduce(
-    (bytes, file) => bytes + Buffer.byteLength(file.content, "utf8"),
-    0,
-  );
-  return {
-    workspaceRoot: base.workspaceRoot,
-    prompt: base.prompt,
-    files,
-    git: base.git,
-    totalBytes: base.totalBytes + addedBytes,
-    estimatedTokens: TOKEN_ESTIMATOR.estimate(
-      [base.prompt, base.git.diff.diff, ...files.map((file) => file.content)].join(
-        "\n",
-      ),
-    ),
-    truncated: base.truncated || added.some((file) => file.truncated),
-  };
 }
 
 function taskPipelineFailure(result: TaskPipelineResult): { code: string; message: string } {

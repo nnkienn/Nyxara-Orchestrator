@@ -72,6 +72,17 @@ export interface RunTaskPipelineInput {
 
 export type TaskPipelineStatus = "passed" | "failed";
 
+export interface NotApplicableValidationResult {
+  readonly status: "not_applicable";
+  readonly reason: "executor_failed_before_task_completion" | "read_only_task";
+  readonly steps: readonly [];
+  readonly startedAt: string;
+  readonly completedAt: string;
+  readonly durationMs: 0;
+  readonly planId: string;
+  readonly taskId: string;
+}
+
 export interface AutonomousWorkflowResult {
   readonly workflowId: string;
   readonly planId: string;
@@ -105,13 +116,13 @@ export interface TaskPipelineResult {
   readonly status: TaskPipelineStatus;
   readonly taskId: string;
   readonly execution: ExecutionResult;
-  readonly validation: ValidationResult;
+  readonly validation: ValidationResult | NotApplicableValidationResult;
   readonly review?: ReviewResult;
   readonly repair?: RepairResult;
   readonly executorContext: ContextBundle;
   /** Bounded evidence the Reviewer actually saw; absent when review was skipped. */
   readonly reviewEvidence?: ReviewEvidenceBundle;
-  /** True when validation failed, which forbids calling the Reviewer. */
+  /** True when execution did not complete or validation failed. */
   readonly reviewSkipped: boolean;
   readonly usage?: WorkflowUsage;
 }
@@ -149,7 +160,6 @@ export interface RepairTaskInput {
   readonly validation: ValidationResult;
   readonly review?: ReviewResult;
   readonly executorContext: ContextBundle;
-  readonly plannerContext?: ContextBundle;
   readonly validationConfig?: ValidationConfig;
   readonly executorLimits?: Partial<ExecutorLimits>;
   readonly reviewerLimits?: Partial<ReviewerLimits>;

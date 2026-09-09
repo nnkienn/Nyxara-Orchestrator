@@ -12,6 +12,12 @@ It builds the required packages, runs the deterministic VS Code checks, derives 
 
 The extension manifest at `apps/vscode/package.json` is the single source of truth for the local dogfood version. **Nyxara: About** and the sidebar show that installed manifest version with the **Local Dogfood** label. Use F5 only for development/debugging in an Extension Development Host; use the VSIX for daily dogfood.
 
+## Bounded Executor sessions (alpha.37)
+
+Executor attempts now rebuild a bounded, task-specific context on every provider turn instead of replaying the raw Planner and tool conversation. Read/search, mutation, validation, provider-call, and final hard ceilings are independent; new evidence resets stuck detection, while equivalent searches and file ranges are reused rather than executed again. Tool output is bounded before it enters the next request. A stalled loop reports that no new evidence was produced instead of masquerading as a normal tool-limit failure.
+
+Implementation tasks that finish without producing a change stop before Validation/Review. Explicit read-only tasks retain legitimate zero-change completion. **Retry Execute** retains approved-task state and partial files but starts a fresh bounded Executor evidence session, so it cannot replay a failed attempt's raw tool history. See `docs/EXECUTOR_RUNAWAY_FIX.md` for the audit, deterministic scenario, and safe metrics.
+
 ## Direct subscription CLI responses (alpha.36)
 
 Planner and Reviewer prompts now go directly to Codex, Claude, and Gemini subscription CLIs, and their complete response text goes directly back to the existing business parser. Nyxara does not add or parse a transport envelope for content-only turns, so nested or lengthy business JSON is handled the same way as a direct CLI/chat response, subject only to the provider's own context/output limits and Nyxara's existing bounded process output.

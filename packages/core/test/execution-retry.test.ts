@@ -111,6 +111,8 @@ describe("manual recovery of an approved Executor attempt", () => {
     expect(outcome).toMatchObject({ status: "completed", changedFiles: ["state.ts"], usage: { executedToolCalls: 1, successfulToolCalls: 1, toolCallsByName: { write_file: 1 } } });
     const requests = run.generate.mock.calls.map(([request]) => request).filter((request) => request.prompt.includes("Task ID: T2"));
     expect(requests.at(-1)!.prompt).toContain("partial = true");
+    expect(requests.at(-1)!.conversation).toBeUndefined();
+    expect(requests.at(-1)!.prompt).not.toContain("Prior conversation");
     expect(run.pipeline.mock.calls.map(([input]) => input.taskId)).toEqual(["T1", "T2", "T2", "T3"]);
   });
 

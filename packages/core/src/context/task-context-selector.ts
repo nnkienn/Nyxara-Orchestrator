@@ -1,6 +1,9 @@
 import type { PlannedTask } from "../planner/planner.types.js";
+import { CONTEXT_DIFF_MAX_BYTES } from "../internal/byte-limits.js";
 import { truncateUtf8 } from "../internal/text.js";
 import { extractSearchTerms } from "./context-engine.js";
+import { extractRepositoryTargetHints } from "./planning-context-policy.js";
+import { ApproximateTokenEstimator } from "./token-estimator.js";
 import type {
   ContextBudget,
   ContextBundle,
@@ -17,7 +20,10 @@ export interface TaskContextSelection {
   readonly context: ContextBundle;
   readonly matchedRelevantFiles: readonly string[];
   readonly missingRelevantFiles: readonly string[];
+  readonly missingSymbols: readonly string[];
 }
+
+const TOKEN_ESTIMATOR = new ApproximateTokenEstimator();
 
 /** Deterministic query text for one task; no model call is involved. */
 export function taskContextQuery(task: PlannedTask): string {
@@ -27,6 +33,21 @@ export function taskContextQuery(task: PlannedTask): string {
     task.description,
     ...task.acceptanceCriteria,
   ].join("\n");
+}
+
+/** Paths and symbols carried by the approved task, bounded before retrieval. */
+export function taskContextTargets(task: PlannedTask): {
+  readonly paths: readonly string[];
+  readonly symbols: readonly string[];
+} {
+  const hints = extractRepositoryTargetHints(taskContextQuery(task));
+  return {
+    paths: [...new Set([
+      ...(task.relevantFiles ?? []).map(normalize),
+      ...hints.paths.map(normalize),
+    ])],
+    symbols: hints.symbols,
+  };
 }
 
 function normalize(path: string): string {
@@ -40,6 +61,7 @@ function scoreFile(
 ): number {
   const path = normalize(file.path);
   let score = relevant.has(path) ? 100 : 0;
+  if (file.reason.startsWith("Targeted context requested")) score += 80;
   for (const term of terms) {
     if (path.toLocaleLowerCase().includes(term)) score += 10;
   }
@@ -63,9 +85,8 @@ export function selectTaskContext(input: {
   readonly budget?: Partial<ContextBudget>;
 }): TaskContextSelection {
   const budget = { ...DEFAULT_TASK_CONTEXT_BUDGET, ...input.budget };
-  const relevant = new Set(
-    (input.task.relevantFiles ?? []).map((path) => normalize(path)),
-  );
+  const targets = taskContextTargets(input.task);
+  const relevant = new Set(targets.paths);
   const terms = extractSearchTerms(taskContextQuery(input.task));
   const scored = input.plannerContext.files
     .map((file, index) => ({
@@ -81,17 +102,33 @@ export function selectTaskContext(input: {
 
   const files: ContextFile[] = [];
   const matched = new Set<string>();
-  let totalBytes = Buffer.byteLength(
+  const selectedPaths = new Set<string>();
+  const boundedDiff = truncateUtf8(
     input.plannerContext.git.diff.diff,
-    "utf8",
+    Math.max(
+      1,
+      Math.min(CONTEXT_DIFF_MAX_BYTES, Math.floor(budget.maxBytes / 4)),
+    ),
   );
-  let truncated = false;
+  const git = {
+    status: input.plannerContext.git.status,
+    diff: {
+      ...input.plannerContext.git.diff,
+      diff: boundedDiff.value,
+      truncated:
+        input.plannerContext.git.diff.truncated || boundedDiff.truncated,
+    },
+  };
+  let totalBytes = Buffer.byteLength(boundedDiff.value, "utf8");
+  let truncated = git.diff.truncated;
 
   for (const entry of scored) {
     if (files.length >= budget.maxFiles || totalBytes >= budget.maxBytes) {
       truncated = true;
       break;
     }
+    const entryPath = normalize(entry.file.path);
+    if (selectedPaths.has(entryPath)) continue;
     const remaining = budget.maxBytes - totalBytes;
     const bounded = truncateUtf8(
       entry.file.content,
@@ -106,22 +143,35 @@ export function selectTaskContext(input: {
     });
     totalBytes += Buffer.byteLength(bounded.value, "utf8");
     truncated ||= entry.file.truncated || bounded.truncated;
-    const normalized = normalize(entry.file.path);
-    if (relevant.has(normalized)) matched.add(normalized);
+    selectedPaths.add(entryPath);
+    if (relevant.has(entryPath)) matched.add(entryPath);
   }
 
   const context: ContextBundle = {
     workspaceRoot: input.plannerContext.workspaceRoot,
     prompt: taskContextQuery(input.task),
     files,
-    git: input.plannerContext.git,
+    git,
     totalBytes,
-    estimatedTokens: input.plannerContext.estimatedTokens,
+    estimatedTokens: TOKEN_ESTIMATOR.estimate(
+      [taskContextQuery(input.task), boundedDiff.value, ...files.map((file) => file.content)].join("\n"),
+    ),
     truncated,
+    ...(input.plannerContext.targetIssues
+      ? { targetIssues: input.plannerContext.targetIssues }
+      : {}),
   };
+  const selectedText = files
+    .map((file) => `${file.path}\n${file.content}`)
+    .join("\n")
+    .toLocaleLowerCase();
+  const explicitRelevant = new Set((input.task.relevantFiles ?? []).map(normalize));
   return {
     context,
-    matchedRelevantFiles: [...matched],
+    matchedRelevantFiles: [...matched].filter((path) => explicitRelevant.has(path)),
     missingRelevantFiles: [...relevant].filter((path) => !matched.has(path)),
+    missingSymbols: targets.symbols.filter((symbol) =>
+      !selectedText.includes(symbol.toLocaleLowerCase()),
+    ),
   };
 }

@@ -132,12 +132,15 @@ export type {
   ExecutionDecision,
   ExecutionGitEvidence,
   ExecutionResult,
+  ExecutorContextMetrics,
   ExecutorInput,
   ExecutorLimits,
   ExecutorRunInput,
+  ExecutorToolCategory,
   RepairExecutorInput,
   RepairExecutorRunInput,
   TaskExecutionState,
+  TaskExecutionSummary,
   TaskExecutionStatus,
 } from "./executor/executor.types.js";
 export { ContextEngine, extractSearchTerms } from "./context/context-engine.js";
@@ -145,6 +148,7 @@ export {
   DEFAULT_TASK_CONTEXT_BUDGET,
   selectTaskContext,
   taskContextQuery,
+  taskContextTargets,
 } from "./context/task-context-selector.js";
 export type { TaskContextSelection } from "./context/task-context-selector.js";
 export type {
@@ -153,12 +157,14 @@ export type {
   ContextBundle,
   ContextFile,
   ContextFocus,
+  ContextTargetIssue,
   ExpandedContext,
   ExpandContextInput,
 } from "./context/context.types.js";
 export {
   boundPlannerOutputTokens,
   decidePlanningContext,
+  extractRepositoryTargetHints,
   DEFAULT_PLANNER_OUTPUT_TOKENS,
   MAX_PLANNER_OUTPUT_TOKENS,
   MIN_PLANNER_OUTPUT_TOKENS,
@@ -337,6 +343,7 @@ export { NyxaraOrchestrator } from "./orchestrator/orchestrator.js";
 export type {
   ApprovedWorkflowRecoveryInput,
   ModelGenerateInput,
+  NotApplicableValidationResult,
   NyxaraOrchestratorConfig,
   RepairTaskInput,
   RepairTaskResult,

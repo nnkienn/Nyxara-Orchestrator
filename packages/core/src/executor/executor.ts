@@ -17,9 +17,17 @@ import type { EventBus } from "../events/event-bus.js";
 import type { NyxaraEventMap } from "../events/event.types.js";
 import { EXECUTION_DIFF_MAX_BYTES } from "../internal/byte-limits.js";
 import { errorCodeOr } from "../internal/error-code.js";
+import { truncateUtf8 } from "../internal/text.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { ExecutorError } from "./executor-error.js";
 import { ExecutorPromptBuilder } from "./executor-prompt-builder.js";
+import {
+  compactExecutorContext,
+  estimateExecutorRequest,
+  ExecutorSession,
+  taskIsReadOnly,
+  type ResolvedExecutorLimits,
+} from "./executor-session.js";
 import {
   EXECUTOR_TOOL_DEFINITIONS,
   EXECUTOR_TOOL_NAMES,
@@ -28,17 +36,27 @@ import {
   ExecutionDecisionSchema,
   type ExecutionDecision,
   type ExecutionResult,
+  type ExecutorContextMetrics,
   type ExecutorLimits,
   type ExecutorRunInput,
   type ExecutorToolOutcome,
+  type ExecutorToolCategory,
   type RepairExecutorInput,
   type RepairExecutorRunInput,
 } from "./executor.types.js";
 
-const DEFAULT_LIMITS: ExecutorLimits = {
-  maxToolCallsPerTask: 25,
-  maxModelTurnsPerTask: 8,
-  maxToolResultBytes: 64 * 1024,
+const DEFAULT_LIMITS: ResolvedExecutorLimits = {
+  maxToolCallsPerTask: 96,
+  maxReadToolCallsPerTask: 72,
+  maxMutatingToolCallsPerTask: 16,
+  maxValidationToolCallsPerTask: 12,
+  maxProviderCallsPerTask: 16,
+  maxToolResultBytes: 24 * 1024,
+  maxRetainedEvidenceBytes: 64 * 1024,
+  maxExecutorContextBytes: 192 * 1024,
+  maxEstimatedInputTokens: 48 * 1024,
+  maxConsecutiveNoProgressToolCalls: 6,
+  maxNoProgressModelTurns: 3,
 };
 
 export class Executor {
@@ -69,6 +87,7 @@ export class Executor {
           workspaceRoot: runInput.input.workspaceRoot,
           context: runInput.input.context,
           attempt: runInput.input.attempt,
+          ...(runInput.input.engineeringRules ? { engineeringRules: runInput.input.engineeringRules } : {}),
           ...(runInput.input.signal ? { signal: runInput.input.signal } : {}),
           ...(runInput.input.resolvePermission ? { resolvePermission: runInput.input.resolvePermission } : {}),
           ...(runInput.input.checkpoint ? { checkpoint: runInput.input.checkpoint } : {}),
@@ -103,6 +122,8 @@ export class Executor {
     let invalidToolCalls = 0;
     let toolDurationMs = 0;
     const toolCallsByName: Record<string, number> = {};
+    const session = new ExecutorSession(input.context, limits);
+    const readOnly = !repairInput && taskIsReadOnly(input.task);
     try {
       const provider = this.providers.get(model.providerId);
       const selectedModel = this.requireModel(
@@ -140,18 +161,52 @@ export class Executor {
         );
       }
 
-      const prompt = repairInput
-        ? this.promptBuilder.buildRepair(repairInput, EXECUTOR_TOOL_DEFINITIONS)
-        : this.promptBuilder.build(input, EXECUTOR_TOOL_DEFINITIONS);
-      const conversation: ModelConversationMessage[] = [];
-      const callIds = new Set<string>();
+      let executorContext = input.context;
+      let latestExchange: ModelConversationMessage[] | undefined;
+      let latestEvidenceKeys = new Set<string>();
       const unresolvedToolErrors = new Map<string, { tool: string; code: string }>();
 
-      for (let modelTurn = 1; modelTurn <= limits.maxModelTurnsPerTask; modelTurn += 1) {
+      for (let modelTurn = 1; modelTurn <= limits.maxProviderCallsPerTask; modelTurn += 1) {
         await input.checkpoint?.();
         if (input.signal?.aborted) {
           throw new ExecutorError("executor_aborted", "Executor run was aborted");
         }
+        session.assertProviderCallAvailable();
+        let prompt = "";
+        let requestSize = { bytes: 0, tokens: 0 };
+        while (true) {
+          const promptState = {
+            executionState: session.stateSummary(changedPaths.size > 0, readOnly),
+            retainedEvidence: session.evidence(latestEvidenceKeys),
+            readOnly,
+          };
+          prompt = repairInput
+            ? this.promptBuilder.buildRepair(repairInput, EXECUTOR_TOOL_DEFINITIONS, promptState)
+            : this.promptBuilder.build({ ...input, context: executorContext }, EXECUTOR_TOOL_DEFINITIONS, promptState);
+          requestSize = estimateExecutorRequest({
+            model: selectedModel.id,
+            prompt,
+            tools: EXECUTOR_TOOL_DEFINITIONS,
+            ...(latestExchange ? { conversation: compactConversation(latestExchange) } : {}),
+            ...(model.executionOptions ? { executionOptions: model.executionOptions } : {}),
+            responseFormat: selectedModel.capabilities?.structuredOutput || provider.capabilities().structuredOutput ? "json" : undefined,
+          });
+          if (
+            requestSize.bytes <= limits.maxExecutorContextBytes &&
+            requestSize.tokens <= limits.maxEstimatedInputTokens
+          ) break;
+          if (session.dropOldestEvidence()) continue;
+          const nextBytes = Math.max(4 * 1024, executorContext.totalBytes - Math.max(8 * 1024, requestSize.bytes - limits.maxExecutorContextBytes));
+          const compacted = compactExecutorContext(executorContext, nextBytes);
+          if (compacted.totalBytes >= executorContext.totalBytes) {
+            throw new ExecutorError(
+              "executor_context_limit_exceeded",
+              "Executor request cannot fit the safe input budget after compacting optional evidence",
+            );
+          }
+          executorContext = compacted;
+        }
+        session.recordProviderRequest(requestSize.bytes, requestSize.tokens);
         const providerStarted = performance.now();
         const streaming = provider.capabilities().progressStreaming === true;
         phase = "generation";
@@ -161,7 +216,7 @@ export class Executor {
           tools: EXECUTOR_TOOL_DEFINITIONS,
           ...(input.signal ? { signal: input.signal } : {}),
           ...(model.executionOptions ? { executionOptions: model.executionOptions } : {}),
-          ...(conversation.length > 0 ? { conversation } : {}),
+          ...(latestExchange ? { conversation: compactConversation(latestExchange) } : {}),
           ...(streaming && runInput.workflowId ? { onProgress: (event) => this.events.emit("provider.generation.progress", {
             providerId: provider.providerId ?? provider.id,
             providerConfigId: model.providerId,
@@ -193,11 +248,15 @@ export class Executor {
           textLength: response.text.length,
           toolCallCount: response.toolCalls?.length ?? 0,
           executionProfileSummary: executionProfileSummary(model.executionOptions),
-          contextFiles: input.context.files.length,
-          contextBytes: input.context.totalBytes,
-          contextTruncated: input.context.truncated,
+          contextFiles: session.metrics().executorContextFiles,
+          contextBytes: requestSize.bytes,
+          contextTruncated: executorContext.truncated || session.metrics().droppedEvidenceCount > 0,
+          estimatedInputTokens: requestSize.tokens,
+          droppedEvidenceCount: session.metrics().droppedEvidenceCount,
+          duplicateEvidenceRemoved: session.metrics().duplicateEvidenceRemoved,
           ...(response.usage ? { usage: response.usage } : {}),
         });
+        session.recordProviderUsage(response.usage?.inputTokens);
         const requestedCalls = response.toolCalls ?? [];
 
         if (requestedCalls.length === 0) {
@@ -229,6 +288,14 @@ export class Executor {
             failedToolCalls,
             invalidToolCalls,
             toolCallsByName,
+            toolCallsByCategory: session.counts(),
+            contextMetrics: session.metrics(),
+            readOnly,
+            allowNoChange: Boolean(
+              (!repairInput && input.task.executionMode !== "implementation") ||
+              repairInput?.evidence.currentChangedFiles.length ||
+              (input.attempt > 1 && hasRelevantInitialChanges(input.task.relevantFiles, initialDiff.files)),
+            ),
           });
           if (result.status === "completed") {
             this.events.emit("executor.completed", {
@@ -240,6 +307,8 @@ export class Executor {
               ...(result.toolDurationMs !== undefined ? { toolDurationMs: result.toolDurationMs } : {}),
               modelTurns: result.modelTurns,
               ...(runInput.workflowId ? { workflowId: runInput.workflowId, successfulToolCalls: result.successfulToolCalls, failedToolCalls: result.failedToolCalls, invalidToolCalls: result.invalidToolCalls, toolCallsByName: result.toolCallsByName } : {}),
+              toolCallsByCategory: session.counts(),
+              contextMetrics: session.metrics(),
             });
           } else {
             this.events.emit("executor.failed", {
@@ -250,43 +319,55 @@ export class Executor {
               toolCalls: result.toolCalls,
               ...(result.toolDurationMs !== undefined ? { toolDurationMs: result.toolDurationMs } : {}),
               ...(runInput.workflowId ? { workflowId: runInput.workflowId, successfulToolCalls: result.successfulToolCalls, failedToolCalls: result.failedToolCalls, invalidToolCalls: result.invalidToolCalls, toolCallsByName: result.toolCallsByName } : {}),
+              toolCallsByCategory: session.counts(),
+              contextMetrics: session.metrics(),
             });
           }
           return result;
         }
 
-        if (toolCallCount + requestedCalls.length > limits.maxToolCallsPerTask) {
+        if (modelTurn === limits.maxProviderCallsPerTask) {
           throw new ExecutorError(
-            "tool_call_limit_exceeded",
-            "Executor exceeded the tool-call limit for this task",
-          );
-        }
-        if (modelTurn === limits.maxModelTurnsPerTask) {
-          throw new ExecutorError(
-            "model_turn_limit_exceeded",
-            "Executor cannot perform another tool round within the model-turn limit",
+            runInput.limits?.maxModelTurnsPerTask !== undefined
+              ? "model_turn_limit_exceeded"
+              : "provider_call_limit_exceeded",
+            "Executor cannot perform another tool round within the provider-call safety ceiling",
           );
         }
         phase = "tools";
+        const roundCallIds = new Set<string>();
         for (const call of requestedCalls) {
-          if (callIds.has(call.id)) {
+          if (roundCallIds.has(call.id)) {
             throw new ExecutorError(
               "executor_error",
               `Executor returned a duplicate tool-call ID: ${call.id}`,
             );
           }
-          callIds.add(call.id);
+          roundCallIds.add(call.id);
         }
 
-        conversation.push({
+        const preparedCalls = session.prepareBatch(requestedCalls);
+        if (readOnly && preparedCalls.some((item) => ["apply_patch", "write_file"].includes(item.call.name))) {
+          throw new ExecutorError("executor_error", "Read-only Executor task requested a mutating tool");
+        }
+        const roundConversation: ModelConversationMessage[] = [{
           role: "assistant",
-          ...(response.text ? { content: response.text } : {}),
-          toolCalls: requestedCalls,
-        });
-        for (const call of requestedCalls) {
+          ...(response.text ? { content: boundAssistantText(response.text) } : {}),
+          toolCalls: preparedCalls.map((item) => compactHistoricalToolCall(item.call)),
+        }];
+        let roundProgress = false;
+        const roundEvidenceKeys = new Set<string>();
+        for (const prepared of preparedCalls) {
+          const call = prepared.call;
+          session.acceptRequest(prepared);
           toolCallCount += 1;
           toolCallsByName[call.name] = (toolCallsByName[call.name] ?? 0) + 1;
           if (!EXECUTOR_TOOL_NAMES.has(call.name) || !isRecord(call.arguments)) invalidToolCalls += 1;
+          if (prepared.duplicateResult) {
+            session.recordDuplicate();
+            roundConversation.push({ role: "tool", toolResult: prepared.duplicateResult });
+            continue;
+          }
           const toolStarted = performance.now();
           const outcome = await this.executeToolCall(
             call,
@@ -304,13 +385,19 @@ export class Executor {
             unresolvedToolErrors.delete(errorKey);
           }
           outcome.changedPaths.forEach((path) => changedPaths.add(path));
-          conversation.push({ role: "tool", toolResult: outcome.result });
+          const progress = session.recordOutcome(prepared, outcome.result, outcome.changedPaths);
+          roundProgress ||= progress.progress;
+          if (progress.evidenceKey) roundEvidenceKeys.add(progress.evidenceKey);
+          roundConversation.push({ role: "tool", toolResult: outcome.result });
         }
+        latestExchange = roundConversation;
+        latestEvidenceKeys = roundEvidenceKeys;
+        session.finishToolRound(roundProgress);
       }
 
       throw new ExecutorError(
-        "model_turn_limit_exceeded",
-        "Executor exceeded the model-turn limit for this task",
+        "provider_call_limit_exceeded",
+        "Executor reached the provider-call safety ceiling for this task",
       );
     } catch (error: unknown) {
       const statusCode = typeof error === "object" && error !== null && "statusCode" in error ? error.statusCode : undefined;
@@ -327,6 +414,8 @@ export class Executor {
         failedToolCalls,
         invalidToolCalls,
         toolCallsByName: { ...toolCallsByName },
+        toolCallsByCategory: session.counts(),
+        contextMetrics: session.metrics(),
         changedFiles: [...changedPaths],
         ...(typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? { statusCode } : {}),
       });
@@ -391,13 +480,15 @@ export class Executor {
       if (context.signal?.aborted) throw new ExecutorError("executor_aborted", "Executor run was aborted");
       const commandExitCode = isRecord(output) && typeof output.exitCode === "number" ? output.exitCode : null;
       const commandFailed = call.name === "run_command" && commandExitCode !== 0;
-      const boundedOutput = boundToolResult(output, maxResultBytes);
+      // Reserve space for the tool response envelope so the complete message
+      // returned to the provider remains within the configured result bound.
+      const boundedOutput = boundToolResult(output, maxResultBytes - 512);
       return {
         result: {
           callId: call.id,
           name: call.name,
           result: boundedOutput,
-          ...(commandFailed ? { error: { code: "command_failed", message: `Command exited unsuccessfully (exit code ${commandExitCode ?? "unavailable"}). Bounded output: ${JSON.stringify(boundedOutput)}` } } : {}),
+          ...(commandFailed ? { error: { code: "command_failed", message: `Command exited unsuccessfully (exit code ${commandExitCode ?? "unavailable"}); inspect the bounded command result attached to this tool response` } } : {}),
         },
         changedPaths: [...changedPaths, ...extractChangedPaths(output)],
       };
@@ -475,6 +566,10 @@ export class Executor {
     readonly failedToolCalls: number;
     readonly invalidToolCalls: number;
     readonly toolCallsByName: Readonly<Record<string, number>>;
+    readonly toolCallsByCategory: Readonly<Record<ExecutorToolCategory, number>>;
+    readonly contextMetrics: ExecutorContextMetrics;
+    readonly readOnly: boolean;
+    readonly allowNoChange: boolean;
   }): Promise<ExecutionResult> {
     const [finalStatus, diff] = await Promise.all([
       this.tools.execute<Record<string, never>, GitStatusResult>(
@@ -512,10 +607,30 @@ export class Executor {
       );
     }
 
+    let decision = input.decision;
+    if (decision.status === "completed" && input.readOnly && changedFiles.length > 0) {
+      decision = {
+        status: "failed",
+        summary: "Read-only Executor task modified repository files",
+        unresolvedIssues: ["A read-only task must not modify repository state"],
+      };
+    } else if (
+      decision.status === "completed" &&
+      !input.readOnly &&
+      changedFiles.length === 0 &&
+      !input.allowNoChange
+    ) {
+      decision = {
+        status: "failed",
+        summary: "Executor failed before producing the required implementation",
+        unresolvedIssues: ["Implementation task completed with zero files changed"],
+      };
+    }
+
     return {
       taskId: input.taskId,
-      status: input.decision.status,
-      summary: input.decision.summary,
+      status: decision.status,
+      summary: decision.summary,
       changedFiles,
       toolCalls: input.toolCallCount,
       toolDurationMs: input.toolDurationMs,
@@ -523,9 +638,11 @@ export class Executor {
       failedToolCalls: input.failedToolCalls,
       invalidToolCalls: input.invalidToolCalls,
       toolCallsByName: { ...input.toolCallsByName },
+      toolCallsByCategory: input.toolCallsByCategory,
+      contextMetrics: input.contextMetrics,
       modelTurns: input.modelTurns,
-      ...(input.decision.unresolvedIssues
-        ? { unresolvedIssues: input.decision.unresolvedIssues }
+      ...(decision.unresolvedIssues
+        ? { unresolvedIssues: decision.unresolvedIssues }
         : {}),
       diff: { files: diff.files, truncated: diff.truncated },
       git: {
@@ -538,19 +655,102 @@ export class Executor {
   }
 }
 
-function resolveLimits(input: Partial<ExecutorLimits> | undefined): ExecutorLimits {
-  const limits = { ...DEFAULT_LIMITS, ...input };
-  if (
-    !Number.isInteger(limits.maxToolCallsPerTask) ||
-    limits.maxToolCallsPerTask <= 0 ||
-    !Number.isInteger(limits.maxModelTurnsPerTask) ||
-    limits.maxModelTurnsPerTask <= 0 ||
-    !Number.isInteger(limits.maxToolResultBytes) ||
-    limits.maxToolResultBytes <= 0
-  ) {
+function resolveLimits(input: Partial<ExecutorLimits> | undefined): ResolvedExecutorLimits {
+  const providerCalls = input?.maxProviderCallsPerTask ?? input?.maxModelTurnsPerTask ?? DEFAULT_LIMITS.maxProviderCallsPerTask;
+  const limits: ResolvedExecutorLimits = {
+    maxToolCallsPerTask: input?.maxToolCallsPerTask ?? DEFAULT_LIMITS.maxToolCallsPerTask,
+    maxReadToolCallsPerTask: input?.maxReadToolCallsPerTask ?? DEFAULT_LIMITS.maxReadToolCallsPerTask,
+    maxMutatingToolCallsPerTask: input?.maxMutatingToolCallsPerTask ?? DEFAULT_LIMITS.maxMutatingToolCallsPerTask,
+    maxValidationToolCallsPerTask: input?.maxValidationToolCallsPerTask ?? DEFAULT_LIMITS.maxValidationToolCallsPerTask,
+    maxProviderCallsPerTask: providerCalls,
+    maxToolResultBytes: input?.maxToolResultBytes ?? DEFAULT_LIMITS.maxToolResultBytes,
+    maxRetainedEvidenceBytes: input?.maxRetainedEvidenceBytes ?? DEFAULT_LIMITS.maxRetainedEvidenceBytes,
+    maxExecutorContextBytes: input?.maxExecutorContextBytes ?? DEFAULT_LIMITS.maxExecutorContextBytes,
+    maxEstimatedInputTokens: input?.maxEstimatedInputTokens ?? DEFAULT_LIMITS.maxEstimatedInputTokens,
+    maxConsecutiveNoProgressToolCalls: input?.maxConsecutiveNoProgressToolCalls ?? DEFAULT_LIMITS.maxConsecutiveNoProgressToolCalls,
+    maxNoProgressModelTurns: input?.maxNoProgressModelTurns ?? DEFAULT_LIMITS.maxNoProgressModelTurns,
+  };
+  if (Object.values(limits).some((value) => !Number.isInteger(value) || value <= 0)) {
     throw new ExecutorError("executor_error", "Executor limits are invalid");
   }
+  if (
+    limits.maxToolResultBytes < 1024 ||
+    limits.maxRetainedEvidenceBytes < 1024 ||
+    limits.maxExecutorContextBytes < 16 * 1024 ||
+    limits.maxEstimatedInputTokens < 4096
+  ) {
+    throw new ExecutorError("executor_error", "Executor byte and token limits are below safe bounded minima");
+  }
+  if (
+    limits.maxToolCallsPerTask > 512 ||
+    limits.maxReadToolCallsPerTask > 512 ||
+    limits.maxMutatingToolCallsPerTask > 512 ||
+    limits.maxValidationToolCallsPerTask > 512 ||
+    limits.maxProviderCallsPerTask > 64 ||
+    limits.maxToolResultBytes > 64 * 1024 ||
+    limits.maxRetainedEvidenceBytes > 256 * 1024 ||
+    limits.maxExecutorContextBytes > 512 * 1024 ||
+    limits.maxEstimatedInputTokens > 128 * 1024 ||
+    limits.maxConsecutiveNoProgressToolCalls > 64 ||
+    limits.maxNoProgressModelTurns > 64
+  ) {
+    throw new ExecutorError("executor_error", "Executor limits exceed provider-neutral safety maxima");
+  }
   return limits;
+}
+
+function compactConversation(
+  conversation: readonly ModelConversationMessage[],
+): readonly ModelConversationMessage[] {
+  return conversation.map((message) => {
+    if (message.role === "tool") return message;
+    return {
+      role: "assistant" as const,
+      ...(message.content ? { content: boundAssistantText(message.content) } : {}),
+      ...(message.toolCalls
+        ? { toolCalls: message.toolCalls.map(compactHistoricalToolCall) }
+        : {}),
+    };
+  });
+}
+
+function compactHistoricalToolCall(call: ModelToolCall): ModelToolCall {
+  if (!isRecord(call.arguments)) return call;
+  if (call.name === "write_file" && typeof call.arguments.content === "string") {
+    return {
+      ...call,
+      arguments: {
+        ...call.arguments,
+        content: `<compacted ${Buffer.byteLength(call.arguments.content, "utf8")} byte write>`,
+      },
+    };
+  }
+  if (call.name === "apply_patch" && typeof call.arguments.patch === "string") {
+    return {
+      ...call,
+      arguments: {
+        patch: `<compacted ${Buffer.byteLength(call.arguments.patch, "utf8")} byte patch>`,
+      },
+    };
+  }
+  return call;
+}
+
+function boundAssistantText(text: string): string {
+  const bytes = Buffer.from(text, "utf8");
+  return bytes.byteLength <= 2_048
+    ? text
+    : `${bytes.subarray(0, 2_048).toString("utf8")}\n[assistant text truncated]`;
+}
+
+function hasRelevantInitialChanges(
+  relevantFiles: readonly string[] | undefined,
+  changedFiles: readonly string[],
+): boolean {
+  if (changedFiles.length === 0) return false;
+  if (!relevantFiles?.length) return true;
+  const changed = new Set(changedFiles.map((path) => path.replaceAll("\\", "/").replace(/^\.\//, "")));
+  return relevantFiles.some((path) => changed.has(path.replaceAll("\\", "/").replace(/^\.\//, "")));
 }
 
 function toolContext(workspaceRoot: string, signal?: AbortSignal, resolvePermission?: (request: import("@nyxara/tools").PermissionRequest) => Promise<"allow" | "deny">): ToolContext {
@@ -564,10 +764,76 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function boundToolResult(value: unknown, maxBytes: number): unknown {
   const serialized = JSON.stringify(value);
   if (Buffer.byteLength(serialized, "utf8") <= maxBytes) return value;
+  if (isRecord(value) && typeof value.path === "string" && typeof value.content === "string") {
+    const metadata = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "content"));
+    return fitStringFields(
+      { ...metadata, content: value.content, truncated: true },
+      ["content"],
+      maxBytes,
+      false,
+    );
+  }
+  if (isRecord(value) && (typeof value.stdout === "string" || typeof value.stderr === "string")) {
+    const metadata = Object.fromEntries(
+      Object.entries(value).filter(([key]) => key !== "stdout" && key !== "stderr"),
+    );
+    return fitStringFields({
+      ...metadata,
+      stdout: typeof value.stdout === "string" ? value.stdout : "",
+      stderr: typeof value.stderr === "string" ? value.stderr : "",
+      truncated: true,
+    }, ["stderr", "stdout"], maxBytes, true);
+  }
+  if (isRecord(value)) {
+    const arrayKey = Array.isArray(value.matches)
+      ? "matches"
+      : Array.isArray(value.entries)
+        ? "entries"
+        : undefined;
+    if (arrayKey) {
+      const metadata = Object.fromEntries(Object.entries(value).filter(([key]) => key !== arrayKey));
+      const items: unknown[] = [];
+      for (const item of value[arrayKey] as unknown[]) {
+        const candidate = { ...metadata, [arrayKey]: [...items, item], truncated: true };
+        if (Buffer.byteLength(JSON.stringify(candidate), "utf8") > maxBytes) break;
+        items.push(item);
+      }
+      return { ...metadata, [arrayKey]: items, truncated: true };
+    }
+  }
   return {
     truncated: true,
-    preview: Buffer.from(serialized, "utf8").subarray(0, maxBytes).toString("utf8"),
+    originalBytes: Buffer.byteLength(serialized, "utf8"),
+    summary: "Tool output exceeded the Executor evidence bound and was omitted",
   };
+}
+
+function fitStringFields(
+  input: Record<string, unknown>,
+  fields: readonly string[],
+  maxBytes: number,
+  keepTail: boolean,
+): Record<string, unknown> {
+  const output = { ...input };
+  for (const field of fields) {
+    if (typeof output[field] !== "string") continue;
+    while (Buffer.byteLength(JSON.stringify(output), "utf8") > maxBytes && output[field]) {
+      const value = output[field] as string;
+      const target = Math.max(0, Math.floor(Buffer.byteLength(value, "utf8") * 0.7));
+      output[field] = keepTail
+        ? tailUtf8(value, target)
+        : truncateUtf8(value, target).value;
+    }
+  }
+  if (Buffer.byteLength(JSON.stringify(output), "utf8") <= maxBytes) return output;
+  return { truncated: true, summary: "Tool output metadata exceeded the Executor evidence bound" };
+}
+
+function tailUtf8(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.byteLength <= maxBytes) return value;
+  return `[earlier output truncated]\n${buffer.subarray(buffer.byteLength - maxBytes).toString("utf8")}`;
 }
 
 function extractChangedPaths(value: unknown): string[] {

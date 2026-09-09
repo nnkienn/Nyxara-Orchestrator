@@ -227,6 +227,21 @@ function extractSymbols(prompt: string): readonly string[] {
   return unique;
 }
 
+/**
+ * Extracts bounded repository anchors from task text without retrieving any
+ * repository data. Planner and Executor use the same parser so a path or
+ * symbol written into an approved task remains actionable after handoff.
+ */
+export function extractRepositoryTargetHints(text: string): {
+  readonly paths: readonly string[];
+  readonly symbols: readonly string[];
+} {
+  return Object.freeze({
+    paths: Object.freeze([...extractPaths(text)]),
+    symbols: Object.freeze([...extractSymbols(text)]),
+  });
+}
+
 function anchors(signals: PlanningRequestSignals | undefined): readonly string[] {
   const values = [
     ...(signals?.attachedPaths ?? []),
@@ -251,8 +266,9 @@ export function decidePlanningContext(input: {
   const prompt = input.prompt.trim();
   const phrase = normalizedPhrase(prompt);
   const promptWords = words(prompt);
-  const promptPaths = extractPaths(prompt);
-  const promptSymbols = extractSymbols(prompt);
+  const targets = extractRepositoryTargetHints(prompt);
+  const promptPaths = targets.paths;
+  const promptSymbols = targets.symbols;
   const signalAnchors = anchors(input.signals);
   const hasSelection = Boolean(
     input.signals?.selection &&

@@ -904,7 +904,16 @@
       const standardValidationFailure = stageOccurred(stages, "validation") && state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) && message.toLocaleLowerCase() === "validation failed.";
       if (!standardValidationFailure) value.append(node("p", outcome === "failed" ? "failed" : "muted", message));
     }
-    if (outcome !== "aborted" && state.completion.changedFiles != null && stageOccurred(stages, "execution")) lines.push(`${formatNumber(state.completion.changedFiles)} files changed`);
+    const failedBeforeChanges = outcome === "failed"
+      && state.completion.changedFiles === 0
+      && stageOccurred(stages, "execution")
+      && !stageOccurred(stages, "validation");
+    if (failedBeforeChanges) {
+      lines.push("Execution failed before changes");
+      lines.push("Validation not applicable — no changes to validate");
+    } else if (outcome !== "aborted" && state.completion.changedFiles != null && stageOccurred(stages, "execution")) {
+      lines.push(`${formatNumber(state.completion.changedFiles)} files changed`);
+    }
     if (outcome !== "aborted" && stageOccurred(stages, "validation") && state.validation.length) {
       lines.push(state.validation.some((step) => ["failed", "timed_out", "errored"].includes(step.status)) ? "Validation failed" : "Validation passed");
       const failedTests = state.validation.filter((step) => /tests?/i.test(step.kind) && ["failed", "timed_out", "errored"].includes(step.status));

@@ -291,6 +291,7 @@ function summarize(result: ExecutionResult): TaskExecutionSummary {
     diffTruncated: result.diff.truncated,
     toolCalls: result.toolCalls,
     modelTurns: result.modelTurns,
+    ...(result.contextMetrics ? { contextMetrics: result.contextMetrics } : {}),
     ...(result.unresolvedIssues
       ? { unresolvedIssues: [...result.unresolvedIssues] }
       : {}),

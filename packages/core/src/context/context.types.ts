@@ -14,6 +14,13 @@ export interface ContextFile {
   readonly truncated: boolean;
 }
 
+export interface ContextTargetIssue {
+  readonly kind: "path" | "symbol";
+  readonly target: string;
+  readonly code: "file_not_found" | "symbol_not_found";
+  readonly message: string;
+}
+
 export interface ContextBundle {
   readonly workspaceRoot: string;
   readonly prompt: string;
@@ -25,6 +32,8 @@ export interface ContextBundle {
   readonly totalBytes: number;
   readonly estimatedTokens: number;
   readonly truncated: boolean;
+  /** Precise results for bounded target lookups that found no readable file. */
+  readonly targetIssues?: readonly ContextTargetIssue[];
 }
 
 /**
@@ -63,4 +72,5 @@ export interface ExpandedContext {
   readonly files: readonly ContextFile[];
   readonly totalBytes: number;
   readonly truncated: boolean;
+  readonly targetIssues: readonly ContextTargetIssue[];
 }

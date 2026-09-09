@@ -21,6 +21,7 @@ export const PlannedTaskSchema = z.object({
   id: z.string().trim().min(1),
   title: z.string().trim().min(1),
   description: z.string().trim().min(1),
+  executionMode: z.enum(["implementation", "read_only"]).optional(),
   dependencies: z.array(z.string().trim().min(1)),
   acceptanceCriteria: z.array(z.string().trim().min(1)).min(1),
   relevantFiles: z.array(z.string().trim().min(1)).optional(),
