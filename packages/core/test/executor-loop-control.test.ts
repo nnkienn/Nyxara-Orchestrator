@@ -263,6 +263,44 @@ describe("Executor bounded progress loop", () => {
     expect(executed.result).toMatchObject({ status: "completed", toolCalls: 8 });
   });
 
+  it("does not stall legitimate multi-step exploration across ranges and search scopes", async () => {
+    let turn = 0;
+    const core = orchestrator(async () => {
+      switch (turn++) {
+        case 0:
+          return response({ toolCalls: [{ id: "range-1", name: "read_file", arguments: { path: "src/evidence-20.ts", startLine: 1, endLine: 10 } }] });
+        case 1:
+          return response({ toolCalls: [{ id: "range-2", name: "read_file", arguments: { path: "src/evidence-20.ts", startLine: 11, endLine: 20 } }] });
+        case 2:
+          return response({ toolCalls: [{ id: "search-narrow", name: "search_code", arguments: { query: "evidence-20", maxResults: 1 } }] });
+        case 3:
+          return response({ toolCalls: [{ id: "search-wide", name: "search_code", arguments: { query: "evidence-20", maxResults: 2 } }] });
+        case 4:
+          return response({ toolCalls: [{ id: "dependency-file", name: "search_files", arguments: { query: "evidence-20", maxResults: 10 } }] });
+        case 5:
+          return response({ toolCalls: [{ id: "write", name: "write_file", arguments: { path: "src/explored.ts", content: "export const explored = true;\n" } }] });
+        default:
+          return response({ text: JSON.stringify({ status: "completed", summary: "Completed bounded multi-step exploration" }) });
+      }
+    });
+
+    const executed = await core.executeTask({
+      plan: plan({ executionMode: "implementation" }),
+      taskId: "T1",
+      workspaceRoot: workspace,
+      plannerContext: await emptyContext(core, workspace),
+      limits: { maxConsecutiveNoProgressToolCalls: 1, maxNoProgressModelTurns: 1 },
+    });
+
+    expect(executed.result).toMatchObject({
+      status: "completed",
+      toolCalls: 6,
+      executedToolCalls: 6,
+      invalidToolCalls: 0,
+      changedFiles: ["src/explored.ts"],
+    });
+  });
+
   it("rejects oversized read arguments before execution and retains only the bounded error exchange", async () => {
     await writeFile(join(workspace, "src", "huge.ts"), "x".repeat(100_000));
     const requests: GenerateRequest[] = [];

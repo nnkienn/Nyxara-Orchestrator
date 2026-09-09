@@ -89,7 +89,6 @@ export class ExecutorSession {
     for (const file of context.files) {
       const path = normalizePath(file.path);
       this.contextPaths.add(path);
-      this.evidenceIds.add(`file:${path}:${digest(file.content)}`);
     }
     this.setCurrentContext(context);
   }
@@ -412,40 +411,101 @@ function progressEvidenceIds(
   revision: number,
 ): string[] {
   if (prepared.category === "mutation") {
-    return changedPaths.map((path) => `changed:${normalizePath(path)}:r${revision}`);
+    const changed = changedPaths.map((path) => `changed:${normalizePath(path)}:r${revision}`);
+    if (changed.length > 0) return [...changed, evidenceObservationId(prepared, result)];
+    if (result.error && prepared.call.name !== "run_command") return [];
+    return [evidenceObservationId(prepared, result)];
   }
   if (prepared.category === "validation") {
-    return [`validation:${prepared.fingerprint}:${digest(stableStringify(result))}`];
+    return [evidenceObservationId(prepared, result)];
   }
   if (result.error || !isRecord(result.result)) return [];
-  const value = result.result;
-  if (prepared.call.name === "search_code" && Array.isArray(value.matches)) {
-    return value.matches.flatMap((match) => isRecord(match) && typeof match.path === "string" && typeof match.line === "number"
-      ? [`match:${normalizePath(match.path)}:${match.line}:${digest(stableStringify(match))}`]
-      : []);
-  }
-  if (prepared.call.name === "search_files" && Array.isArray(value.matches)) {
-    return value.matches.filter((path): path is string => typeof path === "string").map((path) => `path:${normalizePath(path)}`);
-  }
-  if (prepared.call.name === "read_file" && typeof value.path === "string" && typeof value.content === "string" && value.content.length > 0) {
-    return [`file:${normalizePath(value.path)}:${digest(value.content)}`];
-  }
-  if (prepared.call.name === "list_directory" && Array.isArray(value.entries)) {
-    return value.entries.flatMap((entry) => isRecord(entry) && typeof entry.path === "string" ? [`path:${normalizePath(entry.path)}`] : []);
-  }
-  if (prepared.call.name === "git_diff" || prepared.call.name === "git_status") {
-    return [`git:${prepared.call.name}:${digest(stableStringify(value))}`];
-  }
-  return [];
+  return [evidenceObservationId(prepared, result)];
 }
 
 function evidenceReplacementKey(prepared: PreparedExecutorToolCall): string {
-  if (!isRecord(prepared.call.arguments)) return prepared.call.name;
-  const args = prepared.call.arguments;
-  if (prepared.call.name === "read_file") return `read:${String(args.path ?? "")}:${String(args.startLine ?? 1)}:${String(args.endLine ?? "end")}`;
-  if (prepared.call.name === "search_code" || prepared.call.name === "search_files") return `${prepared.call.name}:${String(args.query ?? "")}`;
-  if (prepared.call.name === "git_diff" || prepared.call.name === "git_status") return prepared.call.name;
-  return prepared.fingerprint;
+  return `evidence:${prepared.call.name}:${digest(stableStringify(evidenceScope(prepared.call)))}`;
+}
+
+/**
+ * Progress is a new observation, not merely a successful call or a globally
+ * new path. The scope preserves the relationship between a query/range and its
+ * result; the result digest detects changed content while ignoring volatile
+ * command duration.
+ */
+function evidenceObservationId(
+  prepared: PreparedExecutorToolCall,
+  result: ModelToolResult,
+): string {
+  return [
+    "observation",
+    prepared.call.name,
+    digest(stableStringify(evidenceScope(prepared.call))),
+    digest(stableStringify(stableEvidenceResult(prepared.call.name, result))),
+  ].join(":");
+}
+
+function evidenceScope(call: ModelToolCall): Record<string, unknown> {
+  if (!isRecord(call.arguments)) return {};
+  const args = call.arguments;
+  switch (call.name) {
+    case "read_file":
+      return {
+        path: normalizePath(String(args.path ?? "")),
+        startLine: args.startLine ?? 1,
+        endLine: args.endLine ?? "end",
+        maxBytes: args.maxBytes,
+      };
+    case "search_code":
+      return {
+        query: String(args.query ?? "").trim().toLocaleLowerCase(),
+        maxResults: args.maxResults,
+        maxFileBytes: args.maxFileBytes,
+      };
+    case "search_files":
+      return {
+        query: String(args.query ?? "").trim().toLocaleLowerCase(),
+        maxResults: args.maxResults,
+      };
+    case "list_directory":
+      return {
+        path: normalizePath(String(args.path ?? ".")),
+        depth: args.depth ?? 1,
+      };
+    case "git_diff":
+      return {
+        path: args.path === undefined ? "workspace" : normalizePath(String(args.path)),
+        maxBytes: args.maxBytes,
+      };
+    case "git_status":
+      return {};
+    case "run_command":
+      return {
+        command: args.command,
+        args: args.args ?? [],
+      };
+    default:
+      return args;
+  }
+}
+
+function stableEvidenceResult(toolName: string, result: ModelToolResult): Record<string, unknown> {
+  let value = isRecord(result.result)
+    ? Object.fromEntries(Object.entries(result.result).filter(([key]) => key !== "durationMs"))
+    : result.result;
+  if (isRecord(value) && ["search_code", "search_files"].includes(toolName) && Array.isArray(value.matches)) {
+    value = { ...value, matches: canonicalEvidenceItems(value.matches) };
+  } else if (isRecord(value) && toolName === "list_directory" && Array.isArray(value.entries)) {
+    value = { ...value, entries: canonicalEvidenceItems(value.entries) };
+  }
+  return {
+    ...(value !== undefined ? { result: value } : {}),
+    ...(result.error ? { error: result.error } : {}),
+  };
+}
+
+function canonicalEvidenceItems(items: readonly unknown[]): readonly unknown[] {
+  return [...items].sort((left, right) => stableStringify(left).localeCompare(stableStringify(right)));
 }
 
 function evidenceText(prepared: PreparedExecutorToolCall, result: ModelToolResult): string {
