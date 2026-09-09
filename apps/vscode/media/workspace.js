@@ -6,7 +6,8 @@
   const timeline = el("timeline");
   const input = el("requirement");
   const submit = el("submit");
-  const model = el("model");
+  const PROMPT_PREVIEW_CHARACTERS = 480;
+  const PROMPT_PREVIEW_LINES = 6;
   let state;
   let sending = false;
   let submittedTask;
@@ -75,6 +76,7 @@
   const isTerminal = () => !!state.completion;
   const afterApproval = () => !!state.workflow && !["created", "planning", "awaiting_plan_approval"].includes(state.workflow.status);
   const liveDisclosureKey = (name) => `${name}:${state.workflow && state.workflow.id || state.plan && state.plan.id || "task"}`;
+  const disclosureKeyFor = (name, viewState) => `${name}:${viewState.workflow && viewState.workflow.id || viewState.plan && viewState.plan.id || "task"}`;
   const historyState = () => state.history || { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "all" };
   const terminalHistoryStatus = (status) => ["completed", "failed", "aborted", "rejected", "interrupted"].includes(status);
   const hasPerformance = (projection) => {
@@ -152,10 +154,40 @@
     summary.addEventListener("click", () => {
       const next = !(disclosures.has(key) ? disclosures.get(key) : !!defaultExpanded);
       disclosures.set(key, next);
+      summary.setAttribute("aria-expanded", String(next));
       vscode.postMessage({ type: "toggleDisclosure", key, expanded: next });
     });
     value.append(summary);
     return value;
+  }
+
+  function promptIsLong(text) {
+    return text.length > PROMPT_PREVIEW_CHARACTERS || text.split(/\r?\n/).length > PROMPT_PREVIEW_LINES;
+  }
+
+  function promptPreview(text) {
+    const lineBounded = text.split(/\r?\n/).slice(0, PROMPT_PREVIEW_LINES).join("\n");
+    if (lineBounded.length <= PROMPT_PREVIEW_CHARACTERS && lineBounded.length === text.length) return text;
+    const characterBounded = lineBounded.slice(0, PROMPT_PREVIEW_CHARACTERS).trimEnd();
+    const wordBoundary = characterBounded.lastIndexOf(" ");
+    const preview = wordBoundary > PROMPT_PREVIEW_CHARACTERS * 0.7 ? characterBounded.slice(0, wordBoundary) : characterBounded;
+    return `${preview}\n…`;
+  }
+
+  /** Prompt collapse is local presentation state; full requirement data stays unchanged. */
+  function appendCompactPrompt(host, text, key) {
+    const long = promptIsLong(text);
+    const expanded = long && disclosures.get(key) === true;
+    host.append(node("div", `requirement-text${long && !expanded ? " requirement-preview" : ""}`, expanded || !long ? text : promptPreview(text)));
+    if (!long) return;
+    const toggle = node("button", "link-button prompt-toggle", expanded ? "Hide prompt" : "Show full prompt");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.addEventListener("click", () => {
+      disclosures.set(key, !expanded);
+      if (state) render();
+    });
+    host.append(toggle);
   }
 
   function renderTaskHeader(host, title, outcome) {
@@ -629,8 +661,9 @@
       task.providerSummary ? `${task.providerSummary.provider}${task.providerSummary.model ? ` · ${task.providerSummary.model}` : ""}` : null,
     ]);
     timeline.append(summaryCard);
-    const requirement = disclosure(`history-requirement:${task.id}`, "Requirement", "", false);
-    requirement.append(node("div", "", task.requirement));
+    const requirement = node("section", "requirement-block history-requirement");
+    requirement.append(node("div", "eyebrow", "Requirement"));
+    appendCompactPrompt(requirement, task.requirement, `history-requirement:${task.id}`);
     timeline.append(requirement);
     renderHistoricalPlanSummary(task);
     const stages = task.occurredStages || [];
@@ -680,7 +713,8 @@
   function renderRequirement() {
     if (!state.prompt) return;
     const value = node("section", "requirement-block");
-    value.append(node("div", "eyebrow", "You"), node("div", "", state.prompt));
+    value.append(node("div", "eyebrow", "You"));
+    appendCompactPrompt(value, state.prompt, liveDisclosureKey("requirement"));
     timeline.append(value);
   }
 
@@ -702,8 +736,21 @@
     const providerWait = ["planning", "executing", "running", "reviewing", "repairing"].includes(workflow.status);
     if (providerWait && workflow.providerLabel) value.append(node("div", "muted live-stage-provider", workflow.providerLabel));
     if (providerWait) value.append(node("div", "muted live-stage-detail", workflow.progressLabel || "Waiting for provider response..."));
-    if (workflow.progress && workflow.progress.total) {
-      value.append(node("div", "muted live-stage-detail", `Task ${Math.min(workflow.progress.completed + 1, workflow.progress.total)} / ${workflow.progress.total}`));
+    const currentIndex = workflow.currentTaskId ? workflow.tasks.findIndex((task) => task.id === workflow.currentTaskId) : -1;
+    const currentTask = currentIndex >= 0 ? workflow.tasks[currentIndex] : undefined;
+    if (workflow.progress && workflow.progress.total && (currentTask || stageOccurred(workflow.occurredStages, "execution"))) {
+      const taskNumber = currentIndex >= 0 ? currentIndex + 1 : Math.min(workflow.progress.completed + 1, workflow.progress.total);
+      const taskBlock = node("div", "live-task");
+      taskBlock.append(node("div", "muted live-task-count", `Task ${taskNumber} / ${workflow.progress.total}`));
+      if (currentTask) taskBlock.append(node("div", "live-task-title", currentTask.title));
+      value.append(taskBlock);
+    }
+    if (workflow.active && workflow.status !== "waiting_for_permission") {
+      const actions = [];
+      if (["running", "executing", "validating", "reviewing", "repairing"].includes(workflow.status)) actions.push(button("Pause", "secondary", "pauseWorkflow"));
+      if (workflow.status === "paused") actions.push(button("Resume", "primary", "resumeWorkflow"));
+      if (workflow.status !== "planning" && workflow.status !== "awaiting_plan_approval") actions.push(button("Abort", "danger", "abortWorkflow"));
+      if (actions.length) addActions(value, actions);
     }
     timeline.append(value);
   }
@@ -752,78 +799,35 @@
     }
   }
 
-  /**
-   * The plan stays expanded only while it awaits approval, because that is when
-   * the user must read it. After approval or a terminal outcome it collapses to
-   * a one-line summary.
-   */
+  /** Plan disclosure is presentation-only. Approval controls stay outside it. */
   function renderPlan() {
     if (!state.plan) return;
     const awaitingApproval = workflowStatus() === "awaiting_plan_approval";
     const taskCount = state.plan.tasks.length;
     const meta = `${taskCount} ${taskCount === 1 ? "task" : "tasks"}`;
-    if (awaitingApproval) {
-      const value = card("Implementation Plan", "plan-card");
-      planBody(value);
-      addActions(value, [button("Reject", "secondary", "rejectPlan"), button("Approve & Run", "primary", "approvePlan")]);
-      timeline.append(value);
-      return;
-    }
-    const collapsed = disclosure(liveDisclosureKey("plan"), "Implementation Plan", meta, false);
+    const value = node("section", "plan-section");
+    const collapsed = disclosure(liveDisclosureKey("plan"), "Implementation Plan", meta, awaitingApproval);
     const body = node("div", "plan-card-body");
     planBody(body);
     collapsed.append(body);
-    timeline.append(collapsed);
+    value.append(collapsed);
+    if (awaitingApproval) addActions(value, [button("Reject", "secondary", "rejectPlan"), button("Approve & Run", "primary", "approvePlan")]);
+    timeline.append(value);
   }
 
-  /**
-   * During execution the current task is prominent and finished tasks collapse
-   * into a count instead of a growing expanded list.
-   */
+  /** Finished tasks stay compact; the active task is rendered only by live-stage. */
   function renderExecutionSummary() {
     const workflow = state.workflow;
     if (!workflow || workflow.status === "awaiting_plan_approval" || isTerminal()) return;
     if (!stageOccurred(workflow.occurredStages, "execution") && !workflow.tasks.some((task) => task.status !== "pending")) return;
-    const value = card(workflow.stage);
-    if (afterApproval()) value.append(node("div", "approved-line", "Approved ✓"));
-    const grid = node("div", "stage-grid");
-    const currentIndex = workflow.currentTaskId ? workflow.tasks.findIndex((task) => task.id === workflow.currentTaskId) : -1;
-    if (workflow.progress) {
-      const taskNumber = currentIndex >= 0 ? currentIndex + 1 : Math.min(workflow.progress.completed + 1, workflow.progress.total);
-      grid.append(node("span", "muted", "Task progress"), node("span", "", workflow.progress.total ? `Task ${taskNumber} / ${workflow.progress.total}` : "-"));
-    }
-    if (workflow.currentTaskId) {
-      const current = workflow.tasks[currentIndex];
-      grid.append(node("span", "muted", "Current task"), node("span", "", current ? current.title : workflow.currentTaskId));
-    }
-    value.append(grid);
-    const done = workflow.tasks.filter((task) => task.status === "completed");
-    const remaining = workflow.tasks.filter((task) => task.status !== "completed");
+    const done = workflow.tasks.filter((task) => task.status === "completed" && task.id !== workflow.currentTaskId);
     if (done.length) {
       const completedSection = disclosure(liveDisclosureKey("execution-completed"), `${done.length} ${done.length === 1 ? "task" : "tasks"} completed`, "", false);
       const list = node("ul", "workflow-tasks");
       done.forEach((task) => { const item = node("li"); item.append(node("span", "passed", "✓"), node("span", "", task.title)); list.append(item); });
       completedSection.append(list);
-      value.append(completedSection);
+      timeline.append(completedSection);
     }
-    if (remaining.length) {
-      const list = node("ul", "workflow-tasks");
-      remaining.forEach((task) => {
-        const icon = task.status === "running" ? "●" : task.status === "failed" ? "✕" : task.status === "blocked" ? "!" : "○";
-        const item = node("li");
-        item.append(node("span", task.status === "failed" ? "failed" : "", icon), node("span", "", task.title));
-        list.append(item);
-      });
-      value.append(list);
-    }
-    if (workflow.active && workflow.status !== "waiting_for_permission") {
-      const actions = [];
-      if (["running", "executing", "validating", "reviewing", "repairing"].includes(workflow.status)) actions.push(button("Pause", "secondary", "pauseWorkflow"));
-      if (workflow.status === "paused") actions.push(button("Resume", "primary", "resumeWorkflow"));
-      actions.push(button("Abort", "danger", "abortWorkflow"));
-      addActions(value, actions);
-    }
-    timeline.append(value);
   }
 
   function renderPermission() {
@@ -1155,21 +1159,6 @@
     timeline.append(cost);
   }
 
-  function renderModelSelector() {
-    if (!state.providers.length) {
-      model.textContent = "Connect provider";
-      model.disabled = false;
-      return;
-    }
-    if (state.advancedRouting) {
-      model.textContent = "Advanced roles";
-    } else {
-      const provider = state.providers.find((item) => item.isDefault) || state.providers[0];
-      model.textContent = provider ? `${provider.displayName} · ${provider.modelId || "Choose model"}` : "Choose model";
-    }
-    model.disabled = false;
-  }
-
   function render() {
     const screen = state.performanceView ? `performance:${state.performanceView.source}:${state.performanceView.taskId || "live"}` : state.settings ? `settings:${state.settings.section}:${state.settings.providerConfigId || ""}` : historyState().screen;
     const screenChanged = screen !== renderedScreen;
@@ -1195,7 +1184,6 @@
     }
     el("provider-dot").classList.toggle("connected", state.configured);
     el("provider-dot").setAttribute("aria-label", state.configured ? "Provider configured" : "Provider not configured");
-    renderModelSelector();
     const active = !!(state.workflow && state.workflow.active);
     el("new-task").disabled = active || !!state.settings;
     el("new-task").title = active ? "Finish or abort the active workflow first" : "New Task";
@@ -1272,7 +1260,6 @@
   el("new-task").addEventListener("click", () => vscode.postMessage({ type: "newTask" }));
   if (el("history")) el("history").addEventListener("click", () => vscode.postMessage({ type: "openHistory" }));
   el("settings").addEventListener("click", () => vscode.postMessage({ type: "openSettings" }));
-  model.addEventListener("click", () => vscode.postMessage({ type: "openSettingsSection", section: "modelsRoles" }));
 
   window.addEventListener("message", (event) => {
     const message = event.data;
@@ -1286,8 +1273,19 @@
       return;
     }
     if (!message.state) return;
-    const hadTask = !!(state && (state.prompt || state.plan || state.workflow));
+    const previousState = state;
+    const hadTask = !!(previousState && (previousState.prompt || previousState.plan || previousState.workflow));
     state = message.state;
+    const previousWorkflow = previousState && previousState.workflow;
+    const currentWorkflow = state.workflow;
+    if (
+      previousWorkflow && currentWorkflow &&
+      previousWorkflow.id === currentWorkflow.id &&
+      previousWorkflow.status === "awaiting_plan_approval" &&
+      currentWorkflow.status !== "awaiting_plan_approval"
+    ) {
+      disclosures.set(disclosureKeyFor("plan", state), false);
+    }
     sending = false;
     el("notice").classList.add("hidden");
     if ((submittedTask && state.prompt === submittedTask) || (hadTask && !state.prompt && !state.plan && !state.workflow)) {

@@ -53,10 +53,10 @@ class FakeElement {
 }
 
 const runtimeSource = readFileSync(new URL("../media/workspace.js", import.meta.url), "utf8");
-const ids = ["timeline", "composer-wrap", "requirement", "submit", "model", "new-task", "history", "settings", "provider-dot", "workspace-warning", "notice", "context"];
+const ids = ["timeline", "composer-wrap", "requirement", "submit", "new-task", "history", "settings", "provider-dot", "workspace-warning", "notice", "context"];
 
 function harness() {
-  const elements = new Map(ids.map((id) => [id, new FakeElement(id === "requirement" ? "textarea" : id === "model" ? "button" : "div", id)]));
+  const elements = new Map(ids.map((id) => [id, new FakeElement(id === "requirement" ? "textarea" : "div", id)]));
   const messages: any[] = [];
   let receive: Listener | undefined;
   const unloadListeners: Listener[] = [];
@@ -663,11 +663,79 @@ describe("Nyxara browser runtime", () => {
     expect(h.text()).not.toContain("Approve & Run");
   });
 
-  it("keeps approval plans expanded, then defaults terminal plans and details to accessible collapsed disclosures", () => {
+  it("collapses long prompts, keeps short prompts visible, and toggles the full text locally", () => {
+    const short = harness();
+    short.emit(baseState({ prompt: "Fix the paging query" }));
+    const shortText = short.elements.get("timeline")!.descendants().find((item) => item.className === "requirement-text");
+    expect(shortText?.allText()).toBe("Fix the paging query");
+    expect(short.findButton("Show full prompt")).toBeUndefined();
+
+    const longPrompt = `# PHASE — PLANNING SETTINGS\n${"Current issues require careful repository work. ".repeat(30)}\nPRIVATE TAIL`;
+    const long = harness();
+    long.emit(baseState({ prompt: longPrompt }));
+    let promptText = long.elements.get("timeline")!.descendants().find((item) => item.className.includes("requirement-text"));
+    expect(promptText?.className).toContain("requirement-preview");
+    expect(promptText?.allText()).not.toContain("PRIVATE TAIL");
+    expect(promptText!.allText().length).toBeLessThan(longPrompt.length);
+    long.findButton("Show full prompt")!.dispatch("click");
+    promptText = long.elements.get("timeline")!.descendants().find((item) => item.className.includes("requirement-text"));
+    expect(promptText?.allText()).toBe(longPrompt);
+    expect(long.findButton("Hide prompt")?.attributes.get("aria-expanded")).toBe("true");
+    long.findButton("Hide prompt")!.dispatch("click");
+    expect(long.findButton("Show full prompt")).toBeDefined();
+  });
+
+  it("uses the same compact prompt behavior for historical tasks", () => {
+    const requirement = `${"Historical requirement line\n".repeat(12)}HISTORY PRIVATE TAIL`;
+    const task = { ...historicalTask, requirement };
+    const h = harness();
+    h.emit(baseState({ history: { screen: "historical", recentTasks: [task], tasks: [task], query: "", filter: "all", scope: "current", currentWorkspaceId: "workspace", selectedTask: task } }));
+    const promptText = h.elements.get("timeline")!.descendants().find((item) => item.className.includes("requirement-text"));
+    expect(promptText?.className).toContain("requirement-preview");
+    expect(promptText?.allText()).not.toContain("HISTORY PRIVATE TAIL");
+    h.findButton("Show full prompt")!.dispatch("click");
+    expect(h.elements.get("timeline")!.descendants().find((item) => item.className.includes("requirement-text"))?.allText()).toBe(requirement);
+  });
+
+  it("keeps approval actions visible while its expanded-by-default plan is manually collapsed and reopened", () => {
     const awaitingApproval = harness();
-    awaitingApproval.emit(baseState({ prompt: "Add pagination", plan, workflow: awaiting }));
-    expect(awaitingApproval.elements.get("timeline")!.descendants().some((item) => item.className.includes("plan-card") && item.tagName === "section")).toBe(true);
-    expect(awaitingApproval.elements.get("timeline")!.descendants().some((item) => item.tagName === "details" && item.allText().startsWith("Implementation Plan"))).toBe(false);
+    const approvalState = baseState({ prompt: "Add pagination", plan, workflow: awaiting });
+    const findPlan = () => awaitingApproval.elements.get("timeline")!.descendants().find((item) => item.tagName === "details" && item.allText().startsWith("Implementation Plan"));
+    awaitingApproval.emit(approvalState);
+    expect(findPlan()?.attributes.has("open")).toBe(true);
+    expect(findPlan()?.children[0]?.attributes.get("aria-expanded")).toBe("true");
+    expect(awaitingApproval.findButton("Approve & Run")).toBeDefined();
+    expect(awaitingApproval.findButton("Reject")).toBeDefined();
+    expect(findPlan()?.allText()).toContain("Update query");
+
+    findPlan()!.children[0]!.dispatch("click");
+    awaitingApproval.emit(approvalState, "workflowSnapshot");
+    expect(findPlan()?.attributes.has("open")).toBe(false);
+    expect(awaitingApproval.findButton("Approve & Run")).toBeDefined();
+    expect(awaitingApproval.findButton("Reject")).toBeDefined();
+    findPlan()!.children[0]!.dispatch("click");
+    awaitingApproval.emit(approvalState, "workflowSnapshot");
+    expect(findPlan()?.attributes.has("open")).toBe(true);
+    expect(findPlan()?.allText()).toContain("Update query");
+  });
+
+  it("collapses the plan once on execution start and preserves manual execution disclosure state on refresh", () => {
+    const h = harness();
+    const approvalState = baseState({ prompt: "Add pagination", plan, workflow: awaiting });
+    const executingState = baseState({ prompt: "Add pagination", plan, workflow: { id: "w", status: "executing", stage: "Executing", active: true, currentTaskId: "task-1", progress: { completed: 0, total: 1 }, tasks: [{ id: "task-1", title: "Update query", status: "running" }], occurredStages: ["planning", "approval", "execution"] } });
+    const findPlan = () => h.elements.get("timeline")!.descendants().find((item) => item.tagName === "details" && item.allText().startsWith("Implementation Plan"));
+    h.emit(approvalState);
+    expect(findPlan()?.attributes.has("open")).toBe(true);
+    h.emit(executingState, "workflowSnapshot");
+    expect(findPlan()?.attributes.has("open")).toBe(false);
+    findPlan()!.children[0]!.dispatch("click");
+    h.emit(executingState, "workflowSnapshot");
+    expect(findPlan()?.attributes.has("open")).toBe(true);
+    h.emit(executingState, "providerProgress");
+    expect(findPlan()?.attributes.has("open")).toBe(true);
+  });
+
+  it("defaults terminal plans and details to accessible collapsed disclosures", () => {
 
     const completed = harness();
     completed.emit(baseState({ prompt: "Add pagination", plan, workflow: { id: "terminal", status: "completed", stage: "Completed", active: false, tasks: [{ id: "task-1", title: "Update query", status: "completed" }], occurredStages: ["planning", "approval", "execution"], progress: { completed: 1, total: 1 } }, completion: { status: "completed", outcome: "completed", changedFiles: 1, tokens: 10, modelCalls: 1, durationMs: 1000, repairCycles: 0, tokenParts: [] } }));
@@ -677,6 +745,23 @@ describe("Nyxara browser runtime", () => {
     expect(planSummary?.attributes.get("aria-expanded")).toBe("false");
     expect(detailSummary?.attributes.get("aria-expanded")).toBe("false");
     expect(planSummary?.tagName).toBe("summary");
+  });
+
+  it("renders one non-overlapping active task block with wrapping title and live provider status", () => {
+    const h = harness();
+    const title = "Audit planning configuration presets schema and workflow terminal projections with a very long title that must wrap at narrow sidebar widths";
+    h.emit(baseState({ prompt: "Audit", plan, workflow: { id: "w", status: "executing", stage: "Executing", active: true, currentTaskId: "task-1", progress: { completed: 0, total: 8 }, tasks: [{ id: "task-1", title, status: "running" }], occurredStages: ["planning", "approval", "execution"], stageStartedAt: new Date().toISOString(), providerLabel: "OpenAI Codex · gpt-5.6-terra", progressLabel: "Receiving response..." } }));
+    const nodes = h.elements.get("timeline")!.descendants();
+    expect(nodes.filter((item) => item.className === "live-task-title")).toHaveLength(1);
+    expect(nodes.find((item) => item.className === "live-task-title")?.allText()).toBe(title);
+    expect(nodes.filter((item) => item.className === "live-stage")).toHaveLength(1);
+    expect(nodes.find((item) => item.className.includes("live-stage-provider"))?.allText()).toBe("OpenAI Codex · gpt-5.6-terra");
+    expect(h.text()).toContain("Receiving response...");
+    expect(h.text()).not.toContain("Task progress");
+    expect(h.text()).not.toContain("Current task");
+    expect(nodes.some((item) => item.className === "stage-grid")).toBe(false);
+    expect(h.findButton("Pause")).toBeDefined();
+    expect(h.findButton("Abort")).toBeDefined();
   });
 
   it("updates aria-expanded when View Plan opens a rejected task disclosure", () => {
@@ -867,12 +952,12 @@ describe("Nyxara browser runtime", () => {
     expect(h.messages.at(-1)).toMatchObject({ executionOptions: { kind: "provider_default" } });
   });
 
-  it("opens Models & Roles from the composer summary without changing provider or model directly", () => {
+  it("keeps provider/model status out of the composer", () => {
     const h = harness(); h.emit(baseState());
-    expect(h.elements.get("model")?.textContent).toBe("Gateway · route/model");
-    h.elements.get("model")?.dispatch("click");
-    expect(h.messages.at(-1)).toEqual({ type: "openSettingsSection", section: "modelsRoles" });
-    expect(h.messages.some((message) => message.type === "selectModel")).toBe(false);
+    const composer = h.elements.get("composer-wrap")!;
+    expect(composer.descendants().some((item) => item.id === "model" || item.className.includes("model-summary"))).toBe(false);
+    expect(composer.allText()).not.toContain("Gateway · route/model");
+    expect(h.messages.some((message) => /model/i.test(message.type))).toBe(false);
   });
 
   it("finishes post-login model and effort selection entirely inside Nyxara", () => {

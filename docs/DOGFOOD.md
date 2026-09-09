@@ -12,6 +12,12 @@ It builds the required packages, runs the deterministic VS Code checks, derives 
 
 The extension manifest at `apps/vscode/package.json` is the single source of truth for the local dogfood version. **Nyxara: About** and the sidebar show that installed manifest version with the **Local Dogfood** label. Use F5 only for development/debugging in an Extension Development Host; use the VSIX for daily dogfood.
 
+## Compact workflow presentation (alpha.38)
+
+Long current and historical requirements now open as bounded previews with local **Show full prompt** / **Hide prompt** controls. The implementation plan remains collapsible in every state: it defaults open while awaiting approval, keeps approval actions visible when closed, and collapses once when execution begins without resetting later manual choices.
+
+Active execution uses one responsive stage block for provider status, response status, task position/title, and pause/abort controls. Completed tasks remain behind a compact disclosure. The composer contains only requirement/context/send controls; provider and model configuration remains in **Settings → Models & Roles**.
+
 ## Bounded Executor sessions (alpha.37)
 
 Executor attempts now rebuild a bounded, task-specific context on every provider turn instead of replaying the raw Planner and tool conversation. Read/search, mutation, validation, provider-call, and final hard ceilings are independent; new evidence resets stuck detection, while equivalent searches and file ranges are reused rather than executed again. Tool output is bounded before it enters the next request. A stalled loop reports that no new evidence was produced instead of masquerading as a normal tool-limit failure.

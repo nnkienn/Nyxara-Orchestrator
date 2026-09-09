@@ -29,7 +29,7 @@ const budgetProjection = {
   roles: projection.roles.map((role) => ({ ...role, executionCapability: budgetExecution, executionOptions: { kind: "anthropic_thinking", enabled: true, budgetTokens: 2048 } })),
 };
 const emptyProjection = { ...projection, providers: projection.providers.map((entry) => ({ ...entry, models: [], modelsMessage: `Catalog unavailable: ${"unbroken-helper-text".repeat(20)}` })) };
-const scenarios = [
+const settingsScenarios = [
   { name: "settings-home", section: "home", projection },
   { name: "simple", section: "modelsRoles", projection: { ...projection, modelMode: "simple" } },
   { name: "advanced", section: "modelsRoles", projection },
@@ -43,12 +43,23 @@ const scenarios = [
   { name: "workflow", section: "workflow", projection },
   { name: "advanced-settings", section: "advanced", projection },
 ].map(({ name, manual, ...settings }) => ({ name, manual, state: { version: "layout-test", configured: true, workspace: { available: true, multiple: true }, providers: [{ id: provider.id, displayName: longProvider, modelId: longModel, isDefault: true }], validation: [], repairCycles: null, settings } }));
+const longTaskTitle = `Audit planning configuration presets schema and workflow terminal projections ${"without overlapping narrow sidebar content ".repeat(4)}`;
+const scenarios = [...settingsScenarios, {
+  name: "active-execution",
+  state: {
+    version: "layout-test", configured: true, workspace: { available: true, multiple: false }, providers: [{ id: provider.id, displayName: longProvider, modelId: longModel, isDefault: true }], validation: [], repairCycles: null,
+    prompt: `# PHASE — UI FIX\n${"A long requirement must remain compact in the sidebar. ".repeat(30)}END`,
+    plan: { id: "plan-layout", objective: "Fix narrow execution layout", tasks: [{ id: "task-1", title: longTaskTitle, description: "Keep the plan intact", acceptanceCriteria: ["No overlap"], dependencies: [] }], risks: [] },
+    workflow: { id: "workflow-layout", status: "executing", stage: "Executing", active: true, currentTaskId: "task-1", progress: { completed: 0, total: 8 }, tasks: [{ id: "task-1", title: longTaskTitle, status: "running" }], occurredStages: ["planning", "approval", "execution"], stageStartedAt: "2026-09-09T00:00:00.000Z", providerLabel: "OpenAI Codex · gpt-5.6-terra", progressLabel: "Receiving response..." },
+  },
+}];
 
 interface LayoutResult {
   name: string; width: number; fontSize: number; error?: string; outsideViewport: string[]; outsideContainer: string[]; invisibleControls: string[]; undersizedFields: string[]; scrollingContainers: unknown[];
   ellipsis: Array<{ element: string; ellipsis: boolean; nowrap: boolean }>; helperWraps: boolean;
   gridWidth: number | null; gridTrack: number | null; selectedIds: string[]; settingsColumns: number | null; clippedCards: number;
   apiKeyActions: string[];
+  liveTaskWraps: boolean | null; overlappingLiveRows: number; currentTaskTitles: number; progressLabels: number; composerModelCount: number; liveProvider: string | null; planExpanded: boolean | null; promptPreviewBounded: boolean | null;
 }
 
 describe.skipIf(!browser)("Nyxara real-browser sidebar layout", () => {
@@ -120,5 +131,20 @@ describe.skipIf(!browser)("Nyxara real-browser sidebar layout", () => {
     expect(browserErrors).toEqual([]);
     expect(messages).toEqual(layouts.map(() => ({ type: "ready" })));
     for (const result of results.filter((result) => result.name === "provider-details")) expect(result.settingsColumns, `${result.width}px`).toBe(result.width <= 360 ? 1 : 2);
+  });
+
+  it("keeps the active execution block compact and non-overlapping at 320–360px", () => {
+    const active = results.filter((result) => result.name === "active-execution" && result.width <= 360);
+    expect(active).toHaveLength(6);
+    for (const result of active) {
+      expect(result.liveTaskWraps, `${result.width}px ${result.fontSize}px font`).toBe(true);
+      expect(result.overlappingLiveRows, `${result.width}px ${result.fontSize}px font`).toBe(0);
+      expect(result.currentTaskTitles).toBe(1);
+      expect(result.progressLabels).toBe(0);
+      expect(result.composerModelCount).toBe(0);
+      expect(result.liveProvider).toBe("OpenAI Codex · gpt-5.6-terra");
+      expect(result.planExpanded).toBe(false);
+      expect(result.promptPreviewBounded).toBe(true);
+    }
   });
 });

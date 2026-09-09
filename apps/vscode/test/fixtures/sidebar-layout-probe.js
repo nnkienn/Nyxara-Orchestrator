@@ -10,7 +10,7 @@ window.addEventListener("load", () => {
         select.value = "manual"; select.dispatchEvent(new Event("change"));
       }
       const timeline = document.getElementById("timeline");
-      if (scenario.state.settings.section === "workflow") timeline.querySelectorAll(".workflow-controls").forEach((details) => { details.open = true; });
+      if (scenario.state.settings?.section === "workflow") timeline.querySelectorAll(".workflow-controls").forEach((details) => { details.open = true; });
       const outsideViewport = [];
       const outsideContainer = [];
       const invisibleControls = [];
@@ -42,6 +42,15 @@ window.addEventListener("load", () => {
       });
       const helpers = [...timeline.querySelectorAll("p")].filter(visible);
       const grid = timeline.querySelector(".execution-config");
+      const liveStage = timeline.querySelector(".live-stage");
+      const liveRows = liveStage ? [...liveStage.children].filter(visible) : [];
+      let overlappingLiveRows = 0;
+      for (let left = 0; left < liveRows.length; left += 1) for (let right = left + 1; right < liveRows.length; right += 1) {
+        const a = liveRows[left].getBoundingClientRect(); const b = liveRows[right].getBoundingClientRect();
+        if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) overlappingLiveRows += 1;
+      }
+      const liveTaskTitle = timeline.querySelector(".live-task-title");
+      const promptPreview = timeline.querySelector(".requirement-preview");
       results.push({
         name: scenario.name, width: innerWidth, fontSize: parseFloat(getComputedStyle(document.body).fontSize), outsideViewport, outsideContainer, invisibleControls, undersizedFields, scrollingContainers, ellipsis,
         helperWraps: helpers.every((element) => getComputedStyle(element).overflowWrap === "anywhere" && element.scrollWidth <= element.clientWidth + 1),
@@ -51,6 +60,14 @@ window.addEventListener("load", () => {
         settingsColumns: timeline.querySelector(".settings-value") ? getComputedStyle(timeline.querySelector(".settings-value")).gridTemplateColumns.split(" ").length : null,
         clippedCards: [...timeline.querySelectorAll(".card")].filter((element) => ["hidden", "clip"].includes(getComputedStyle(element).overflowX)).length,
         apiKeyActions: [...timeline.querySelectorAll("button")].filter((element) => visible(element) && /^(Add|Update) API Key$/.test(element.textContent)).map((element) => element.textContent),
+        liveTaskWraps: liveTaskTitle ? getComputedStyle(liveTaskTitle).whiteSpace === "normal" && liveTaskTitle.getBoundingClientRect().height > parseFloat(getComputedStyle(liveTaskTitle).lineHeight) * 1.5 : null,
+        overlappingLiveRows,
+        currentTaskTitles: [...timeline.querySelectorAll(".live-task-title")].filter(visible).length,
+        progressLabels: [...timeline.querySelectorAll("*")].filter((element) => visible(element) && ["Task progress", "Current task"].includes(element.textContent)).length,
+        composerModelCount: document.querySelectorAll("#composer-wrap #model, #composer-wrap .model-summary-button").length,
+        liveProvider: timeline.querySelector(".live-stage-provider")?.textContent || null,
+        planExpanded: timeline.querySelector(".plan-section details")?.open ?? null,
+        promptPreviewBounded: promptPreview ? promptPreview.clientHeight <= parseFloat(getComputedStyle(promptPreview).maxHeight) + 1 && getComputedStyle(promptPreview).overflowY === "hidden" : null,
       });
     } catch (error) {
       results.push({ name: scenario.name, width: innerWidth, error: String(error.stack || error) });

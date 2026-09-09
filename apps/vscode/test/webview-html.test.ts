@@ -17,13 +17,14 @@ describe("Nyxara Webview shell", () => {
     expect(html).toContain('aria-label="Settings"');
   });
 
-  it("renders a persistent bounded multiline composer and a read-only Models & Roles shortcut", () => {
+  it("renders a persistent bounded multiline composer without provider/model controls", () => {
     expect(html).toContain("<textarea");
     expect(html).toContain('placeholder="What do you want to build?"');
     expect(html).toContain('maxlength="20000"');
-    expect(html).toContain('id="model"');
-    expect(html).toContain('aria-label="Open Models & Roles"');
-    expect(html).not.toContain('<select id="model"');
+    expect(html).not.toContain('id="model"');
+    expect(html).not.toContain('aria-label="Open Models & Roles"');
+    expect(html).not.toContain("model-summary-button");
+    expect(html).toContain('aria-label="Add context (unavailable)"');
     expect(html).toContain('aria-label="Generate Plan"');
   });
 
