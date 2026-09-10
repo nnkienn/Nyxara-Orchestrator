@@ -5,6 +5,7 @@ import type { TaskSession } from "./task-session.js";
 import { buildPerformanceProjection, type PerformanceProjection, type PerformanceTerminalStatus } from "./performance-projection.js";
 import { friendlyErrorMessage, tokenSummaryParts, workflowStage } from "./projection.js";
 import type { SettingsProjection, SettingsSection } from "./settings-projection.js";
+import { historicalWorkflowProgress, projectWorkflowProgress, workflowStep, type WorkflowProgress } from "./workflow-progress.js";
 
 const MAX_TEXT = 2_000;
 const MAX_ITEMS = 64;
@@ -28,6 +29,7 @@ export interface TaskHistoryViewState {
   readonly currentWorkspaceId?: string;
   readonly activeTaskId?: string;
   readonly selectedTask?: TaskSession;
+  readonly selectedWorkflowProgress?: WorkflowProgress;
 }
 /** Local clarification prompt shown instead of planning an unclear request. */
 export interface WorkspaceClarificationState {
@@ -56,6 +58,7 @@ export interface WorkspaceViewState {
     readonly status: string;
     readonly stage: string;
     readonly active: boolean;
+    readonly workflowProgress?: WorkflowProgress;
     /** Authoritative stage entry time; the Webview formats elapsed locally. */
     readonly stageStartedAt?: string;
     /** Public terminal outcome; absent while the workflow is active. */
@@ -101,6 +104,7 @@ export interface BuildWorkspaceStateInput {
   readonly prompt?: string;
   readonly plan?: ExecutionPlan;
   readonly snapshot?: WorkflowSnapshot;
+  readonly owningWorkflowStage?: string;
   readonly validation: ReadonlyMap<string, string>;
   readonly reviewStatus?: string;
   readonly reviewFindingCount?: number;
@@ -138,6 +142,7 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
     id: bounded(snapshot.workflowId, 200),
     status: snapshot.status,
     stage: workflowStage(snapshot),
+    workflowProgress: projectWorkflowProgress(snapshot, workflowStep(input.owningWorkflowStage ?? "")),
     active: !terminal.has(snapshot.status),
     occurredStages: [...(snapshot.occurredStages ?? [])],
     ...(snapshot.stageStartedAt ? { stageStartedAt: bounded(snapshot.stageStartedAt, 40) } : {}),
@@ -182,7 +187,7 @@ export function buildWorkspaceState(input: BuildWorkspaceStateInput): WorkspaceV
       const modelId = provider.modelId ?? input.roles.find((role) => role.role === "planner" && role.providerId === provider.id)?.modelId;
       return { id: bounded(provider.id, 200), displayName: bounded(provider.displayName, 100), ...(modelId ? { modelId: bounded(modelId, 200) } : {}), isDefault: provider.id === input.defaultProviderId };
     }),
-    history: input.history ?? { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "current" },
+    history: input.history ? { ...input.history, ...(input.history.selectedTask ? { selectedWorkflowProgress: historicalWorkflowProgress(input.history.selectedTask) } : {}) } : { screen: "workspace", recentTasks: [], tasks: [], query: "", filter: "all", scope: "current" },
     ...(input.clarification ? { clarification: input.clarification } : {}),
     ...(input.requirementDraft ? { requirementDraft: bounded(input.requirementDraft, 20_000) } : {}),
     ...(input.prompt ? { prompt: bounded(input.prompt, 20_000) } : {}), ...(plan ? { plan } : {}), ...(workflow ? { workflow } : {}), validation,

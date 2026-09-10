@@ -183,13 +183,25 @@ describe("CliSubscriptionProvider", () => {
     expect(process.run.mock.calls[1]?.[0].stdin).toBe("work");
   });
 
-  it("accepts only account-backed Codex and Claude login status", async () => {
+  it("gives Claude gateway generation ten minutes without extending model discovery", async () => {
+    const process = runner(ok(JSON.stringify({ loggedIn: true, authMethod: "oauth_token" })), ok(JSON.stringify({ result: "done", usage: {} })));
+    const catalog = claudeCatalog();
+    const provider = new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process, claudeModelCatalog: catalog });
+    await provider.listModels();
+    expect(catalog.listModels).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 30_000 }));
+    await expect(provider.generate({ model: "fable", prompt: "work" })).resolves.toMatchObject({ text: "done" });
+    expect(process.run.mock.calls[1]?.[0].timeoutMs).toBe(600_000);
+  });
+
+  it("accepts current and legacy account-backed Claude login status but rejects API-key auth", async () => {
     const codexApiKey = runner(ok("Logged in using an API key"));
     await expect(new CliSubscriptionProvider({ kind: "codex-cli", runner: codexApiKey, codexModelCatalog: codexCatalog() }).listModels()).rejects.toMatchObject({ code: "authentication_error" });
     const claudeApiKey = runner(ok(JSON.stringify({ loggedIn: true, authMethod: "api_key" })));
     await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: claudeApiKey }).listModels()).rejects.toMatchObject({ code: "authentication_error" });
-    const claudeAccount = runner(ok(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })));
-    await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: claudeAccount, claudeModelCatalog: claudeCatalog() }).listModels()).resolves.toHaveLength(1);
+    for (const authMethod of ["oauth_token", "claude.ai"]) {
+      const claudeAccount = runner(ok(JSON.stringify({ loggedIn: true, authMethod })));
+      await expect(new CliSubscriptionProvider({ kind: "claude-code-cli", runner: claudeAccount, claudeModelCatalog: claudeCatalog() }).listModels()).resolves.toHaveLength(1);
+    }
   });
 
   it("removes API-billing environment variables from subscription subprocesses", async () => {

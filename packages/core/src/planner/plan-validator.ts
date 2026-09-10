@@ -27,7 +27,7 @@ export const DEFAULT_PLAN_STRUCTURE_BOUNDS: PlanStructureBounds = Object.freeze(
   maxObjectiveCharacters: 500,
   maxSummaryCharacters: 1_000,
   maxTitleCharacters: 160,
-  maxDescriptionCharacters: 1_200,
+  maxDescriptionCharacters: 2_000,
   maxAcceptanceCriteriaPerTask: 6,
   maxAcceptanceCriterionCharacters: 400,
   maxRelevantFilesPerTask: 12,

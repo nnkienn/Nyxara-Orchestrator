@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { configurationProxy } from "./fixtures/configuration-proxy.js";
+import { corruptedRoleSettings } from "./fixtures/corrupted-role-settings.js";
 
 const mock = vi.hoisted(() => ({
   workflowWorkspaceOverride: false,
@@ -17,7 +18,7 @@ vi.mock("vscode", () => {
     commands: { registerCommand: vi.fn((name: string, handler: (...args: any[]) => any) => { mock.commands.set(name, handler); return { dispose: vi.fn() }; }), executeCommand: vi.fn() },
     workspace: {
       get workspaceFolders() { return mock.workspaceFolders; },
-      getConfiguration: vi.fn(() => ({ get: (key: string, fallback: any) => mock.settings.has(key) ? configurationProxy(mock.settings.get(key)) : fallback, inspect: (key: string) => ({ workspaceValue: key === "nyxara.workflow" && mock.workflowWorkspaceOverride ? mock.settings.get(key) : undefined }), update: async (key: string, value: unknown, target: unknown) => { if (mock.failNextUpdateKey === key) { mock.failNextUpdateKey = undefined; throw new Error("settings write failed"); } mock.updates.push([key, value, target]); mock.settings.set(key, value); } })),
+      getConfiguration: vi.fn(() => ({ get: (key: string, fallback: any) => mock.settings.has(key) ? configurationProxy(mock.settings.get(key)) : fallback, inspect: (key: string) => ({ globalValue: mock.settings.get(key), workspaceValue: key === "nyxara.workflow" && mock.workflowWorkspaceOverride ? mock.settings.get(key) : undefined }), update: async (key: string, value: unknown, target: unknown) => { if (mock.failNextUpdateKey === key) { mock.failNextUpdateKey = undefined; throw new Error("settings write failed"); } mock.updates.push([key, value, target]); mock.settings.set(key, value); } })),
     },
     window: {
       createOutputChannel: vi.fn(() => mock.output), registerWebviewViewProvider: vi.fn((_id: string, provider: any) => { mock.providers.push(provider); return { dispose: vi.fn() }; }), createTerminal: vi.fn((options: { name: string }) => { const state = { name: options.name, commands: [] as string[], shown: false }; mock.terminals.push(state); return { show: () => { state.shown = true; }, sendText: (command: string) => { state.commands.push(command); }, dispose: vi.fn() }; }),
@@ -44,7 +45,7 @@ async function flushSettingsMessages(): Promise<void> {
 
 function fakeSession(configured = false) {
   const core = { listModels: vi.fn(async () => [{ id: "ha-op/gpt-5.6-sol", name: "Routed" }]), listProviders: vi.fn(() => []), getModelCapabilities: vi.fn(() => undefined), listPlanningProfiles: vi.fn(() => [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }]), listEngineeringRules: vi.fn(() => []), planningContextDecision: undefined as any, requestPlanClarification: undefined as any, configureAgent: vi.fn(), createPlan: vi.fn(), runApprovedPlan: vi.fn(), startWorkflow: vi.fn() };
-  return { core, configured, validation: new Map(), validationDurations: new Map(), currentPlan: undefined as any, snapshot: undefined as any, result: undefined as any, prompt: undefined as string | undefined, reviewStatus: undefined as string | undefined, reviewFindingCount: undefined as number | undefined, repairCycle: undefined as number | undefined, onChange: undefined as (() => void) | undefined, upsertProvider: vi.fn(), removeProvider: vi.fn(), configureAgents: vi.fn(), generate: vi.fn(), regenerate: vi.fn(), approveAndRun: vi.fn(async () => ({ status: "paused" })), rejectPlan: vi.fn(), pause: vi.fn(), resume: vi.fn(), abort: vi.fn(), resolvePermission: vi.fn(), resetPresentation: vi.fn() };
+  return { core, configured, workflowStageEvidence: new Map<string, string>(), validation: new Map(), validationDurations: new Map(), currentPlan: undefined as any, snapshot: undefined as any, result: undefined as any, prompt: undefined as string | undefined, reviewStatus: undefined as string | undefined, reviewFindingCount: undefined as number | undefined, repairCycle: undefined as number | undefined, onChange: undefined as (() => void) | undefined, upsertProvider: vi.fn(), removeProvider: vi.fn(), configureAgents: vi.fn(), generate: vi.fn(), regenerate: vi.fn(), approveAndRun: vi.fn(async () => ({ status: "paused" })), rejectPlan: vi.fn(), pause: vi.fn(), resume: vi.fn(), abort: vi.fn(), resolvePermission: vi.fn(), resetPresentation: vi.fn() };
 }
 
 function activateFake(session = fakeSession(), saved: { secretValues?: Map<string, string>; globalValues?: Map<string, unknown> } = {}) {
@@ -105,6 +106,55 @@ describe("VS Code provider onboarding and command safety", () => {
   beforeEach(() => {
     mock.workflowWorkspaceOverride = false;
     mock.commands.clear(); mock.settings.clear(); mock.updates.length = 0; mock.failNextUpdateKey = undefined; mock.inputs.length = 0; mock.inputOptions.length = 0; mock.pickIndexes.length = 0; mock.pickCalls.length = 0; mock.errors.length = 0; mock.info.length = 0; mock.infoResults.length = 0; mock.externalUrls.length = 0; mock.clipboard.length = 0; mock.terminals.length = 0; mock.taskExecutions.length = 0; mock.taskEndListeners.length = 0; mock.providers.length = 0; mock.workspaceFolders.length = 0; mock.warnings.length = 0; mock.warningResult = "Disconnect"; vi.clearAllMocks();
+  });
+
+  it.each(["corrupted", "independent"])("preserves %s assignments across unrelated UI, discovery, refresh and reload", async (fixture) => {
+    for (const [key, value] of Object.entries(corruptedRoleSettings)) mock.settings.set(key, value);
+    if (fixture === "independent") for (const role of ["planner", "executor", "reviewer"]) {
+      mock.settings.set(`nyxara.${role}.provider`, `missing-${role}`);
+      mock.settings.set(`nyxara.${role}.model`, `saved-${role}`);
+    }
+    const saved = new Map(mock.settings);
+    const host = activateFake(providerSession()); const view = resolveRegisteredWebview();
+    for (const message of [
+      { type: "ready" }, { type: "closeSettings" },
+      ...["planning", "workflow", "modelsRoles", "aiProviders"].map((section) => ({ type: "openSettingsSection", section })),
+      { type: "openPerformance" }, { type: "openHistory" },
+      { type: "refreshModels", providerConfigId: "9router" },
+      { type: "testProvider", providerConfigId: "9router" },
+      { type: "selectModel", providerConfigId: "9router", modelId: "ntha/gpt-6-astra" },
+    ]) {
+      view.receive(message); await flushSettingsMessages();
+      expect(mock.settings).toEqual(saved); expect(mock.updates).toEqual([]);
+    }
+    reloadProviderHost(host); const restored = resolveRegisteredWebview();
+    restored.receive({ type: "ready" }); await flushSettingsMessages();
+    expect(mock.settings).toEqual(saved); expect(mock.updates).toEqual([]);
+  });
+
+  it("rejects assignment messages from unrelated settings sections", async () => {
+    for (const [key, value] of Object.entries(corruptedRoleSettings)) mock.settings.set(key, value);
+    activateFake(providerSession()); const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettingsSection", section: "planning" }); await flushSettingsMessages();
+    view.receive({ type: "setDefaultModel", providerConfigId: "9router", modelId: "other" }); await flushSettingsMessages();
+    expect(view.posted.at(-1)).toMatchObject({ type: "safeError", message: "Open Models & Roles to apply assignments." });
+    expect(mock.updates).toEqual([]);
+  });
+
+  it("preserves corrupted assignments after an upstream 502 without rerouting", async () => {
+    for (const [key, value] of Object.entries(corruptedRoleSettings)) mock.settings.set(key, value);
+    const saved = new Map(mock.settings);
+    const session = providerSession();
+    session.generate.mockRejectedValue(new Error("Provider request failed with status 502 (provider: 9router, model: ntha/gpt-6-astra)"));
+    activateFake(session);
+    mock.workspaceFolders.push({ name: "root", uri: { fsPath: "/workspace" } });
+    mock.inputs.push("Implement assignment integrity checks");
+    await mock.commands.get("nyxara.generatePlan")?.();
+    expect(session.generate).toHaveBeenCalledTimes(1);
+    expect(mock.errors.join("\n")).toContain("502 (provider: 9router, model: ntha/gpt-6-astra)");
+    expect(mock.settings).toEqual(saved);
+    expect(mock.updates).toEqual([]);
+    expect(session.core.listModels).not.toHaveBeenCalled();
   });
 
   it.each([{}, { allowRepair: false, validation: { test: { enabled: false } } }])("opens provider state after reload with proxy-backed VS Code settings: %j", async (workflow) => {
@@ -567,7 +617,7 @@ describe("VS Code provider onboarding and command safety", () => {
     expect(session.core.listModels).toHaveBeenCalledTimes(1);
     expect((await import("vscode")).commands.executeCommand).not.toHaveBeenCalledWith("workbench.action.reloadWindow");
     expect(mock.pickCalls).toHaveLength(0);
-    view.receive({ type: "setDefaultModel", providerConfigId: CLAUDE_CLI.id, modelId: "opus", executionOptions: { kind: "anthropic_effort", effort: "high" } });
+    view.receive({ type: "openSettingsSection", section: "modelsRoles" }); await flushSettingsMessages(); view.receive({ type: "setDefaultModel", providerConfigId: CLAUDE_CLI.id, modelId: "opus", executionOptions: { kind: "anthropic_effort", effort: "high" } });
     await vi.waitFor(() => expect(mock.settings.get("nyxara.reviewer.model")).toBe("opus"));
     for (const role of ["planner", "executor", "reviewer"]) {
       expect(mock.settings.get(`nyxara.${role}.provider`)).toBe(CLAUDE_CLI.id);
@@ -821,12 +871,16 @@ describe("VS Code provider onboarding and command safety", () => {
   it("multiple configs coexist and switching default does not delete either", async () => {
     mock.settings.set("nyxara.providerConfigs", [OPENAI, GATEWAY]); mock.settings.set("nyxara.defaultProviderConfigId", "openai"); const { secrets, secretValues } = activateFake(fakeSession(true)); secretValues.set("provider/openai-compatible/api-key", "hidden"); mock.pickIndexes.push(1, 0, 0);
     await mock.commands.get("nyxara.manageProviders")?.();
-    expect(mock.settings.get("nyxara.providerConfigs")).toHaveLength(2); expect(mock.settings.get("nyxara.defaultProviderConfigId")).toBe("openai-compatible"); expect(mock.settings.get("nyxara.modelMode")).toBe("simple"); expect(secrets.delete).not.toHaveBeenCalled();
+    expect(mock.settings.get("nyxara.providerConfigs")).toHaveLength(2); expect(mock.settings.get("nyxara.defaultProviderConfigId")).toBe("openai-compatible"); expect(mock.settings.get("nyxara.modelMode")).toBeUndefined(); expect(secrets.delete).not.toHaveBeenCalled();
   });
 
   it("advanced mode independently stores Planner, Executor, and Reviewer provider/model pairs", async () => {
     mock.settings.set("nyxara.providerConfigs", [OPENAI, GATEWAY]); const { session, secretValues } = activateFake(fakeSession(true)); secretValues.set("provider/openai/api-key", "hidden-a"); secretValues.set("provider/openai-compatible/api-key", "hidden-b"); mock.pickIndexes.push(0, 0, 1, 0, 0, 0);
     await mock.commands.get("nyxara.configureRoleModels")?.();
+    expect(mock.updates).toEqual([]);
+    const view = resolveRegisteredWebview();
+    view.receive({ type: "openSettingsSection", section: "modelsRoles" }); await flushSettingsMessages(); view.receive({ type: "updateRoleAssignments", assignments: ["planner", "executor", "reviewer"].map((role) => ({ role, providerConfigId: role === "executor" ? GATEWAY.id : OPENAI.id, modelId: `saved-${role}`, executionOptions: { kind: "provider_default" } })) });
+    await flushSettingsMessages();
     expect(mock.settings.get("nyxara.planner.provider")).toBe("openai"); expect(mock.settings.get("nyxara.executor.provider")).toBe("openai-compatible"); expect(mock.settings.get("nyxara.reviewer.provider")).toBe("openai"); expect(mock.settings.get("nyxara.modelMode")).toBe("advanced"); expect(session.configureAgents).toHaveBeenCalledTimes(2);
   });
 
@@ -1127,7 +1181,7 @@ describe("VS Code provider onboarding and command safety", () => {
     expect(mock.pickCalls).toHaveLength(0);
   });
 
-  it("switches between already configured provider/model pairs inside the Webview", async () => {
+  it("rejects the removed composer provider/model message", async () => {
     mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "openai/model" }, { ...GATEWAY, modelId: "route/model" }]);
     mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id);
     mock.settings.set("nyxara.planner.provider", OPENAI.id);
@@ -1136,7 +1190,9 @@ describe("VS Code provider onboarding and command safety", () => {
     const { secretValues } = activateFake(session); secretValues.set("provider/openai-compatible/api-key", "hidden");
     const view = resolveRegisteredWebview();
     view.receive({ type: "selectModel", providerConfigId: GATEWAY.id, modelId: "route/model" });
-    await vi.waitFor(() => expect(mock.settings.get("nyxara.defaultProviderConfigId")).toBe(GATEWAY.id));
+    await flushSettingsMessages();
+    expect(mock.updates).toEqual([]);
+    expect(mock.settings.get("nyxara.defaultProviderConfigId")).toBe(OPENAI.id);
     expect(mock.settings.get("nyxara.providerConfigs")).toContainEqual(expect.objectContaining({ id: GATEWAY.id, modelId: "route/model" }));
     expect(mock.pickCalls).toHaveLength(0);
   });
@@ -1170,11 +1226,11 @@ describe("VS Code provider onboarding and command safety", () => {
     mock.inputs.push("new-secret"); view.receive({ type: "updateCredential", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(secretValues.get("provider/openai/api-key")).toBe("new-secret")); expect(JSON.stringify(view.posted)).not.toContain("new-secret");
   });
 
-  it("Remove Provider is separately confirmed, clears explicit live role references, and leaves unrelated providers and secrets", async () => {
+  it("Remove Provider is separately confirmed, preserves unavailable role references, and leaves unrelated providers and secrets", async () => {
     mock.settings.set("nyxara.providerConfigs", [OPENAI, GATEWAY]); mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id); mock.settings.set("nyxara.planner.provider", OPENAI.id); mock.settings.set("nyxara.planner.model", "gpt-a");
     const session = fakeSession(true); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "secret-a"); secretValues.set("provider/openai-compatible/api-key", "secret-b"); const view = resolveRegisteredWebview();
     view.receive({ type: "openSettings" }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.settings).toBeDefined()); mock.warningResult = "Remove Provider"; view.receive({ type: "removeProvider", providerConfigId: OPENAI.id });
-    await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")).toEqual([GATEWAY])); expect(mock.settings.get("nyxara.planner.provider")).toBe(""); expect(mock.settings.get("nyxara.planner.model")).toBe(""); expect(secretValues.get("provider/openai-compatible/api-key")).toBe("secret-b"); expect(session.removeProvider).toHaveBeenCalledWith(OPENAI.id); expect(mock.warnings[0]).toContain("role assignments will become unconfigured");
+    await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")).toEqual([GATEWAY])); expect(mock.settings.get("nyxara.planner.provider")).toBe(OPENAI.id); expect(mock.settings.get("nyxara.planner.model")).toBe("gpt-a"); expect(secretValues.get("provider/openai-compatible/api-key")).toBe("secret-b"); expect(session.removeProvider).toHaveBeenCalledWith(OPENAI.id); expect(mock.warnings[0]).toContain("role assignments will remain saved but unavailable");
   });
 
   it("keeps historical tasks readable with persisted provider/model summaries after sign out and removal", async () => {
@@ -1201,17 +1257,17 @@ describe("VS Code provider onboarding and command safety", () => {
   it("updates default provider and Simple mode through typed Settings operations without deleting other providers", async () => {
     mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "old" }, { ...GATEWAY, modelId: "route-old" }]); mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id); const session = fakeSession(true); const { secretValues } = activateFake(session); secretValues.set("provider/openai-compatible/api-key", "hidden"); const view = resolveRegisteredWebview();
     view.receive({ type: "openSettings" }); await vi.waitFor(() => expect(view.posted.at(-1)?.state.settings).toBeDefined()); view.receive({ type: "setDefaultProvider", providerConfigId: GATEWAY.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.defaultProviderConfigId")).toBe(GATEWAY.id)); expect(mock.settings.get("nyxara.providerConfigs")).toHaveLength(2);
-    view.receive({ type: "setDefaultModel", providerConfigId: GATEWAY.id, modelId: "ha-op/gpt-5.6-sol" }); await vi.waitFor(() => expect(mock.settings.get("nyxara.reviewer.model")).toBe("ha-op/gpt-5.6-sol")); expect(mock.settings.get("nyxara.modelMode")).toBe("simple"); for (const role of ["planner", "executor", "reviewer"]) expect([mock.settings.get(`nyxara.${role}.provider`), mock.settings.get(`nyxara.${role}.model`)]).toEqual([GATEWAY.id, "ha-op/gpt-5.6-sol"]); expect(session.configureAgents).toHaveBeenCalled();
+    view.receive({ type: "openSettingsSection", section: "modelsRoles" }); await flushSettingsMessages(); view.receive({ type: "setDefaultModel", providerConfigId: GATEWAY.id, modelId: "ha-op/gpt-5.6-sol" }); await vi.waitFor(() => expect(mock.settings.get("nyxara.reviewer.model")).toBe("ha-op/gpt-5.6-sol")); expect(mock.settings.get("nyxara.modelMode")).toBe("simple"); for (const role of ["planner", "executor", "reviewer"]) expect([mock.settings.get(`nyxara.${role}.provider`), mock.settings.get(`nyxara.${role}.model`)]).toEqual([GATEWAY.id, "ha-op/gpt-5.6-sol"]); expect(session.configureAgents).toHaveBeenCalled();
   });
 
-  it("does not partially switch the Simple-mode default when the target credential is missing", async () => {
+  it("changes only the default provider even when Simple-mode credentials are missing", async () => {
     mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "gpt-old" }, { ...GATEWAY, modelId: "route-old" }]); mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id); mock.settings.set("nyxara.modelMode", "simple"); for (const role of ["planner", "executor", "reviewer"]) { mock.settings.set(`nyxara.${role}.provider`, OPENAI.id); mock.settings.set(`nyxara.${role}.model`, "gpt-old"); }
-    activateFake(fakeSession(true)); const view = resolveRegisteredWebview(); view.receive({ type: "setDefaultProvider", providerConfigId: GATEWAY.id }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError")); expect(mock.settings.get("nyxara.defaultProviderConfigId")).toBe(OPENAI.id); expect(mock.settings.get("nyxara.executor.provider")).toBe(OPENAI.id); expect(mock.settings.get("nyxara.executor.model")).toBe("gpt-old");
+    activateFake(fakeSession(true)); const view = resolveRegisteredWebview(); view.receive({ type: "setDefaultProvider", providerConfigId: GATEWAY.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.defaultProviderConfigId")).toBe(GATEWAY.id)); expect(mock.settings.get("nyxara.executor.provider")).toBe(OPENAI.id); expect(mock.settings.get("nyxara.executor.model")).toBe("gpt-old");
   });
 
   it("blocks a known tool-incompatible provider from Simple mode before writing settings", async () => {
     mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "gpt-text" }]); mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id); const session = fakeSession(true); session.core.listProviders.mockReturnValue([{ id: OPENAI.id, capabilities: { textGeneration: true, toolCalling: false } }]); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "hidden"); const view = resolveRegisteredWebview(); mock.updates.length = 0;
-    view.receive({ type: "setDefaultModel", providerConfigId: OPENAI.id, modelId: "gpt-text" }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError")); expect(view.posted.at(-1)?.message).toContain("incompatible with the executor role"); expect(mock.updates).toHaveLength(0);
+    view.receive({ type: "openSettingsSection", section: "modelsRoles" }); await flushSettingsMessages(); view.receive({ type: "setDefaultModel", providerConfigId: OPENAI.id, modelId: "gpt-text" }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError")); expect(view.posted.at(-1)?.message).toContain("incompatible with the executor role"); expect(mock.updates).toHaveLength(0);
   });
 
   it("keeps the workflow-start provider protected after mutable role settings change", async () => {
@@ -1221,8 +1277,8 @@ describe("VS Code provider onboarding and command safety", () => {
 
   it("atomically saves mixed-provider advanced roles and blocks known incompatible executor adapters", async () => {
     mock.settings.set("nyxara.providerConfigs", [OPENAI, { ...GATEWAY, authStrategy: "none" }]); const session = fakeSession(true); session.core.listProviders.mockReturnValue([{ id: OPENAI.id, capabilities: { textGeneration: true, toolCalling: true } }, { id: GATEWAY.id, capabilities: { textGeneration: true, toolCalling: true } }]); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "hidden"); const view = resolveRegisteredWebview();
-    const assignments = [{ role: "planner", providerConfigId: OPENAI.id, modelId: "plan-model", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: GATEWAY.id, modelId: "exec-model", executionOptions: { kind: "provider_default" } }, { role: "reviewer", providerConfigId: OPENAI.id, modelId: "review-model", executionOptions: { kind: "provider_default" } }]; view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(mock.settings.get("nyxara.modelMode")).toBe("advanced")); expect(mock.settings.get("nyxara.executor.model")).toBe("exec-model"); expect(mock.settings.get("nyxara.reviewer.model")).toBe("review-model");
-    mock.updates.length = 0; session.core.listProviders.mockReturnValue([{ id: OPENAI.id, capabilities: { textGeneration: true, toolCalling: false } }, { id: GATEWAY.id, capabilities: { textGeneration: true, toolCalling: false } }]); view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError")); expect(view.posted.at(-1)?.message).toContain("incompatible"); expect(mock.updates).toHaveLength(0);
+    const assignments = [{ role: "planner", providerConfigId: OPENAI.id, modelId: "plan-model", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: GATEWAY.id, modelId: "exec-model", executionOptions: { kind: "provider_default" } }, { role: "reviewer", providerConfigId: OPENAI.id, modelId: "review-model", executionOptions: { kind: "provider_default" } }]; view.receive({ type: "openSettingsSection", section: "modelsRoles" }); await flushSettingsMessages(); view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(mock.settings.get("nyxara.modelMode")).toBe("advanced")); expect(mock.settings.get("nyxara.executor.model")).toBe("exec-model"); expect(mock.settings.get("nyxara.reviewer.model")).toBe("review-model");
+    mock.updates.length = 0; session.core.listProviders.mockReturnValue([{ id: OPENAI.id, capabilities: { textGeneration: true, toolCalling: false } }, { id: GATEWAY.id, capabilities: { textGeneration: true, toolCalling: false } }]); view.receive({ type: "openSettingsSection", section: "modelsRoles" }); await flushSettingsMessages(); view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError")); expect(view.posted.at(-1)?.message).toContain("incompatible"); expect(mock.updates).toHaveLength(0);
   });
 
   it("migrates alpha.8 roles to Provider Default and opens Models & Roles without discovery or timers", async () => {
@@ -1244,15 +1300,15 @@ describe("VS Code provider onboarding and command safety", () => {
       { role: "executor", providerConfigId: "openai", modelId: "gpt-5.1", executionOptions: { kind: "openai_reasoning", effort: "medium" } },
       { role: "reviewer", providerConfigId: "gemini", modelId: "gemini-3-flash", executionOptions: { kind: "gemini_thinking_level", level: "high" } },
     ];
-    view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(mock.settings.get("nyxara.modelMode")).toBe("advanced"));
+    view.receive({ type: "openSettingsSection", section: "modelsRoles" }); await flushSettingsMessages(); view.receive({ type: "updateRoleAssignments", assignments }); await vi.waitFor(() => expect(mock.settings.get("nyxara.modelMode")).toBe("advanced"));
     expect(mock.settings.get("nyxara.planner.execution")).toEqual(assignments[0].executionOptions); expect(mock.settings.get("nyxara.executor.execution")).toEqual(assignments[1].executionOptions); expect(mock.settings.get("nyxara.reviewer.execution")).toEqual(assignments[2].executionOptions);
     const before = new Map(mock.settings); mock.failNextUpdateKey = "nyxara.reviewer.execution";
-    const changed = assignments.map((assignment) => ({ ...assignment, modelId: `${assignment.modelId}-changed` })); view.receive({ type: "updateRoleAssignments", assignments: changed });
+    const changed = assignments.map((assignment) => ({ ...assignment, modelId: `${assignment.modelId}-changed` })); view.receive({ type: "openSettingsSection", section: "modelsRoles" }); await flushSettingsMessages(); view.receive({ type: "updateRoleAssignments", assignments: changed });
     await vi.waitFor(() => expect(view.posted.at(-1)?.type).toBe("safeError"));
     for (const [key, value] of before) expect(mock.settings.get(key)).toEqual(value);
   });
 
-  it("preserves execution profiles across sign out/reconnect and clears them only with provider removal", async () => {
+  it("preserves execution profiles across sign out/reconnect and preserves them with provider removal", async () => {
     mock.settings.set("nyxara.providerConfigs", [{ ...OPENAI, modelId: "gpt-5.1" }]); mock.settings.set("nyxara.defaultProviderConfigId", OPENAI.id);
     for (const role of ["planner", "executor", "reviewer"]) { mock.settings.set(`nyxara.${role}.provider`, OPENAI.id); mock.settings.set(`nyxara.${role}.model`, "gpt-5.1"); mock.settings.set(`nyxara.${role}.execution`, { kind: "openai_reasoning", effort: "low" }); }
     const session = fakeSession(true); const { secretValues } = activateFake(session); secretValues.set("provider/openai/api-key", "hidden"); const view = resolveRegisteredWebview(); mock.warningResult = "Disconnect";
@@ -1261,7 +1317,7 @@ describe("VS Code provider onboarding and command safety", () => {
     mock.inputs.push("replacement-key"); view.receive({ type: "updateCredential", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")[0].signedOut).toBe(false));
     expect(mock.settings.get("nyxara.executor.execution")).toEqual({ kind: "openai_reasoning", effort: "low" });
     mock.warningResult = "Remove Provider"; view.receive({ type: "removeProvider", providerConfigId: OPENAI.id }); await vi.waitFor(() => expect(mock.settings.get("nyxara.providerConfigs")).toEqual([]));
-    for (const role of ["planner", "executor", "reviewer"]) expect([mock.settings.get(`nyxara.${role}.provider`), mock.settings.get(`nyxara.${role}.model`), mock.settings.get(`nyxara.${role}.execution`)]).toEqual(["", "", { kind: "provider_default" }]);
+    for (const role of ["planner", "executor", "reviewer"]) expect([mock.settings.get(`nyxara.${role}.provider`), mock.settings.get(`nyxara.${role}.model`), mock.settings.get(`nyxara.${role}.execution`)]).toEqual([OPENAI.id, "gpt-5.1", { kind: "openai_reasoning", effort: "low" }]);
   });
 
   it("delegates explicit connection testing only to model discovery and updates profile/history/workspace settings", async () => {

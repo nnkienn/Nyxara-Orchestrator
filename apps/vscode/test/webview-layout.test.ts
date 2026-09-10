@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildSettingsProjection } from "../src/settings-projection.js";
 import { webviewHtml } from "../src/webview-html.js";
+import { projectWorkflowProgress } from "../src/workflow-progress.js";
 
 const browser = [process.env.NYXARA_LAYOUT_BROWSER, "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].find((candidate) => candidate && existsSync(candidate));
 const widths = [320, 340, 360, 480, 720];
@@ -50,7 +51,7 @@ const scenarios = [...settingsScenarios, {
     version: "layout-test", configured: true, workspace: { available: true, multiple: false }, providers: [{ id: provider.id, displayName: longProvider, modelId: longModel, isDefault: true }], validation: [], repairCycles: null,
     prompt: `# PHASE — UI FIX\n${"A long requirement must remain compact in the sidebar. ".repeat(30)}END`,
     plan: { id: "plan-layout", objective: "Fix narrow execution layout", tasks: [{ id: "task-1", title: longTaskTitle, description: "Keep the plan intact", acceptanceCriteria: ["No overlap"], dependencies: [] }], risks: [] },
-    workflow: { id: "workflow-layout", status: "executing", stage: "Executing", active: true, currentTaskId: "task-1", progress: { completed: 0, total: 8 }, tasks: [{ id: "task-1", title: longTaskTitle, status: "running" }], occurredStages: ["planning", "approval", "execution"], stageStartedAt: "2026-09-09T00:00:00.000Z", providerLabel: "OpenAI Codex · gpt-5.6-terra", progressLabel: "Receiving response..." },
+    workflow: { id: "workflow-layout", status: "executing", stage: "Executing", active: true, currentTaskId: "task-1", progress: { completed: 0, total: 8 }, tasks: [{ id: "task-1", title: longTaskTitle, status: "running" }], occurredStages: ["planning", "approval", "execution"], stageStartedAt: "2026-09-09T00:00:00.000Z", providerLabel: "OpenAI Codex · gpt-5.6-terra", progressLabel: "Receiving response...", workflowProgress: projectWorkflowProgress({ workflowId: "workflow-layout", status: "executing", planId: "plan-layout", updatedAt: "now", tasks: [] }) },
   },
 }];
 
@@ -59,6 +60,7 @@ interface LayoutResult {
   ellipsis: Array<{ element: string; ellipsis: boolean; nowrap: boolean }>; helperWraps: boolean;
   gridWidth: number | null; gridTrack: number | null; selectedIds: string[]; settingsColumns: number | null; clippedCards: number;
   apiKeyActions: string[];
+  railLabels: string[]; railLabelsFit: boolean;
   liveTaskWraps: boolean | null; overlappingLiveRows: number; currentTaskTitles: number; progressLabels: number; composerModelCount: number; liveProvider: string | null; planExpanded: boolean | null; promptPreviewBounded: boolean | null;
 }
 
@@ -133,12 +135,14 @@ describe.skipIf(!browser)("Nyxara real-browser sidebar layout", () => {
     for (const result of results.filter((result) => result.name === "provider-details")) expect(result.settingsColumns, `${result.width}px`).toBe(result.width <= 360 ? 1 : 2);
   });
 
-  it("keeps the active execution block compact and non-overlapping at 320–360px", () => {
-    const active = results.filter((result) => result.name === "active-execution" && result.width <= 360);
-    expect(active).toHaveLength(6);
+  it("keeps the active execution block compact and non-overlapping at all sidebar widths", () => {
+    const active = results.filter((result) => result.name === "active-execution");
+    expect(active).toHaveLength(layouts.length);
     for (const result of active) {
       expect(result.liveTaskWraps, `${result.width}px ${result.fontSize}px font`).toBe(true);
       expect(result.overlappingLiveRows, `${result.width}px ${result.fontSize}px font`).toBe(0);
+      expect(result.railLabels).toEqual(result.width <= 360 ? ["Plan", "Exec", "Check", "Review", "Fix"] : ["Plan", "Execute", "Validate", "Review", "Repair"]);
+      expect(result.railLabelsFit).toBe(true);
       expect(result.currentTaskTitles).toBe(1);
       expect(result.progressLabels).toBe(0);
       expect(result.composerModelCount).toBe(0);

@@ -95,7 +95,7 @@ export function createProvider(config: ProviderConfig, secrets: { get(key: strin
 }
 
 export function defaultProviderId(configs: readonly ProviderConfig[], configuredId: string): string | undefined {
-  return configs.some((config) => config.id === configuredId) ? configuredId : configs[0]?.id;
+  return configuredId || configs[0]?.id;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -10,7 +10,7 @@ describe("webview message boundary", () => {
   });
   it("accepts known messages and normalizes task and model input", () => {
     expect(parseWebviewMessage({ type: "submitRequirement", task: "  small task  " })).toEqual({ type: "submitRequirement", task: "small task" });
-    expect(parseWebviewMessage({ type: "selectModel", providerConfigId: " gateway ", modelId: " routed/exact " })).toEqual({ type: "selectModel", providerConfigId: "gateway", modelId: "routed/exact" });
+    expect(parseWebviewMessage({ type: "selectModel", providerConfigId: " gateway ", modelId: " routed/exact " })).toBeUndefined();
     expect(parseWebviewMessage({ type: "ready", unexpected: "ignored" })).toEqual({ type: "ready" });
     expect(parseWebviewMessage({ type: "retryPlanning", unexpected: "ignored" })).toEqual({ type: "retryPlanning" });
     expect(parseWebviewMessage({ type: "startBrowserAuth", providerConfigId: " cli " })).toEqual({ type: "startBrowserAuth", providerConfigId: "cli" });

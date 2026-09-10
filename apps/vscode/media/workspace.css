@@ -194,3 +194,15 @@ select { min-width: 0; width: 100%; height: 27px; padding: 2px 5px; border: 0; b
 @media (max-width: 280px) { .header-button > .header-label { display: none; } }
 @media (max-width: 230px) { .app-header { padding-inline: 7px; } .timeline { padding-inline: 8px; } .composer-wrap { padding-inline: 6px; } .brand { letter-spacing: .04em; } .header-button { padding-inline: 3px; } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+.workflow-progress { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; padding: 8px 0; margin: 0; list-style: none; }
+.workflow-progress-step { display: flex; flex-direction: column; align-items: center; min-width: 0; gap: 2px; font-size: 11px; line-height: 1.4; }
+.workflow-progress-label { overflow-wrap: anywhere; text-align: center; }
+.workflow-progress-short { display: none; }
+@media (max-width: 360px) {
+  .workflow-progress-full { display: none; }
+  .workflow-progress-short { display: block; }
+}
+.workflow-progress-glyph { font-size: 14px; }
+.progress-active, .progress-waiting { font-weight: 700; border-bottom: 2px solid var(--vscode-focusBorder); }
+.progress-failed, .progress-aborted { color: var(--vscode-errorForeground); }
+.progress-completed { color: var(--vscode-testing-iconPassed); }

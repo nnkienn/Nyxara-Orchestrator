@@ -62,6 +62,8 @@ window.addEventListener("load", () => {
         apiKeyActions: [...timeline.querySelectorAll("button")].filter((element) => visible(element) && /^(Add|Update) API Key$/.test(element.textContent)).map((element) => element.textContent),
         liveTaskWraps: liveTaskTitle ? getComputedStyle(liveTaskTitle).whiteSpace === "normal" && liveTaskTitle.getBoundingClientRect().height > parseFloat(getComputedStyle(liveTaskTitle).lineHeight) * 1.5 : null,
         overlappingLiveRows,
+        railLabels: [...timeline.querySelectorAll(".workflow-progress-label")].filter(visible).map((element) => element.textContent),
+        railLabelsFit: [...timeline.querySelectorAll(".workflow-progress-label")].filter(visible).every((element) => element.scrollWidth <= element.clientWidth + 1 && element.getBoundingClientRect().width <= element.parentElement.getBoundingClientRect().width + 1),
         currentTaskTitles: [...timeline.querySelectorAll(".live-task-title")].filter(visible).length,
         progressLabels: [...timeline.querySelectorAll("*")].filter((element) => visible(element) && ["Task progress", "Current task"].includes(element.textContent)).length,
         composerModelCount: document.querySelectorAll("#composer-wrap #model, #composer-wrap .model-summary-button").length,

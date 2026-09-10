@@ -32,7 +32,7 @@ describe("local provider configuration", () => {
   it("reads multiple non-secret configs and keeps stable identities", () => {
     const configs = [{ id: "work", type: "openai-compatible", displayName: "Work", baseUrl: "https://work.invalid/v1", authStrategy: "api_key" }, { id: "local", type: "ollama", displayName: "Ollama", baseUrl: "http://localhost:11434/v1", authStrategy: "local" }];
     const result = readProviderConfigs((key, fallback) => key === "nyxara.providerConfigs" ? configs as any : fallback);
-    expect(result).toEqual(configs); expect(defaultProviderId(result, "local")).toBe("local"); expect(defaultProviderId(result, "missing")).toBe("work");
+    expect(result).toEqual(configs); expect(defaultProviderId(result, "local")).toBe("local"); expect(defaultProviderId(result, "missing")).toBe("missing");
   });
 
   it("ignores duplicate stored identities deterministically", () => {

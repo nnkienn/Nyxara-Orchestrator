@@ -197,7 +197,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       if (data === "[DONE]") { completed = true; return; }
       const event = parseSseJson(data, this.id);
       if (!event) return;
-      if (isRecord(event.error)) throw this.invalidResponse("Provider stream failed");
+      if (isRecord(event.error)) throw this.streamProviderError(event.error);
       if (typeof event.id === "string") id = event.id;
       if (typeof event.model === "string") model = event.model;
       if (isRecord(event.usage)) usage = this.normalizeUsage(event.usage);
@@ -226,6 +226,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (!text && toolCalls.length === 0) throw this.invalidResponse("Provider returned no text content");
     request.onProgress?.({ phase: "request_completed" });
     return { ...(id ? { id } : {}), provider: this.id, model, text, ...(toolCalls.length ? { toolCalls } : {}), ...(finishReason ? { finishReason } : {}), ...(usage ? { usage } : {}) };
+  }
+
+  private streamProviderError(error: UnknownRecord): ProviderError {
+    const message = typeof error.message === "string" && error.message.trim().length > 0
+      ? error.message.trim().slice(0, 240)
+      : "Provider stream failed";
+    const type = typeof error.type === "string" ? error.type : undefined;
+    const code = typeof error.code === "string" ? error.code : undefined;
+    const detail = [type, code].filter(Boolean).join(" / ");
+    return new ProviderError(detail ? `${message} (${detail})` : message, { code: "provider_error", providerId: this.id });
   }
 
   private serializeMessage(message: ModelConversationMessage): UnknownRecord {
@@ -344,7 +354,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
       }
 
       controller.signal.throwIfAborted();
-      if (!response.ok) throw this.httpError(response.status, operation);
+      if (!response.ok) {
+        const failure = this.httpError(response.status, operation);
+        if (response.status >= 500 && operation === "generate") {
+          const model = typeof init.body === "string" ? JSON.parse(init.body).model : undefined;
+          failure.message += ` (provider: ${this.id}, model: ${model ?? "unknown"})`;
+        }
+        throw failure;
+      }
       const result = await read(response);
       controller.signal.throwIfAborted();
       return result;

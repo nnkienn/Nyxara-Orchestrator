@@ -217,7 +217,7 @@ describe("OpenAI-compatible request deadlines", () => {
     const caller = new AbortController();
     const removeListener = vi.spyOn(caller.signal, "removeEventListener");
     const provider = new OpenAICompatibleProvider({ fetch: fetchMock as typeof fetch });
-    await expect(provider.generate({ model: "route/model", prompt: "task", signal: caller.signal })).rejects.toMatchObject({ code: "provider_error", statusCode: 502 });
+    await expect(provider.generate({ model: "route/model", prompt: "task", signal: caller.signal })).rejects.toMatchObject({ code: "provider_error", statusCode: 502, message: "Provider request failed with status 502 (provider: openai-compatible, model: route/model)" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
     expect(vi.getTimerCount()).toBe(0);

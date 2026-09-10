@@ -186,6 +186,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     return undefined;
   };
   const workspaceState = () => buildWorkspaceState({
+    ...(session.workflowId && session.workflowStageEvidence.has(session.workflowId) ? { owningWorkflowStage: session.workflowStageEvidence.get(session.workflowId)! } : {}),
     version, configured: session.configured, folders: (vscode.workspace.workspaceFolders ?? []).length,
     providers: providerConfigs, ...(selectedProviderId ? { defaultProviderId: selectedProviderId } : {}),
     roles: ROLES.map((role) => { const providerId = setting(`nyxara.${role}.provider`, ""); const modelId = setting(`nyxara.${role}.model`, ""); const providerName = providerConfigs.find((config) => config.id === providerId)?.displayName; return { role, ...(providerId ? { providerId } : {}), ...(modelId ? { modelId } : {}), ...(providerName ? { providerName } : {}) }; }),
@@ -371,12 +372,6 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
         settingsDiagnostics = buildSanitizedDiagnostics(settingsProjection, session.snapshot);
         await vscode.env.clipboard.writeText(JSON.stringify(settingsDiagnostics, null, 2)); webview.refresh("diagnostics"); return;
       }
-      case "selectModel": {
-        const config = providerConfigs.find((candidate) => candidate.id === message.providerConfigId);
-        const knownModel = config?.modelId ?? (setting("nyxara.planner.provider", "") === config?.id ? setting("nyxara.planner.model", "") : "");
-        if (!config || knownModel !== message.modelId) throw new Error("Selected provider or model is no longer configured.");
-        await applySimpleModel(message.providerConfigId, message.modelId); webview.refresh("modelState"); return;
-      }
       case "submitRequirement": {
         // The gate runs before workspace resolution, context collection, and any
         // provider call, so a greeting costs nothing.
@@ -521,24 +516,36 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     authExecutions.clear();
   } });
 
-  const update = (key: string, value: unknown, global = true) => vscode.workspace.getConfiguration().update(key, value, global);
-  const updateSettingsAtomic = async (entries: readonly (readonly [string, unknown])[], global = true): Promise<void> => {
-    const previous = entries.map(([key]) => [key, setting<unknown>(key, undefined)] as const);
+  const assignmentOwner = Symbol("Models & Roles");
+  const update = (key: string, value: unknown, global = true, owner?: symbol) => {
+    if (/^nyxara\.(planner|executor|reviewer)\.(provider|model|execution)$/.test(key) && owner !== assignmentOwner) throw new Error("Role assignments must be applied from Models & Roles.");
+    return vscode.workspace.getConfiguration().update(key, value, global);
+  };
+  const updateSettingsAtomic = async (entries: readonly (readonly [string, unknown])[], global = true, owner?: symbol): Promise<void> => {
+    if (entries.some(([key]) => /^nyxara\.(planner|executor|reviewer)\.(provider|model|execution)$/.test(key)) && owner !== assignmentOwner) throw new Error("Role assignments must be applied from Models & Roles.");
+    const previous = entries.map(([key]) => { const inspection = vscode.workspace.getConfiguration().inspect(key); return [key, global ? inspection?.globalValue : inspection?.workspaceValue] as const; });
     let committed = 0;
     try {
-      for (const [key, value] of entries) { await update(key, value, global); committed += 1; }
+      for (const [key, value] of entries) { await update(key, value, global, owner); committed += 1; }
     } catch (error) {
-      for (let index = committed - 1; index >= 0; index -= 1) await update(previous[index]![0], previous[index]![1], global);
+      for (let index = committed - 1; index >= 0; index -= 1) await update(previous[index]![0], previous[index]![1], global, owner);
       throw error;
     }
   };
-  const persistProviders = async (): Promise<void> => { await updateSettingsAtomic([[PROVIDER_CONFIGS_SETTING, providerConfigs], [DEFAULT_PROVIDER_SETTING, selectedProviderId ?? ""]]); };
+  const persistRoleAssignments = async (reason: "models-roles-simple-apply" | "models-roles-advanced-apply", assignments: readonly { readonly role: Role; readonly providerConfigId: string; readonly modelId: string; readonly executionOptions: ExecutionOptions }[], entries: readonly (readonly [string, unknown])[]): Promise<void> => {
+    const diagnostics = assignments.map((assignment) => ({ reason, role: assignment.role, previous: { provider: setting(`nyxara.${assignment.role}.provider`, ""), model: setting(`nyxara.${assignment.role}.model`, "") }, next: { provider: assignment.providerConfigId, model: assignment.modelId.trim() } }));
+    await updateSettingsAtomic([...entries, ...assignments.flatMap((assignment) => [[`nyxara.${assignment.role}.provider`, assignment.providerConfigId], [`nyxara.${assignment.role}.model`, assignment.modelId.trim()], [roleExecutionSetting(assignment.role), assignment.executionOptions]] as const)], true, assignmentOwner);
+    if (context.extensionMode !== 1) for (const diagnostic of diagnostics) output.appendLine(`[Role Assignment] ${JSON.stringify(diagnostic, (_key, value) => typeof value === "string" ? safeErrorMessage(new Error(value)) : value)}`);
+    session.configureAgents(agentSetting);
+  };
+  const persistProviders = async (): Promise<void> => { await updateSettingsAtomic([[PROVIDER_CONFIGS_SETTING, providerConfigs]]); };
   const providerCapabilities = (providerId: string) => session.core.listProviders().find((provider: any) => provider.id === providerId)?.capabilities;
   const assertRoleCompatibility = (config: ProviderConfig, role: Role): void => {
     const capabilities = providerCapabilities(config.id);
     if (capabilities && (!capabilities.textGeneration || (role === "executor" && !capabilities.toolCalling))) throw new Error(`${config.displayName} is incompatible with the ${role} role.`);
   };
   const applySimpleModel = async (providerId: string, modelId: string, executionOptions: ExecutionOptions = PROVIDER_DEFAULT_EXECUTION): Promise<void> => {
+    if (settingsSection !== "modelsRoles") throw new Error("Open Models & Roles to apply assignments.");
     const config = requireProviderConfig(providerId); const normalizedModel = modelId.trim();
     if (!normalizedModel) throw new Error("A model ID is required.");
     if (config.signedOut) throw new Error(`${config.displayName} is signed out.`);
@@ -547,19 +554,13 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     const modelCapabilities = modelDiscovery.capabilities(providerId, normalizedModel) ?? (typeof (session.core as any).getModelCapabilities === "function" ? session.core.getModelCapabilities(providerId, normalizedModel) : undefined);
     assertExecutionOptionsSupported(executionOptions, modelCapabilities?.execution ?? knownModelExecutionCapability(config.catalogId ?? config.type, normalizedModel));
     const nextProviders = providerConfigs.map((candidate) => candidate.id === providerId ? { ...candidate, modelId: normalizedModel } : candidate);
-    await updateSettingsAtomic([[PROVIDER_CONFIGS_SETTING, nextProviders], [DEFAULT_PROVIDER_SETTING, providerId], ["nyxara.modelMode", "simple"], ...ROLES.flatMap((role) => [[`nyxara.${role}.provider`, providerId], [`nyxara.${role}.model`, normalizedModel], [roleExecutionSetting(role), executionOptions]] as const), ["nyxara.provider", config.type]]);
+    await persistRoleAssignments("models-roles-simple-apply", ROLES.map((role) => ({ role, providerConfigId: providerId, modelId: normalizedModel, executionOptions })), [[PROVIDER_CONFIGS_SETTING, nextProviders], [DEFAULT_PROVIDER_SETTING, providerId], ["nyxara.modelMode", "simple"]]);
     providerConfigs = nextProviders; selectedProviderId = providerId;
-    session.configureAgents(agentSetting);
   };
   const setDefaultProvider = async (config: ProviderConfig): Promise<void> => {
     if (config.signedOut) throw new Error(`${config.displayName} is signed out.`);
-    if (setting("nyxara.modelMode", "simple") === "simple") {
-      if (!config.modelId) throw new Error(`Choose a model for ${config.displayName} before setting it as the Simple-mode default.`);
-      await applySimpleModel(config.id, config.modelId);
-      return;
-    }
     selectedProviderId = config.id;
-    try { await persistProviders(); }
+    try { await updateSettingsAtomic([[DEFAULT_PROVIDER_SETTING, config.id]]); }
     catch (error) { selectedProviderId = defaultProviderId(providerConfigs, setting(DEFAULT_PROVIDER_SETTING, "")); throw error; }
   };
   const requireProviderConfig = (providerConfigId: string): ProviderConfig => {
@@ -632,13 +633,12 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   const removeProvider = async (config: ProviderConfig): Promise<void> => {
     assertProviderNotInActiveWorkflow(config);
     const used = providerUsedByRoles(config.id);
-    const roleText = used.length ? ` Currently used by: ${used.map((role) => role[0]!.toUpperCase() + role.slice(1)).join(", ")}. These role assignments will become unconfigured.` : "";
+    const roleText = used.length ? ` Currently used by: ${used.map((role) => role[0]!.toUpperCase() + role.slice(1)).join(", ")}. These role assignments will remain saved but unavailable.` : "";
     const confirmed = await vscode.window.showWarningMessage(`Remove ${config.displayName}? This deletes only this provider configuration and its scoped credential.${roleText} Task history, repository files, other providers, and unrelated credentials remain.`, { modal: true }, "Remove Provider");
     if (confirmed !== "Remove Provider") return;
     const nextProviders = providerConfigs.filter((candidate) => candidate.id !== config.id);
-    const nextDefault = selectedProviderId === config.id ? nextProviders[0]?.id : selectedProviderId;
-    const roleUpdates = used.flatMap((role) => [[`nyxara.${role}.provider`, ""], [`nyxara.${role}.model`, ""], [roleExecutionSetting(role), PROVIDER_DEFAULT_EXECUTION]] as const);
-    await updateSettingsAtomic([[PROVIDER_CONFIGS_SETTING, nextProviders], [DEFAULT_PROVIDER_SETTING, nextDefault ?? ""], ...roleUpdates]);
+    const nextDefault = selectedProviderId === config.id ? undefined : selectedProviderId;
+    await updateSettingsAtomic([[PROVIDER_CONFIGS_SETTING, nextProviders], [DEFAULT_PROVIDER_SETTING, nextDefault ?? ""]]);
     await context.secrets.delete(providerSecretKey(config.id));
     if (config.id === "openai-compatible") await context.secrets.delete(LEGACY_SECRET_KEY);
     try { await modelDiscovery.clear(config.id); } catch (error) { output.appendLine(`model cache cleanup: ${safeErrorMessage(error)}`); }
@@ -646,6 +646,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     providerConfigs = nextProviders; selectedProviderId = nextDefault; clearProviderVerification(config.id); session.removeProvider(config.id); session.configureAgents(agentSetting);
   };
   const applyRoleAssignments = async (assignments: readonly { readonly role: Role; readonly providerConfigId: string; readonly modelId: string; readonly executionOptions: ExecutionOptions }[]): Promise<void> => {
+    if (settingsSection !== "modelsRoles") throw new Error("Open Models & Roles to apply assignments.");
     if (assignments.length !== ROLES.length || new Set(assignments.map((assignment) => assignment.role)).size !== ROLES.length) throw new Error("Role configuration is incomplete.");
     for (const assignment of assignments) {
       const config = requireProviderConfig(assignment.providerConfigId);
@@ -655,8 +656,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       const modelCapabilities = modelDiscovery.capabilities(config.id, assignment.modelId.trim()) ?? (typeof (session.core as any).getModelCapabilities === "function" ? session.core.getModelCapabilities(config.id, assignment.modelId.trim()) : undefined);
       assertExecutionOptionsSupported(assignment.executionOptions, modelCapabilities?.execution ?? knownModelExecutionCapability(config.catalogId ?? config.type, assignment.modelId.trim()));
     }
-    await updateSettingsAtomic([...assignments.flatMap((assignment) => [[`nyxara.${assignment.role}.provider`, assignment.providerConfigId], [`nyxara.${assignment.role}.model`, assignment.modelId.trim()], [roleExecutionSetting(assignment.role), assignment.executionOptions]] as const), ["nyxara.modelMode", "advanced"]]);
-    session.configureAgents(agentSetting);
+    await persistRoleAssignments("models-roles-advanced-apply", assignments, [["nyxara.modelMode", "advanced"]]);
   };
   const makeProviderId = (catalogId: string): string => {
     if (!providerConfigs.some((config) => config.id === catalogId)) return catalogId;
@@ -690,32 +690,6 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     if (action === "Sign In with Browser") return "browser";
     if (action === "Installation help") { await vscode.env.openExternal(vscode.Uri.parse(definition.cli.installUrl)); return undefined; }
     return action === "Use existing CLI login" ? "existing" : undefined;
-  };
-  const pickManualModel = async (): Promise<string | undefined> => {
-    const value = await vscode.window.showInputBox({ prompt: "Model ID", placeHolder: "Enter the exact provider model ID", ignoreFocusOut: true });
-    return value?.trim() || undefined;
-  };
-  const discoverAndPickModel = async (config: ProviderConfig): Promise<string | undefined> => {
-    const definition = providerDefinition(config.catalogId ?? config.type);
-    if (!definition.onboarding.modelDiscovery) {
-      if (definition.cli) {
-        const presets = await session.core.listModels(config.id);
-        return presets[0]?.id ?? (definition.onboarding.manualModelId ? pickManualModel() : undefined);
-      }
-      return definition.onboarding.manualModelId ? pickManualModel() : undefined;
-    }
-    void vscode.window.showInformationMessage(`Testing ${config.displayName}... This uses model discovery and does not generate text.`);
-    try {
-      const models = await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id));
-      if (models.length === 0) return definition.onboarding.manualModelId ? pickManualModel() : undefined;
-      const picked = await vscode.window.showQuickPick([...models.map((model: any) => ({ label: model.name || model.id, description: model.id, modelId: model.id })), ...(definition.onboarding.manualModelId ? [{ label: "Enter model ID manually", description: "Preserve the exact requested ID", manual: true }] : [])], { placeHolder: "Choose one default model (used for all roles)" });
-      if (!picked) return undefined;
-      return picked.manual ? pickManualModel() : picked.modelId;
-    } catch (error) {
-      const statusCode = typeof error === "object" && error !== null && "statusCode" in error ? (error as { statusCode?: number }).statusCode : undefined;
-      if ([404, 405, 501].includes(statusCode ?? 0) && definition.onboarding.manualModelId) { void vscode.window.showInformationMessage("Model discovery is unsupported. Enter a model ID manually."); return pickManualModel(); }
-      throw error;
-    }
   };
   const refreshProviderModels = async (config: ProviderConfig): Promise<void> => {
   const definition = providerDefinition(config.catalogId ?? config.type);
@@ -753,7 +727,6 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
   const completeCliBrowserAuth = async (config: ProviderConfig, isNew: boolean, auth: { readonly sessionId: string; readonly state: string }): Promise<void> => {
     const definition = providerDefinition(config.catalogId ?? config.type);
     let temporarilyRegistered = false;
-    let providerPresetModel: string | undefined;
     let discoveryFailed = false;
     const previousProviders = providerConfigs;
     const previousDefault = selectedProviderId;
@@ -761,17 +734,15 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
       await authSessions.complete(config.id, auth.sessionId, auth.state, async () => {
         if (isNew) { session.upsertProvider(config); temporarilyRegistered = true; }
         try {
-          const models = definition.onboarding.modelDiscovery
-            ? await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id))
-            : await session.core.listModels(config.id);
-          providerPresetModel = models[0]?.id;
+          if (definition.onboarding.modelDiscovery) await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id));
+          else await session.core.listModels(config.id);
         } catch (error) {
           if (isAuthenticationFailure(error)) throw error;
           discoveryFailed = true;
         }
-        const connected = { ...config, ...(isNew && !definition.onboarding.modelDiscovery && providerPresetModel ? { modelId: providerPresetModel } : {}), signedOut: false };
+        const connected = { ...config, signedOut: false };
         if (isNew) {
-          providerConfigs = [...providerConfigs, connected]; selectedProviderId = connected.id;
+          providerConfigs = [...providerConfigs, connected];
         } else providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? connected : candidate);
         session.upsertProvider(connected);
         try { await persistProviders(); }
@@ -922,27 +893,17 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     try {
       session.upsertProvider(config);
       providerConfigs = [...providerConfigs, config];
-      selectedProviderId = id;
       await persistProviders();
     }
     catch (error) {
       providerConfigs = providerConfigs.filter((candidate) => candidate.id !== id);
-      selectedProviderId = defaultProviderId(providerConfigs, "");
       await context.secrets.delete(providerSecretKey(id));
       await persistProviders();
       throw error;
     }
     try {
       if (definition.onboarding.modelDiscovery) await modelDiscovery.refresh(config.id, () => session.core.listModels(config.id));
-      else {
-        const presets = await session.core.listModels(config.id);
-        const preset = presets[0]?.id;
-        if (preset) {
-          const configured = { ...config, modelId: preset };
-          providerConfigs = providerConfigs.map((candidate) => candidate.id === config.id ? configured : candidate);
-          session.upsertProvider(configured); await persistProviders();
-        }
-      }
+      else await session.core.listModels(config.id);
       await markProviderVerified(config);
     } catch (error) {
       if (isAuthenticationFailure(error)) {
@@ -953,7 +914,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
           void vscode.window.showWarningMessage("Gateway authentication failed. Configuration kept. Use Add API Key or Update API Key in Provider Details to enter this gateway's credential.");
           return;
         }
-        providerConfigs = providerConfigs.filter((candidate) => candidate.id !== id); selectedProviderId = defaultProviderId(providerConfigs, ""); session.removeProvider(id);
+        providerConfigs = providerConfigs.filter((candidate) => candidate.id !== id); session.removeProvider(id);
         await context.secrets.delete(providerSecretKey(id)); try { await modelDiscovery.clear(id); } catch { /* safe best-effort cache cleanup */ } await persistProviders(); throw error;
       }
       settingsSection = "modelsRoles"; selectedSettingsProviderId = undefined; await refreshSettingsProjection(); webview.refresh("modelsFailed");
@@ -964,24 +925,11 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     void vscode.window.showInformationMessage(config.authStrategy === "subscription_cli" ? "CLI setup verified ✓ Choose a model and execution setting in Nyxara." : "Provider connected ✓ Choose a model and execution setting in Nyxara.");
   };
   const configureRoleModels = async (): Promise<void> => {
-    if (providerConfigs.length === 0) { await connectProvider(); return; }
-    const selections: Array<{ role: Role; providerConfigId: string; modelId: string; executionOptions: ExecutionOptions }> = [];
-    for (const role of ROLES) {
-      const providerPick = await vscode.window.showQuickPick(providerConfigs.map((config) => ({ label: config.displayName, description: providerDefinition(config.catalogId ?? config.type).description, config })), { placeHolder: `${role[0]?.toUpperCase()}${role.slice(1)} provider` });
-      if (!providerPick) return;
-      const modelId = await discoverAndPickModel(providerPick.config);
-      if (!modelId) return;
-      selections.push({ role, providerConfigId: providerPick.config.id, modelId, executionOptions: PROVIDER_DEFAULT_EXECUTION });
-    }
-    await applyRoleAssignments(selections);
-    void vscode.window.showInformationMessage("Advanced role models saved.");
+    settingsSection = "modelsRoles"; selectedSettingsProviderId = undefined;
+    await refreshSettingsProjection(); webview.refresh("settingsProjection");
+    await vscode.commands.executeCommand("workbench.view.extension.nyxara");
   };
-  const chooseDefaultModel = async (): Promise<void> => {
-    const config = selectedProvider();
-    if (!config) { await connectProvider(); return; }
-    const modelId = await discoverAndPickModel(config);
-    if (modelId) await applySimpleModel(config.id, modelId);
-  };
+  const chooseDefaultModel = configureRoleModels;
   const manageProviders = async (): Promise<void> => {
     if (providerConfigs.length === 0) { await connectProvider(); return; }
     const picked = await vscode.window.showQuickPick([...providerConfigs.map((config) => ({ label: config.displayName, description: `${providerDefinition(config.catalogId ?? config.type).description}${config.id === selectedProviderId ? " · Default" : ""}`, config })), { label: "Connect another provider", description: "Add a local provider configuration", connect: true }, { label: "Configure models by role", description: "Advanced", roles: true }], { placeHolder: "Manage Providers" });
@@ -993,8 +941,7 @@ export function activate(context: vscode.ExtensionContext, injectedSession?: Nyx
     const action = await vscode.window.showQuickPick([{ label: "Use as default", action: "default" }, ...(definition.onboarding.authMethods.includes("api_key") ? [{ label: "Update credential", description: "Stored securely; current value is never shown", action: "credential" }] : []), ...(definition.onboarding.apiKeyHelpUrl ? [{ label: "Open official API key page", description: "Sign in with your browser, then return to Nyxara", action: "api-key-page" }] : []), ...(definition.cli ? [{ label: `Sign in with ${definition.cli.accountLabel}`, description: "Uses the official CLI browser login flow", action: "cli-login" }, { label: "CLI installation help", action: "cli-install" }] : []), { label: "Refresh Models", description: definition.onboarding.modelDiscovery ? "Loads the provider/account model list once" : "Unavailable; enter an exact model ID", action: "refresh-models" }, { label: "Test connection", description: definition.cli ? "Checks CLI installation and login without generating" : "Does not generate text", action: "test" }, ...(!definition.cli && definition.onboarding.category !== "official" ? [{ label: "Edit name and endpoint", action: "edit" }] : []), { label: "Configure models by role", description: "Advanced", action: "roles" }, ...(config.authStrategy === "api_key" || config.authStrategy === "subscription_cli" ? [{ label: config.authStrategy === "subscription_cli" ? "Sign Out" : "Disconnect", description: "Keeps provider settings, models, roles, and history", action: "signout" }] : []), { label: "Remove Provider", description: "Deletes this provider configuration and scoped credential", action: "remove" }], { placeHolder: config.displayName });
     if (!action) return;
     if (action.action === "default") {
-      const modelId = await discoverAndPickModel(config); if (!modelId) return;
-      await applySimpleModel(config.id, modelId);
+      await setDefaultProvider(config);
       void vscode.window.showInformationMessage(`${config.displayName} is now the default provider.`);
     } else if (action.action === "credential") {
       await updateProviderCredential(config);

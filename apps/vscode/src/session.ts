@@ -36,6 +36,7 @@ export class NyxaraSession {
   configured = false;
   onChange?: () => void;
   private workflowSettingsSnapshot?: WorkflowSettings;
+  readonly workflowStageEvidence = new Map<string, string>();
   private planningAbortController?: AbortController;
   private recoveryPersistenceWarningLogged = false;
 
@@ -44,7 +45,10 @@ export class NyxaraSession {
       ? [new OpenAICompatibleProvider({ baseUrl: providers, credentialStore: new VSCodeCredentialStore(context.secrets) })]
       : providers.map((config) => createProvider(config, context.secrets));
     this.core = injectedCore ?? new NyxaraOrchestrator({ providers: configuredProviders });
-    this.core.events.on("workflow.status_changed", (event: any) => this.log(`workflow ${event.workflowId}: ${event.to}`));
+    this.core.events.on("workflow.status_changed", (event: any) => {
+      if (["created", "planning", "executing", "running", "validating", "reviewing", "repairing"].includes(event.to)) this.workflowStageEvidence.set(event.workflowId, event.to);
+      this.log(`workflow ${event.workflowId}: ${event.to}`);
+    });
     this.core.events.on("workflow.completed", (event: any) => this.log(`workflow ${event.workflowId}: completed`));
     this.core.events.on("workflow.failed", (event: any) => this.log(`workflow ${event.workflowId}: failed (${event.code})`));
     this.core.events.on("workflow.aborted", (event: any) => this.log(`workflow ${event.workflowId}: aborted`));

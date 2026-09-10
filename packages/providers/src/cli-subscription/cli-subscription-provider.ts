@@ -113,7 +113,11 @@ interface CliSpec {
  */
 const DEFAULT_MODEL_ALIAS = "default";
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_TIMEOUT_MS: Readonly<Record<CliSubscriptionKind, number>> = {
+  "codex-cli": 180_000,
+  "claude-code-cli": 600_000,
+  "gemini-cli": 180_000,
+};
 const MODEL_DISCOVERY_TIMEOUT_MS = 30_000;
 const MAX_MODEL_PAGES = 32;
 const MAX_DISCOVERED_MODELS = 512;
@@ -160,7 +164,7 @@ export class CliSubscriptionProvider implements ModelProvider {
     this.runner = config.runner ?? new NodeCliProcessRunner();
     this.codexModelCatalog = config.codexModelCatalog ?? new NodeCodexAppServerCatalog();
     this.claudeModelCatalog = config.claudeModelCatalog ?? new NodeClaudeAgentSdkCatalog();
-    this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS[config.kind];
   }
 
   capabilities(): ProviderCapabilities {
@@ -501,7 +505,8 @@ function cliSpec(kind: CliSubscriptionKind): CliSpec {
     validateStatus: (result, providerId) => {
       let status: unknown;
       try { status = JSON.parse(result.stdout); } catch { status = undefined; }
-      if (!isRecord(status) || status.loggedIn !== true || status.authMethod !== "claude.ai") throw new ProviderError("Claude Code must be signed in with a Claude account, not an API key", { code: "authentication_error", providerId });
+      const authMethod = isRecord(status) && typeof status.authMethod === "string" ? status.authMethod : undefined;
+      if (!isRecord(status) || status.loggedIn !== true || (authMethod !== "claude.ai" && authMethod !== "oauth_token")) throw new ProviderError("Claude Code must be signed in with a Claude account, not an API key", { code: "authentication_error", providerId });
     },
     generationArgs: (model, executionOptions, responseSchema) => ["--print", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--safe-mode", "--tools", "", "--permission-mode", "dontAsk", ...(responseSchema ? ["--json-schema", responseSchema] : []), ...(model === DEFAULT_MODEL_ALIAS ? [] : ["--model", model]), ...(executionOptions.kind === "anthropic_effort" ? ["--effort", executionOptions.effort] : [])],
     responseText: parseClaudeOutput,

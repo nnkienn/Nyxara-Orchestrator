@@ -12,6 +12,12 @@ It builds the required packages, runs the deterministic VS Code checks, derives 
 
 The extension manifest at `apps/vscode/package.json` is the single source of truth for the local dogfood version. **Nyxara: About** and the sidebar show that installed manifest version with the **Local Dogfood** label. Use F5 only for development/debugging in an Extension Development Host; use the VSIX for daily dogfood.
 
+## Workflow progress rail (alpha.39)
+
+The compact Plan / Execute / Validate / Review / Repair rail uses Core snapshots and observed Core stage events, not a Webview state machine. At widths up to 360px it uses Plan / Exec / Check / Review / Fix; full stage names and status meanings remain available to assistive technology and tooltips. Plan stays active throughout analyzing and planning, including when a draft plan ID exists. Task progress stays below the rail. Permission waits retain their active owning stage; terminal stages are never checked merely because the workflow ended. Read-only tasks can complete without validation or review.
+
+History retains the bounded rail projection. Older records use their persisted task and performance summaries conservatively: missing stage evidence remains pending. Reopening history makes no provider or repository calls. Reload VS Code after installing alpha.39.
+
 ## Compact workflow presentation (alpha.38)
 
 Long current and historical requirements now open as bounded previews with local **Show full prompt** / **Hide prompt** controls. The implementation plan remains collapsible in every state: it defaults open while awaiting approval, keeps approval actions visible when closed, and collapses once when execution begins without resetting later manual choices.

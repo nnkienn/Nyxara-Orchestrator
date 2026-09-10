@@ -10,7 +10,6 @@ export const MAX_HISTORY_SEARCH = 200;
 export type WebviewToExtensionMessage =
   | { readonly type: "ready" }
   | { readonly type: "submitRequirement"; readonly task: string }
-  | { readonly type: "selectModel"; readonly providerConfigId: string; readonly modelId: string }
   | { readonly type: "openProviderSetup" }
   | { readonly type: "openSettings" }
   | { readonly type: "closeSettings" }
@@ -61,7 +60,6 @@ export type WebviewToExtensionMessage =
 export type StateMessageType =
   | "initialState"
   | "providerState"
-  | "modelState"
   | "planningStarted"
   | "planReady"
   | "workflowSnapshot"
@@ -154,7 +152,6 @@ export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage |
       });
       return assignments.length === 3 && new Set(assignments.map((item) => item.role)).size === 3 ? { type: value.type, assignments } : undefined;
     }
-    case "selectModel": { const providerConfigId = text("providerConfigId"); const modelId = text("modelId"); return providerConfigId?.trim() && modelId?.trim() ? { type: value.type, providerConfigId: providerConfigId.trim(), modelId: modelId.trim() } : undefined; }
     case "submitRequirement": { const task = text("task", MAX_TASK_INPUT); return task?.trim() ? { type: value.type, task: task.trim() } : undefined; }
     case "allowPermission": case "denyPermission": { const requestId = text("requestId"); return requestId ? { type: value.type, requestId } : undefined; }
     case "listTasks": return value.scope === "current" || value.scope === "all" ? { type: value.type, scope: value.scope } : undefined;

@@ -13,6 +13,7 @@ import {
 import { z } from "zod";
 import { buildPerformanceProjection, sanitizePerformanceProjection, type PerformanceProjection, type PerformanceTerminalStatus } from "./performance-projection.js";
 import type { WorkspaceViewState } from "./workspace-state.js";
+import { sanitizeWorkflowProgress, type WorkflowProgress } from "./workflow-progress.js";
 
 export const TASK_SESSION_SCHEMA_VERSION = 1;
 export const MAX_HISTORY_SESSIONS = 50;
@@ -63,6 +64,7 @@ export interface TaskSession {
   readonly title: string;
   readonly requirement: string;
   readonly workflowId?: string;
+  readonly workflowProgress?: WorkflowProgress;
   readonly status: TaskSessionStatus;
   readonly providerSummary?: { readonly provider: string; readonly model?: string };
   readonly planSummary?: TaskPlanSummary;
@@ -246,6 +248,7 @@ export function projectTaskSession(existing: TaskSession, state: WorkspaceViewSt
     failureSummary: undefined,
     updatedAt: now,
     ...(workflow?.id ? { workflowId: workflow.id } : {}),
+    ...(workflow?.workflowProgress ? { workflowProgress: workflow.workflowProgress } : {}),
     status,
     ...(state.plan ? { planSummary: {
       objective: state.plan.objective,
@@ -295,6 +298,8 @@ export function sanitizeTaskSession(value: unknown): TaskSession | undefined {
   if (!id || !createdAt || !updatedAt || !workspace?.id || !workspace.label || !title || !requirement || !status) return undefined;
   const session: TaskSession = { id, schemaVersion: TASK_SESSION_SCHEMA_VERSION, createdAt, updatedAt, workspaceIdentity: workspace, title, requirement, status };
   const workflowId = bounded(value.workflowId, 200); if (workflowId) Object.assign(session, { workflowId });
+  const workflowProgress = sanitizeWorkflowProgress(value.workflowProgress);
+  if (workflowProgress) Object.assign(session, { workflowProgress });
   const recovery = TaskRecoverySchema.safeParse(value.recovery);
   if (recovery.success) Object.assign(session, { recovery: recovery.data });
   if (record(value.providerSummary)) { const provider = privacySafe(value.providerSummary.provider, 100); const model = privacySafe(value.providerSummary.model, 200); if (provider) Object.assign(session, { providerSummary: { provider, ...(model ? { model } : {}) } }); }

@@ -3,6 +3,7 @@ import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { buildSettingsProjection } from "../src/settings-projection.js";
 import { resolveWorkflowSettings, workflowControls } from "../src/workflow-settings.js";
+import { projectWorkflowProgress } from "../src/workflow-progress.js";
 
 type Listener = (event: any) => void;
 
@@ -124,6 +125,24 @@ const awaiting = { id: "w", status: "awaiting_plan_approval", stage: "Awaiting a
 const settingsProjection = buildSettingsProjection({ version: "0.1.0-alpha.9", providers: [{ id: "work", catalogId: "openai", type: "openai", displayName: "OpenAI Work", modelId: "gpt-5.1", baseUrl: "https://api.openai.com/v1", authStrategy: "api_key" }], defaultProviderId: "work", credentialStored: new Map([["work", true]]), testedProviderIds: new Set(["work"]), modelMode: "simple", roles: [{ role: "planner", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "executor", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }, { role: "reviewer", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } }], selectedPlanningProfile: "default", planningProfiles: [{ id: "default", name: "Default", outputLanguage: "en", planStyle: "balanced", riskMode: "balanced" }], engineeringRules: [{ id: "avoid-secret-exposure", name: "Avoid secret exposure", description: "Protect secrets", scope: "global", severity: "error", enabled: true }], historyRetention: 50, historyCount: 4, workspaceFolders: [{ id: "root-0", label: "Project" }], selectedWorkspaceRootId: "root-0" } as any);
 
 describe("Nyxara browser runtime", () => {
+  it.each(["created", "planning", "awaiting_plan_approval", "executing", "validating", "reviewing", "repairing", "waiting_for_permission"] as const)("renders authoritative rail accessibility for %s", (status) => {
+    const runtime = harness();
+    const steps = projectWorkflowProgress({ workflowId: "rail", status, planId: "plan", updatedAt: "now", tasks: [] }, "Review");
+    runtime.emit(baseState({ workflow: { id: "rail", status, stage: status === "waiting_for_permission" ? "Waiting for permission" : status, active: true, tasks: [], workflowProgress: steps } }));
+    const rail = runtime.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Workflow progress")!;
+    expect(rail.children).toHaveLength(5);
+    for (const [index, step] of steps.entries()) {
+      const item = rail.children[index]!;
+      expect(item.attributes.get("aria-label")).toBe(`${step.label}: ${step.status}`);
+      expect(item.title).toBe(`${step.label}: ${step.status}`);
+      expect(item.children[0]!.textContent).toBe(step.status === "completed" ? "✓" : step.status === "active" ? "●" : "○");
+    }
+    if (status === "waiting_for_permission") {
+      expect(rail.children[3]!.attributes.get("aria-current")).toBe("step");
+      expect(runtime.text()).toContain("Waiting for permission");
+    }
+  });
+
   it("renders current workflow controls separately from fixed capabilities, without timers or requests", () => {
     const runtime = harness();
     const settings = resolveWorkflowSettings({ allowRepair: false, repairLimits: { maxRepairCycles: 5 }, validation: { test: { enabled: false, timeoutMs: 12345 } } });
@@ -843,7 +862,7 @@ describe("Nyxara browser runtime", () => {
     expect(h.text()).toContain("ReasoningProvider Default");
     expect(h.text()).not.toContain("Advanced Role Assignments");
     expect(h.elements.get("timeline")!.descendants().some((item) => item.tagName === "select" && item.attributes.get("aria-label") === "Default model")).toBe(true);
-    h.findButton("Use Simple Mode")?.dispatch("click");
+    h.findButton("Apply to Planner, Executor & Reviewer")?.dispatch("click");
     expect(h.messages.at(-1)).toEqual({ type: "setDefaultModel", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } });
     h.findButton("Advanced")?.dispatch("click");
     expect(h.text()).toContain("Advanced Role Assignments");
@@ -851,7 +870,7 @@ describe("Nyxara browser runtime", () => {
     for (const role of ["Planner", "Executor", "Reviewer"]) expect(h.text()).toContain(role);
     expect(h.text().match(/Reasoning/g)?.length).toBeGreaterThanOrEqual(3);
     expect(h.text()).toContain("Repair uses Executor");
-    h.findButton("Save Advanced Roles")?.dispatch("click");
+    h.findButton("Apply Role Assignments")?.dispatch("click");
     expect(h.messages.at(-1)?.assignments).toEqual([
       { role: "planner", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } },
       { role: "executor", providerConfigId: "work", modelId: "gpt-5.1", executionOptions: { kind: "provider_default" } },
@@ -871,13 +890,16 @@ describe("Nyxara browser runtime", () => {
     select.value = "model:unrelated/model"; select.dispatch("change");
     expect(input.value).toBe("unrelated/model");
     expect(h.messages).toEqual([{ type: "ready" }]);
-    h.findButton("Use Simple Mode")!.dispatch("click");
+    h.findButton("Apply to Planner, Executor & Reviewer")!.dispatch("click");
     expect(h.messages.at(-1)).toEqual({ type: "setDefaultModel", providerConfigId: "work", modelId: "unrelated/model", executionOptions: { kind: "provider_default" } });
   });
 
   it("preserves undiscovered IDs and supports explicit manual entry without filtering the dropdown", () => {
-    const provider = { ...settingsProjection.providers[0], models: [{ id: "other/model", name: "Other model" }] };
+    const provider = { ...settingsProjection.providers[0], modelsStatus: "loaded", models: [{ id: "other/model", name: "Other model" }] };
     const h = harness();
+    h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...settingsProjection, providers: [provider] } } }));
+    expect(h.text()).toContain("Availability is unverified; the saved assignment is preserved.");
+    expect(h.messages).toEqual([{ type: "ready" }]);
     h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...settingsProjection, providers: [provider] } } }));
     const select = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model")!;
     const input = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model ID (manual)")!;
@@ -886,7 +908,7 @@ describe("Nyxara browser runtime", () => {
     select.value = "manual"; select.dispatch("change");
     expect(input.className).not.toContain("hidden");
     input.value = " private/exact-id "; input.dispatch("input");
-    h.findButton("Use Simple Mode")!.dispatch("click");
+    h.findButton("Apply to Planner, Executor & Reviewer")!.dispatch("click");
     expect(h.messages.at(-1)).toMatchObject({ modelId: "private/exact-id" });
     expect(select.children.map((option) => option.value)).toContain("model:other/model");
     select.value = "model:other/model"; select.dispatch("change");
@@ -901,23 +923,23 @@ describe("Nyxara browser runtime", () => {
     const providerSelect = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default provider")!;
     const modelSelect = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model")!;
     providerSelect.value = "other"; providerSelect.dispatch("change");
-    expect(modelSelect.value).toBe("model:opus");
+    expect(modelSelect.value).toBe(""); modelSelect.value = "model:opus"; modelSelect.dispatch("change");
     expect(modelSelect.children.map((option) => option.value)).toEqual(["", "model:opus", "manual"]);
     expect(h.text()).toContain("EffortProvider DefaultHigh");
     expect(h.text()).not.toContain("Reasoning");
-    h.findButton("Use Simple Mode")!.dispatch("click");
+    h.findButton("Apply to Planner, Executor & Reviewer")!.dispatch("click");
     expect(h.messages.at(-1)).toMatchObject({ providerConfigId: "other", modelId: "opus" });
   });
 
   it.each(["loading", "failed", "loaded"])("handles a %s empty catalog and populates all choices on refresh", (modelsStatus) => {
     const provider = { ...settingsProjection.providers[0], defaultModel: undefined, modelsStatus, models: [] };
     const h = harness();
-    const projection = { ...settingsProjection, defaultModel: undefined, providers: [provider], roles: [] };
+    const projection = { ...settingsProjection, defaultModel: undefined, providers: [provider], roles: [{ role: "planner", providerConfigId: provider.id }] };
     h.emit(baseState({ settings: { section: "modelsRoles", projection } }));
     const select = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model")!;
     expect(select.value).toBe("");
     expect(select.children.map((option) => option.value)).toEqual(["", "manual"]);
-    h.findButton("Use Simple Mode")!.dispatch("click");
+    h.findButton("Apply to Planner, Executor & Reviewer")!.dispatch("click");
     expect(h.messages).toEqual([{ type: "ready" }]);
     h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...projection, providers: [{ ...provider, modelsStatus: "loaded", models: [{ id: "first", name: "First" }, { id: "second", name: "Second" }] }] } } }), "capabilitiesUpdated");
     const refreshed = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default model")!;
@@ -934,7 +956,7 @@ describe("Nyxara browser runtime", () => {
       expect(select.children.map((option) => option.value)).toContain("model:other/model");
       if (role === "Executor") { select.value = "model:other/model"; select.dispatch("change"); }
     }
-    h.findButton("Save Advanced Roles")!.dispatch("click");
+    h.findButton("Apply Role Assignments")!.dispatch("click");
     expect(h.messages.at(-1).assignments.map((assignment: any) => [assignment.role, assignment.modelId])).toEqual([["planner", "gpt-5.1"], ["executor", "other/model"], ["reviewer", "gpt-5.1"]]);
   });
 
@@ -943,12 +965,12 @@ describe("Nyxara browser runtime", () => {
     const h = harness();
     h.emit(baseState({ settings: { section: "modelsRoles", projection } }));
     expect(h.text()).toContain("ReasoningProvider Default");
-    h.findButton("Use Simple Mode")!.dispatch("click");
+    h.findButton("Apply to Planner, Executor & Reviewer")!.dispatch("click");
     expect(h.messages.at(-1)).toMatchObject({ executionOptions: { kind: "openai_reasoning", effort: "medium" } });
     h.emit(baseState({ settings: { section: "modelsRoles", projection: { ...projection, roles: projection.roles.map((role) => ({ ...role, executionProfileStatus: "stale" })) } } }));
     expect(h.text()).toContain("Execution setting no longer supported");
     h.findButton("Use Provider Default")!.dispatch("click");
-    h.findButton("Use Simple Mode")!.dispatch("click");
+    h.findButton("Apply to Planner, Executor & Reviewer")!.dispatch("click");
     expect(h.messages.at(-1)).toMatchObject({ executionOptions: { kind: "provider_default" } });
   });
 
@@ -965,11 +987,13 @@ describe("Nyxara browser runtime", () => {
     const projection = { ...settingsProjection, providers: [provider], defaultProviderConfigId: provider.id, defaultModel: undefined, modelMode: "simple", roles: [] };
     const h = harness(); h.emit(baseState({ configured: false, providers: [{ id: provider.id, displayName: provider.displayName, isDefault: true }], settings: { section: "modelsRoles", projection } }), "authCompleted");
     expect(h.text()).toContain("Connected. Choose a model and its execution setting here to finish setup.");
+    const providerSelect = h.elements.get("timeline")!.descendants().find((item) => item.attributes.get("aria-label") === "Default provider")!;
+    providerSelect.value = provider.id; providerSelect.dispatch("change");
     const modelSelect = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "select" && item.attributes.get("aria-label") === "Default model")!;
     modelSelect.value = "model:opus"; modelSelect.dispatch("change");
     const effort = h.elements.get("timeline")!.descendants().find((item) => item.tagName === "select" && item.children.some((child) => child.allText() === "High"))!;
     effort.value = "high"; effort.dispatch("change");
-    const save = h.findButton("Use Simple Mode"); expect(save).toBeDefined(); expect(modelSelect.value).toBe("model:opus");
+    const save = h.findButton("Apply to Planner, Executor & Reviewer"); expect(save).toBeDefined(); expect(modelSelect.value).toBe("model:opus");
     save!.dispatch("click");
     expect(h.messages.at(-1)).toEqual({ type: "setDefaultModel", providerConfigId: provider.id, modelId: "opus", executionOptions: { kind: "anthropic_effort", effort: "high" } });
     expect(h.messages.some((message) => message.type === "selectModel")).toBe(false);

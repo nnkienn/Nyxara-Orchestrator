@@ -341,6 +341,7 @@
   function providerSelect(projection, selectedId, label) {
     const select = node("select", "settings-select"); select.setAttribute("aria-label", label);
     select._providerOptions = [];
+    if (!selectedId || !projection.providers.some((provider) => provider.id === selectedId)) { const saved = node("option", "", selectedId ? `${selectedId} · Unavailable` : "Choose a provider…"); saved.value = selectedId || ""; saved.selected = true; select.append(saved); }
     projection.providers.forEach((provider) => { const option = node("option", "", `${provider.displayName} · ${provider.status}`); option.value = provider.id; option.selected = provider.id === selectedId; option.disabled = ["Signed out", "Credential missing", "Unavailable"].includes(provider.status); select._providerOptions.push({ option, text: `${provider.displayName} ${provider.providerName} ${provider.defaultModel || ""}`.toLocaleLowerCase() }); select.append(option); });
     return select;
   }
@@ -365,7 +366,7 @@
         option.value = `model:${model.id}`; select.append(option);
       });
       if (selectedId && !models.some((model) => model.id === selectedId)) {
-        const saved = node("option", "", selectedId); saved.value = `model:${selectedId}`; select.append(saved);
+        const saved = node("option", "", `${selectedId} · Saved / not in discovered catalog`); saved.value = `model:${selectedId}`; select.append(saved);
       }
       if (provider && provider.supportsManualModelId !== false) {
         const manual = node("option", "", "Enter model ID manually…"); manual.value = "manual"; select.append(manual);
@@ -374,8 +375,9 @@
       select.disabled = !provider;
       select.title = selectedId;
       modelInput.classList.add("hidden");
-      status.classList.toggle("hidden", models.length > 0);
-      status.textContent = provider && provider.modelsMessage || (provider && provider.modelsStatus === "loading" ? "Loading available models…" : "No discovered models. Refresh Models in AI Providers or enter a model ID manually.");
+      const savedOutsideCatalog = selectedId && provider && provider.modelsStatus === "loaded" && !models.some((model) => model.id === selectedId);
+      status.classList.toggle("hidden", models.length > 0 && !savedOutsideCatalog);
+      status.textContent = savedOutsideCatalog ? "Saved model is not in the discovered catalog. Availability is unverified; the saved assignment is preserved." : provider && provider.modelsMessage || (provider && provider.modelsStatus === "loading" ? "Loading available models…" : "No discovered models. Refresh Models in AI Providers or enter a model ID manually.");
     };
     select.addEventListener("change", () => {
       const manual = select.value === "manual";
@@ -386,8 +388,7 @@
       notifyChange();
     });
     providerControl.addEventListener("change", () => {
-      const provider = projection.providers.find((item) => item.id === providerControl.value);
-      modelInput.value = provider && provider.defaultModel || "";
+      modelInput.value = "";
       render(); notifyChange();
     });
     host.append(select, modelInput, status); render();
@@ -467,18 +468,18 @@
     const visibleMode = modelModeDraft;
     const mode = node("div", "mode-tabs"); const simpleTab = node("button", visibleMode === "simple" ? "chip selected" : "chip", "Simple"); simpleTab.type = "button"; simpleTab.addEventListener("click", () => { modelModeDraft = "simple"; render(); }); const advancedTab = node("button", visibleMode === "advanced" ? "chip selected" : "chip", "Advanced"); advancedTab.type = "button"; advancedTab.addEventListener("click", () => { modelModeDraft = "advanced"; render(); }); mode.append(simpleTab, advancedTab); timeline.append(mode);
     if (!projection.providers.length) { timeline.append(node("p", "muted settings-empty", "No providers configured."), button("Connect Provider", "primary", "connectProvider")); return; }
-    const simple = card("Simple"); const defaultProvider = projection.providers.find((provider) => provider.id === projection.defaultProviderConfigId) || projection.providers[0];
+    const simple = card("Simple"); const savedPlanner = projection.roles.find((assignment) => assignment.role === "planner") || {}; const defaultProvider = { id: savedPlanner.providerConfigId || "", defaultModel: savedPlanner.modelId || "" };
     if (!defaultProvider.defaultModel) timeline.append(node("p", "partial-note", "Connected. Choose a model and its execution setting here to finish setup."));
     const simpleProvider = providerSelect(projection, defaultProvider && defaultProvider.id, "Default provider"); const simpleModel = node("input", "settings-input"); simpleModel.setAttribute("aria-label", "Default model"); simpleModel.placeholder = "Enter exact model ID"; simpleModel.maxLength = 2048; simpleModel.value = defaultProvider && defaultProvider.defaultModel || "";
     const simpleAssignment = projection.roles.find((assignment) => assignment.role === "planner" && assignment.providerConfigId === defaultProvider.id && assignment.modelId === simpleModel.value);
     const simpleExecution = executionEditor(projection, simpleProvider, simpleModel, simpleAssignment && simpleAssignment.executionOptions, simpleAssignment && simpleAssignment.executionProfileStatus === "stale", simpleAssignment && simpleAssignment.executionCapability, defaultProvider.id, simpleModel.value);
     simple.append(node("label", "field-label", "Default Provider"), simpleProvider, node("label", "field-label", "Default Model"), discoveredModelPicker(projection, simpleProvider, simpleModel), simpleExecution.host, node("p", "muted", "Choose from all discovered models or select Enter model ID manually. Repair uses Executor."));
-    const saveSimple = node("button", "primary", "Use Simple Mode"); saveSimple.type = "button"; saveSimple.addEventListener("click", () => { if (simpleProvider.value && simpleModel.value.trim()) vscode.postMessage({ type: "setDefaultModel", providerConfigId: simpleProvider.value, modelId: simpleModel.value.trim(), executionOptions: simpleExecution.read() }); }); simple.append(saveSimple);
+    const saveSimple = node("button", "primary", "Apply to Planner, Executor & Reviewer"); saveSimple.type = "button"; saveSimple.addEventListener("click", () => { if (simpleProvider.value && simpleModel.value.trim()) vscode.postMessage({ type: "setDefaultModel", providerConfigId: simpleProvider.value, modelId: simpleModel.value.trim(), executionOptions: simpleExecution.read() }); }); simple.append(saveSimple);
     const advanced = card("Advanced Role Assignments"); const controls = []; const providerSearch = node("input", "settings-input"); providerSearch.type = "search"; providerSearch.placeholder = "Search configured providers…"; providerSearch.maxLength = 200; providerSearch.setAttribute("aria-label", "Search role providers"); advanced.append(providerSearch);
-    ["planner", "executor", "reviewer"].forEach((roleName) => { const assignment = projection.roles.find((item) => item.role === roleName) || {}; const group = node("div", "role-config"); const select = providerSelect(projection, assignment.providerConfigId || defaultProvider.id, `${friendly(roleName)} provider`); const modelInput = node("input", "settings-input"); modelInput.setAttribute("aria-label", `${friendly(roleName)} model`); modelInput.placeholder = `${friendly(roleName)} model ID`; modelInput.maxLength = 2048; modelInput.value = assignment.modelId || ""; const execution = executionEditor(projection, select, modelInput, assignment.executionOptions, assignment.executionProfileStatus === "stale", assignment.executionCapability, assignment.providerConfigId, assignment.modelId); const picker = discoveredModelPicker(projection, select, modelInput); group.append(node("div", "field-label", friendly(roleName)), select, picker, execution.host); advanced.append(group); controls.push({ role: roleName, select, modelInput, execution }); });
+    ["planner", "executor", "reviewer"].forEach((roleName) => { const assignment = projection.roles.find((item) => item.role === roleName) || {}; const group = node("div", "role-config"); const select = providerSelect(projection, assignment.providerConfigId || "", `${friendly(roleName)} provider`); const modelInput = node("input", "settings-input"); modelInput.setAttribute("aria-label", `${friendly(roleName)} model`); modelInput.placeholder = `${friendly(roleName)} model ID`; modelInput.maxLength = 2048; modelInput.value = assignment.modelId || ""; const execution = executionEditor(projection, select, modelInput, assignment.executionOptions, assignment.executionProfileStatus === "stale", assignment.executionCapability, assignment.providerConfigId, assignment.modelId); const picker = discoveredModelPicker(projection, select, modelInput); group.append(node("div", "field-label", friendly(roleName)), select, picker, execution.host); advanced.append(group); controls.push({ role: roleName, select, modelInput, execution }); });
     providerSearch.addEventListener("input", () => { const query = providerSearch.value.trim().toLocaleLowerCase(); controls.forEach((control) => control.select._providerOptions.forEach((entry) => { entry.option.hidden = !!query && !entry.text.includes(query); })); });
     advanced.append(node("p", "muted", "Selections are validated and committed together. Cancellation or incomplete input saves nothing. Repair uses Executor."));
-    const saveAdvanced = node("button", "primary", "Save Advanced Roles"); saveAdvanced.type = "button"; saveAdvanced.addEventListener("click", () => { const assignments = controls.map((control) => ({ role: control.role, providerConfigId: control.select.value, modelId: control.modelInput.value.trim(), executionOptions: control.execution.read() })); if (assignments.every((item) => item.providerConfigId && item.modelId)) vscode.postMessage({ type: "updateRoleAssignments", assignments }); }); advanced.append(saveAdvanced);
+    const saveAdvanced = node("button", "primary", "Apply Role Assignments"); saveAdvanced.type = "button"; saveAdvanced.addEventListener("click", () => { const assignments = controls.map((control) => ({ role: control.role, providerConfigId: control.select.value, modelId: control.modelInput.value.trim(), executionOptions: control.execution.read() })); if (assignments.every((item) => item.providerConfigId && item.modelId)) vscode.postMessage({ type: "updateRoleAssignments", assignments }); }); advanced.append(saveAdvanced);
     timeline.append(visibleMode === "simple" ? simple : advanced);
   }
 
@@ -641,6 +642,7 @@
     heading.append(button("←", "icon-button", "openHistory"), node("h1", "", task ? task.title : "Task unavailable"));
     timeline.append(heading);
     if (!task) { timeline.append(node("p", "muted", "This local task is no longer available.")); return; }
+    renderWorkflowProgress(history.selectedWorkflowProgress);
     if (history.activeTaskId) timeline.append(button("Return to Active Task", "secondary return-active", "returnToActiveTask"));
     const outcome = outcomeOf(task);
     const summaryCard = card(outcomeLabel(outcome) + (outcome === "completed" ? " ✓" : ""), `completion-card ${outcomeClass(outcome)}`);
@@ -723,6 +725,30 @@
    * a non-streaming provider never looks frozen; streaming progress, when the
    * transport genuinely supports it, is added as a safe status line.
    */
+  function renderWorkflowProgress(steps) {
+    if (!steps || !steps.length) return;
+    const rail = node("ol", "workflow-progress");
+    rail.setAttribute("aria-label", "Workflow progress");
+    const glyphs = { completed: "✓", active: "●", pending: "○", failed: "✕", aborted: "■", waiting: "◷" };
+    const shortLabels = { Plan: "Plan", Execute: "Exec", Validate: "Check", Review: "Review", Repair: "Fix" };
+    steps.forEach((step) => {
+      const item = node("li", `workflow-progress-step progress-${step.status}`);
+      const meaning = `${step.label}: ${step.status}`;
+      item.setAttribute("aria-label", meaning);
+      item.title = meaning;
+      if (step.status === "active" || step.status === "waiting") item.setAttribute("aria-current", "step");
+      const glyph = node("span", "workflow-progress-glyph", glyphs[step.status]);
+      glyph.setAttribute("aria-hidden", "true");
+      const label = node("span", "workflow-progress-label workflow-progress-full", step.label);
+      const shortLabel = node("span", "workflow-progress-label workflow-progress-short", shortLabels[step.label]);
+      label.setAttribute("aria-hidden", "true");
+      shortLabel.setAttribute("aria-hidden", "true");
+      item.append(glyph, label, shortLabel);
+      rail.append(item);
+    });
+    timeline.append(rail);
+  }
+
   function renderLiveStage() {
     const workflow = state.workflow;
     if (!workflow || !workflow.active || isTerminal()) return;
@@ -1173,6 +1199,7 @@
       if (!state.prompt && !state.plan && !state.workflow && !state.clarification) renderEmpty();
       renderRequirement();
       renderClarification();
+      renderWorkflowProgress(state.workflow && state.workflow.workflowProgress);
       renderLiveStage();
       renderPlan();
       renderExecutionSummary();

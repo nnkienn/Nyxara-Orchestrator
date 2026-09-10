@@ -88,9 +88,9 @@ describe("explicit compatible gateway streaming", () => {
     expect(progress.mock.calls.map(([event]) => event.phase)).toEqual(["request_started", "response_started"]);
   });
 
-  it("rejects an error event without leaking the upstream body or retrying", async () => {
-    const fetch = vi.fn(async () => streamResponse([{ error: { message: "private-upstream-body" } }]));
-    await expect(new OpenAICompatibleProvider({ streaming: true, fetch }).generate({ model: "route/model", prompt: "task" })).rejects.toMatchObject({ code: "invalid_response", message: "Provider stream failed" });
+  it("surfaces the provider stream error code and message without leaking unrelated body data", async () => {
+    const fetch = vi.fn(async () => streamResponse([{ error: { message: "model overloaded", type: "server_error", code: "overloaded", private: "secret" } }]));
+    await expect(new OpenAICompatibleProvider({ streaming: true, fetch }).generate({ model: "route/model", prompt: "task" })).rejects.toMatchObject({ code: "provider_error", message: "model overloaded (server_error / overloaded)" });
     expect(fetch).toHaveBeenCalledOnce();
   });
 

@@ -38,6 +38,11 @@ describe("PlanValidator", () => {
     expect(validator.validate(input)).toEqual(input);
   });
 
+  it("accepts a task description up to the supported projection bound", () => {
+    const input = plan([task("T1", [], { description: "x".repeat(2_000) })]);
+    expect(validator.validate(input)).toEqual(input);
+  });
+
   it.each([
     ["empty tasks", plan([]), "invalid_plan"],
     [
@@ -72,4 +77,3 @@ describe("PlanValidator", () => {
     );
   });
 });
-
