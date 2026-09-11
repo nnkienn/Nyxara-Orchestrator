@@ -11,10 +11,18 @@ export type PlannerErrorCode =
   | "self_dependency"
   | "invalid_model";
 
+export interface PlannerStructureViolation {
+  readonly path: string;
+  readonly actual: number;
+  readonly maximum: number;
+  readonly kind: "length" | "count";
+}
+
 export class PlannerError extends Error {
   constructor(
     readonly code: PlannerErrorCode,
     message: string,
+    readonly violations?: readonly PlannerStructureViolation[],
   ) {
     super(message);
     this.name = "PlannerError";

@@ -211,11 +211,11 @@ export class CliSubscriptionProvider implements ModelProvider {
     const result = await this.run(
       async (cwd) => {
         let responseSchema: string | undefined;
-        if (toolEnvelope && this.config.kind === "codex-cli") {
+        if ((toolEnvelope || request.responseSchema) && this.config.kind === "codex-cli") {
           responseSchema = join(cwd, "response-envelope.schema.json");
-          await writeFile(responseSchema, RESPONSE_ENVELOPE_SCHEMA_JSON, { encoding: "utf8", flag: "wx" });
-        } else if (toolEnvelope && this.config.kind === "claude-code-cli") {
-          responseSchema = RESPONSE_ENVELOPE_SCHEMA_JSON;
+          await writeFile(responseSchema, JSON.stringify(toolEnvelope ? RESPONSE_ENVELOPE_SCHEMA : request.responseSchema), { encoding: "utf8", flag: "wx" });
+        } else if ((toolEnvelope || request.responseSchema) && this.config.kind === "claude-code-cli") {
+          responseSchema = JSON.stringify(toolEnvelope ? RESPONSE_ENVELOPE_SCHEMA : request.responseSchema);
         }
         return this.spec.generationArgs(request.model, executionOptions, responseSchema);
       },

@@ -1,5 +1,5 @@
 import { ExecutionPlanSchema, type ExecutionPlan } from "./planner.types.js";
-import { PlannerError } from "./planner-error.js";
+import { PlannerError, type PlannerStructureViolation } from "./planner-error.js";
 import { detectTaskCycle } from "./task-graph.js";
 
 /**
@@ -102,70 +102,43 @@ export class PlanValidator {
    * Planner is asked to produce a plan within bounds.
    */
   private assertWithinStructureBounds(plan: ExecutionPlan): void {
+    const violations: PlannerStructureViolation[] = [];
     const limit = (
       actual: number,
       maximum: number,
-      description: string,
+      path: string,
+      kind: PlannerStructureViolation["kind"],
     ): void => {
-      if (actual > maximum) {
-        throw new PlannerError(
-          "plan_bounds_exceeded",
-          `Planner returned ${description} beyond the supported bound (${actual} > ${maximum})`,
-        );
-      }
+      if (actual > maximum) violations.push({ path, actual, maximum, kind });
     };
 
-    limit(plan.objective.length, this.bounds.maxObjectiveCharacters, "an objective");
-    limit(plan.summary?.length ?? 0, this.bounds.maxSummaryCharacters, "a summary");
-    limit(plan.tasks.length, this.bounds.maxTasks, "a task count");
-    limit((plan.risks ?? []).length, this.bounds.maxRisks, "a risk count");
-    limit(
-      (plan.assumptions ?? []).length,
-      this.bounds.maxAssumptions,
-      "an assumption count",
-    );
+    limit(plan.objective.length, this.bounds.maxObjectiveCharacters, "objective", "length");
+    limit(plan.summary?.length ?? 0, this.bounds.maxSummaryCharacters, "summary", "length");
+    limit(plan.tasks.length, this.bounds.maxTasks, "tasks", "count");
+    limit((plan.risks ?? []).length, this.bounds.maxRisks, "risks", "count");
+    limit((plan.assumptions ?? []).length, this.bounds.maxAssumptions, "assumptions", "count");
     for (const task of plan.tasks) {
-      limit(task.title.length, this.bounds.maxTitleCharacters, `a title for ${task.id}`);
-      limit(
-        task.description.length,
-        this.bounds.maxDescriptionCharacters,
-        `a description for ${task.id}`,
-      );
-      limit(
-        task.acceptanceCriteria.length,
-        this.bounds.maxAcceptanceCriteriaPerTask,
-        `acceptance criteria for ${task.id}`,
-      );
-      for (const criterion of task.acceptanceCriteria) {
-        limit(
-          criterion.length,
-          this.bounds.maxAcceptanceCriterionCharacters,
-          `an acceptance criterion for ${task.id}`,
-        );
+      limit(task.title.length, this.bounds.maxTitleCharacters, `tasks.${task.id}.title`, "length");
+      limit(task.description.length, this.bounds.maxDescriptionCharacters, `tasks.${task.id}.description`, "length");
+      limit(task.acceptanceCriteria.length, this.bounds.maxAcceptanceCriteriaPerTask, `tasks.${task.id}.acceptanceCriteria`, "count");
+      for (const [index, criterion] of task.acceptanceCriteria.entries()) {
+        limit(criterion.length, this.bounds.maxAcceptanceCriterionCharacters, `tasks.${task.id}.acceptanceCriteria.${index}`, "length");
       }
-      limit(
-        task.relevantFiles?.length ?? 0,
-        this.bounds.maxRelevantFilesPerTask,
-        `relevant files for ${task.id}`,
-      );
+      limit(task.relevantFiles?.length ?? 0, this.bounds.maxRelevantFilesPerTask, `tasks.${task.id}.relevantFiles`, "count");
     }
-    for (const risk of plan.risks ?? []) {
-      limit(
-        risk.description.length,
-        this.bounds.maxRiskDescriptionCharacters,
-        "a risk description",
-      );
-      limit(
-        risk.mitigation?.length ?? 0,
-        this.bounds.maxRiskMitigationCharacters,
-        "a risk mitigation",
-      );
+    for (const [index, risk] of (plan.risks ?? []).entries()) {
+      limit(risk.description.length, this.bounds.maxRiskDescriptionCharacters, `risks.${index}.description`, "length");
+      limit(risk.mitigation?.length ?? 0, this.bounds.maxRiskMitigationCharacters, `risks.${index}.mitigation`, "length");
     }
-    for (const assumption of plan.assumptions ?? []) {
-      limit(
-        assumption.length,
-        this.bounds.maxAssumptionCharacters,
-        "an assumption",
+    for (const [index, assumption] of (plan.assumptions ?? []).entries()) {
+      limit(assumption.length, this.bounds.maxAssumptionCharacters, `assumptions.${index}`, "length");
+    }
+    if (violations.length > 0) {
+      const first = violations[0]!;
+      throw new PlannerError(
+        "plan_bounds_exceeded",
+        `Planner returned a value beyond the supported bound (${first.path}: ${first.actual} > ${first.maximum})`,
+        violations,
       );
     }
   }

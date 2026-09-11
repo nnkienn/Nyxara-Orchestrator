@@ -106,6 +106,8 @@ export interface GenerateRequest {
   readonly model: string;
   readonly prompt: string;
   readonly responseFormat?: "text" | "json";
+  /** Optional provider-native JSON Schema constraint when the adapter verifies support. */
+  readonly responseSchema?: Readonly<Record<string, unknown>>;
   readonly tools?: readonly ModelToolDefinition[];
   readonly conversation?: readonly ModelConversationMessage[];
   readonly executionOptions?: ExecutionOptions;
