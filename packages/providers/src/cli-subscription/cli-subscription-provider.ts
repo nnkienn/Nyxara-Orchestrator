@@ -211,11 +211,15 @@ export class CliSubscriptionProvider implements ModelProvider {
     const result = await this.run(
       async (cwd) => {
         let responseSchema: string | undefined;
-        if ((toolEnvelope || request.responseSchema) && this.config.kind === "codex-cli") {
+        // Native CLI schemas are reserved for the Executor tool envelope.
+        // Planner/Reviewer responses are business JSON parsed by Core; asking
+        // the subscription CLI to enforce a schema changes its content output
+        // contract (notably Claude's structured_output result).
+        if (toolEnvelope && this.config.kind === "codex-cli") {
           responseSchema = join(cwd, "response-envelope.schema.json");
-          await writeFile(responseSchema, JSON.stringify(toolEnvelope ? RESPONSE_ENVELOPE_SCHEMA : request.responseSchema), { encoding: "utf8", flag: "wx" });
-        } else if ((toolEnvelope || request.responseSchema) && this.config.kind === "claude-code-cli") {
-          responseSchema = JSON.stringify(toolEnvelope ? RESPONSE_ENVELOPE_SCHEMA : request.responseSchema);
+          await writeFile(responseSchema, RESPONSE_ENVELOPE_SCHEMA_JSON, { encoding: "utf8", flag: "wx" });
+        } else if (toolEnvelope && this.config.kind === "claude-code-cli") {
+          responseSchema = RESPONSE_ENVELOPE_SCHEMA_JSON;
         }
         return this.spec.generationArgs(request.model, executionOptions, responseSchema);
       },

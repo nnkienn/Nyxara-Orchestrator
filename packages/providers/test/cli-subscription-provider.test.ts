@@ -33,7 +33,7 @@ describe("CliSubscriptionProvider", () => {
     ].join("\n")));
     const provider = new CliSubscriptionProvider({ kind: "codex-cli", runner: process, codexModelCatalog: codexCatalog() });
     await expect(provider.listModels()).resolves.toEqual([expect.objectContaining({ id: "gpt-next/exact", name: "GPT Next", provider: "codex-cli", capabilities: expect.objectContaining({ execution: expect.objectContaining({ provenance: "provider_discovery" }) }) })]);
-    await expect(provider.generate({ model: "default", prompt: "work" })).resolves.toMatchObject({ provider: "codex-cli", text: complexBusinessOutput, usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15 } });
+    await expect(provider.generate({ model: "default", prompt: "work", responseFormat: "json", responseSchema: { type: "object" } })).resolves.toMatchObject({ provider: "codex-cli", text: complexBusinessOutput, usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15 } });
     expect(process.run.mock.calls[0]?.[0]).toMatchObject({ command: "codex", args: ["login", "status"] });
     expect(process.run.mock.calls[1]?.[0].args).toEqual(expect.arrayContaining(["exec", "-", "--ephemeral", "--ignore-user-config", "--sandbox", "read-only", "--json"]));
     expect(process.run.mock.calls[1]?.[0].args).not.toContain("--output-schema");
@@ -177,7 +177,7 @@ describe("CliSubscriptionProvider", () => {
     const process = runner(ok(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })), ok(JSON.stringify({ result: complexBusinessOutput, usage: {} })));
     const provider = new CliSubscriptionProvider({ kind: "claude-code-cli", runner: process, claudeModelCatalog: claudeCatalog() });
     await expect(provider.listModels()).resolves.toEqual([expect.objectContaining({ id: "sonnet", capabilities: expect.objectContaining({ execution: expect.objectContaining({ kind: "anthropic_effort", provenance: "provider_discovery" }) }) })]);
-    await expect(provider.generate({ model: "sonnet", prompt: "work", executionOptions: { kind: "anthropic_effort", effort: "max" } })).resolves.toMatchObject({ text: complexBusinessOutput });
+    await expect(provider.generate({ model: "sonnet", prompt: "work", responseFormat: "json", responseSchema: { type: "object" }, executionOptions: { kind: "anthropic_effort", effort: "max" } })).resolves.toMatchObject({ text: complexBusinessOutput });
     expect(process.run.mock.calls[1]?.[0].args).toEqual(expect.arrayContaining(["--model", "sonnet", "--effort", "max"]));
     expect(process.run.mock.calls[1]?.[0].args).not.toContain("--json-schema");
     expect(process.run.mock.calls[1]?.[0].stdin).toBe("work");

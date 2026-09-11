@@ -126,6 +126,9 @@ describe("Planner", () => {
     const request = generate.mock.calls[0]?.[0] as GenerateRequest;
     expect(request.model).toBe("planner-model");
     expect(request.responseFormat).toBe("json");
+    // Planner content is business JSON. Native schemas are reserved for the
+    // Executor tool bridge; passing one here changes CLI output semantics.
+    expect(request.responseSchema).toBeUndefined();
     expect(request.prompt).toContain("src/notification.service.ts");
     expect(request.prompt).toContain("export function listNotifications");
     expect(request.prompt.match(/Preserve compatibility/g)).toHaveLength(1);
