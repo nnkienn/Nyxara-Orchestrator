@@ -1,21 +1,59 @@
-# Nyxara for VS Code (local alpha)
+# Nyxara for VS Code
 
-Open the Nyxara activity-bar view to use the chat-like, workflow-driven workspace. If needed, choose the inline **Connect Provider** action. The preferred subscription paths are **OpenAI Codex (ChatGPT)**, **Claude Code (Claude account)**, and **Gemini CLI (Google account)**. They launch the official CLI login flow and reuse the CLI-managed session without asking for an API key. Nyxara never reads or copies cached login tokens.
+**Status:** Research alpha / local dogfood
 
-Direct OpenAI, Anthropic, and Gemini API paths remain available for API billing/automation. They offer to open the provider's official API-key page, then store the key you paste only in VS Code SecretStorage. Compatible gateways ask for a display name, Base URL, and optional key. Ollama and LM Studio use local endpoint presets and are never installed or started by the extension.
+This extension is a thin VS Code client for the shared Nyxara Core. It is not a Marketplace product and is not production-ready. The manifest version is `0.1.0-alpha.39` in [`package.json`](package.json).
 
-For a key-protected gateway such as 9Router, open **Settings → AI Providers → your gateway → Add API Key**. This opens a masked VS Code input; the key is never shown in the sidebar or stored in settings. **Update API Key** replaces an existing key. Key entry remains available even if the gateway was originally saved with no authentication, and adding a key switches that configuration to API-key authentication. A gateway authentication failure during setup keeps its configuration and opens Provider Details for correction rather than deleting it. Only leave the onboarding key blank if the gateway does not require authentication.
+## Build and install locally
 
-After connection or browser sign-in, model discovery returns directly to the in-sidebar **Settings → Models & Roles** screen. Choose an exact model and its capability-driven execution setting there; Simple applies the pair to Planner, Executor, and Reviewer, while Advanced preserves independent assignments. Only the active Simple or Advanced editor is shown. **Settings → AI Providers** is connection management only: multiple configs/accounts, credential updates, model refresh, non-generating connection tests, compatible endpoint edits, scoped sign-out/disconnect, and separately confirmed provider removal.
+From the repository root:
 
-Subscription providers require their official CLI to be installed. Choose **Sign in with ChatGPT**, **Sign in with Claude**, or **Sign in with Google** to open a dedicated terminal; the CLI itself owns browser login and token refresh. Nyxara invokes model turns in an isolated temporary directory with CLI tools disabled/restricted, leaving repository tools and permission checks under Nyxara Core. Activation and idle perform no provider, repository, workflow, Git, process, benchmark, or background refresh work.
+```sh
+npm run vscode:dogfood
+```
 
-After reload, **AI Providers** restores **Credential present** from SecretStorage, **Session recorded** from a previously confirmed CLI session (with its last-check time), or **CLI configured** when no session evidence was saved. Signed-out, missing-credential and unavailable states remain distinct. None means a live connection: the details say **Live status not yet verified**. **Test Connection** explicitly verifies API connectivity or the existing CLI-local auth contract; CLI-local verification is not presented as live network connectivity. Gemini CLI's version-only contract proves installation, not authentication. Reload never probes providers, starts a CLI, discovers models, scans the repository or creates polling/timers. See [`docs/archive/audits/2026-09/PROVIDER_CONNECTION_STATE_AUDIT.md`](../../docs/archive/audits/2026-09/PROVIDER_CONNECTION_STATE_AUDIT.md) for historical evidence; the current provider contract is [`docs/PROVIDER_CONTRACT.md`](../../docs/PROVIDER_CONTRACT.md).
+This builds the workspace packages, runs the existing VS Code checks, packages a VSIX, and force-installs it through the local `code` CLI. Reload with **Developer: Reload Window** when no workflow is active. Use `npm run vscode:build` and `npm run vscode:test` for separate build/test checks.
 
-For daily use, type the requirement in the persistent multiline sidebar composer, generate and inspect the plan inline, choose **Approve & Run**, handle any Core permission card inline, inspect execution/validation/review/repair and completion, then choose **New Task**. Recent Tasks and the in-sidebar History screen locally preserve bounded, privacy-safe task projections for search and reopening. The header Settings button opens the complete compact Settings Center—providers, models/roles, workflow projections, planning, rules, permissions, context, validation, review, repair, usage, history, workspace, privacy, advanced configuration, and diagnostics—without using the Command Palette or `settings.json`.
+## Daily workflow
 
-**Settings → Workflow** configures the existing automatic repair switch, cycle/attempt limits, individual validation steps/timeouts and fail-fast behavior, and reviewer turn limit. Changes save automatically to `nyxara.workflow` and apply to newly generated tasks; the current plan/running workflow keeps its snapshot. Approval, automatic continuation, pause/resume and permission waiting remain read-only capabilities. No provider, discovery or repository work runs when opening this page. See [`docs/archive/audits/2026-09/WORKFLOW_SETTINGS_AUDIT.md`](../../docs/archive/audits/2026-09/WORKFLOW_SETTINGS_AUDIT.md) for historical audit evidence.
+Open the Nyxara activity-bar view, enter a requirement, generate and inspect the plan, choose **Approve & Run**, respond to Core permission cards, then inspect execution, validation, review, repair, changed files, and completion. Use **New Task** after a terminal outcome. History and Performance views are local bounded projections; opening them does not rerun providers or repository scans.
 
-OpenAI-compatible API requests, including gateways such as 9router, use separate deadlines: **30 seconds for model discovery** and **5 minutes for generation**, covering response headers and body consumption. Generation no longer inherits the short discovery limit. Existing cancellation signals remain effective; **Abort** also cancels an in-flight Planner generation/regeneration request. Deadlines are cleared when requests finish, with no idle timer or automatic retry. Generic gateways remain non-streaming unless the adapter already declares streaming support. Timeout errors identify the operation, deadline and endpoint; a router/upstream HTTP 502 remains a separate error that a longer client deadline cannot fix. These are transport limits, not new Workflow settings, and do not change providers, models or execution profiles.
+## Providers and roles
 
-For a daily local update run `npm run vscode:dogfood` from the repository root, then run **Developer: Reload Window** when no workflow is active. **Nyxara: About** displays the manifest version and **Local Dogfood** label. Reloading installs new extension code; subsequent Workflow setting changes do not require a reload.
+Supported catalog entries are:
+
+- API providers: OpenAI, Anthropic/Claude, Google Gemini.
+- OpenAI-compatible routes: Kimi, DeepSeek, GLM/Zhipu, OpenRouter, and custom gateways.
+- Subscription CLI adapters: OpenAI Codex, Claude Code, and Gemini CLI.
+- Local adapters: Ollama, LM Studio, and local OpenAI-compatible.
+
+Configure a provider under **Settings → AI Providers**. Official API providers use API keys; subscription adapters use the provider-owned CLI login; local adapters use configured local endpoints. Nyxara does not install providers, read CLI token files, or silently replace a missing provider. Under **Settings → Models & Roles**, choose an exact model ID and execution setting. Simple assigns one selection to Planner, Executor, and Reviewer; Advanced assigns them independently.
+
+## Approval, permissions, and state
+
+Plan approval is an explicit gate before the approved-plan workflow. Repository writes and commands go through Core's application-level permission engine. This is not an operating-system sandbox. Validation runs before AI review; bounded repair can return to execution/validation/review and stops on configured limits or no-progress conditions. Pause, resume, abort, and permission waiting are current workflow controls, not persistent budget continuation.
+
+## Credentials and connection state
+
+API keys are stored only in VS Code SecretStorage under provider-configuration-scoped keys; non-secret provider settings remain in VS Code configuration. Official CLI credentials remain owned by the CLI. Disconnect/sign-out affects only the selected Nyxara configuration and does not revoke an external account session. After reload, connection states such as credential present, session recorded, CLI configured, signed out, unavailable, and unknown remain distinct. `unknown`/“Live status not yet verified” is intentional when no explicit verification was performed. Gemini CLI's version-only check proves installation, not authentication.
+
+## Diagnostics and troubleshooting
+
+Use **Test Connection**, **Refresh Models**, and the in-sidebar diagnostics/performance views explicitly; activation and reload perform no background provider, Git, process, or repository work. Record only safe error codes, status, timings, model IDs, and bounded counters. Never record prompts, source, diffs, raw provider output, headers, or credentials. For a failed task, preserve repository changes, inspect the permission/validation/review evidence, then abort or reload only when safe. See the [local dogfood guide](../../docs/DOGFOOD.md) for a concise checklist.
+
+## Known limitations
+
+- Adaptive context budgeting is not implemented; current context and Executor limits are fixed safety/cost controls and can stop large tasks.
+- Context Ledger, role-specific working-view projection, repository intelligence graph, and checkpoint continuation are not implemented.
+- Resume is in-process workflow state control, not a general persistent continuation across an exhausted context budget or process restart.
+- The direct-agent D1 benchmark is incomplete; the extension does not establish that Nyxara is cheaper than direct chat or any provider.
+- Conditional specialist-agent routing is not implemented, and multi-agent does not inherently reduce token use.
+
+## More documentation
+
+- [Current Core architecture](../../docs/ARCHITECTURE.md)
+- [Research roadmap](../../docs/ROADMAP.md)
+- [Benchmarking](../../docs/BENCHMARKING.md)
+- [Dogfood operations](../../docs/DOGFOOD.md)
+- [Provider contract](../../docs/PROVIDER_CONTRACT.md)
+- [Historical audits](../../docs/archive/README.md)

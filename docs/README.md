@@ -4,7 +4,7 @@
 **Last reviewed:** 2026-09-12
 **Canonical for:** Documentation map and source-of-truth routing
 
-Nyxara is an open-source, provider-agnostic, local-first platform for long-horizon software engineering agents. Read the current implementation first, then the proposed research direction, and finally the operational and historical material.
+Nyxara is a source-public research alpha for provider-agnostic, local-first orchestration of long-horizon software-engineering agents. Its license is still TBD, so source availability must not be treated as permission to reuse or redistribute. Read the current implementation first, then the proposed research direction, and finally the operational and historical material.
 
 ## Current
 
