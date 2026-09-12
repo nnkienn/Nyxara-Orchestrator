@@ -1,5 +1,14 @@
 # Executor runaway loop audit and fix
 
+> [!WARNING]
+> Historical document retained for engineering and research provenance.
+>
+> This document describes a previous Nyxara alpha baseline. It is not the
+> current product direction or the canonical architecture specification.
+> See `../../../ARCHITECTURE.md` and `../../../ROADMAP.md`.
+
+**Status:** Historical
+
 ## Root cause
 
 The former Executor loop used one `maxToolCallsPerTask=25` counter for reads,

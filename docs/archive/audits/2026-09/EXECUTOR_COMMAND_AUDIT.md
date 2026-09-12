@@ -1,5 +1,14 @@
 # Executor command execution — alpha.32
 
+> [!WARNING]
+> Historical document retained for engineering and research provenance.
+>
+> This document describes a previous Nyxara alpha baseline. It is not the
+> current product direction or the canonical architecture specification.
+> See `../../../ARCHITECTURE.md` and `../../../ROADMAP.md`.
+
+**Status:** Historical
+
 ## Observed failure
 
 The local September 7, 2026 task `5359a38b-cadd-47de-90ed-1b857601096b`

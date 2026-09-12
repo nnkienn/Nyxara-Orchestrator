@@ -2,8 +2,9 @@
 
 ## Research and Open-Source Roadmap
 
-**Status:** Working strategy document  
-**Date:** September 2026  
+**Status:** Proposed
+**Last reviewed:** 2026-09-12
+**Canonical for:** Product direction and implementation phases
 **Repository:** [Nyxara Orchestrator](https://github.com/nnkienn/Nyxara-Orchestrator)  
 **Current direction:** Outcome-aware, token-efficient orchestration for long-horizon software engineering
 

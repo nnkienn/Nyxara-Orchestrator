@@ -1,5 +1,14 @@
 # Nyxara Alpha local dogfood
 
+> [!WARNING]
+> Historical document retained for engineering and research provenance.
+>
+> This document describes a previous Nyxara alpha baseline. It is not the
+> current product direction or the canonical architecture specification.
+> See `../../ARCHITECTURE.md` and `../../ROADMAP.md`.
+
+**Status:** Historical
+
 ## Install and update
 
 From the repository root, run the canonical local update command:
@@ -28,7 +37,7 @@ Active execution uses one responsive stage block for provider status, response s
 
 Executor attempts now rebuild a bounded, task-specific context on every provider turn instead of replaying the raw Planner and tool conversation. Read/search, mutation, validation, provider-call, and final hard ceilings are independent; new evidence resets stuck detection, while equivalent searches and file ranges are reused rather than executed again. Tool output is bounded before it enters the next request. A stalled loop reports that no new evidence was produced instead of masquerading as a normal tool-limit failure.
 
-Implementation tasks that finish without producing a change stop before Validation/Review. Explicit read-only tasks retain legitimate zero-change completion. **Retry Execute** retains approved-task state and partial files but starts a fresh bounded Executor evidence session, so it cannot replay a failed attempt's raw tool history. See `docs/EXECUTOR_RUNAWAY_FIX.md` for the audit, deterministic scenario, and safe metrics.
+Implementation tasks that finish without producing a change stop before Validation/Review. Explicit read-only tasks retain legitimate zero-change completion. **Retry Execute** retains approved-task state and partial files but starts a fresh bounded Executor evidence session, so it cannot replay a failed attempt's raw tool history. See `../audits/2026-09/EXECUTOR_RUNAWAY_FIX.md` for the audit, deterministic scenario, and safe metrics.
 
 ## Direct subscription CLI responses (alpha.36)
 
@@ -44,7 +53,7 @@ The control is available only for an interrupted Executor attempt before Validat
 
 Compatible gateways can accept exact manually configured route IDs even when `/models` omits them. Provider Default execution no longer needs an automatic discovery request before generation. Explicit discovery remains in Settings; non-default execution profiles still require verified capability metadata. Official OpenAI and providers without a route resolver keep their existing discovery checks. A real HTTP 404/502 or timeout still fails without substitution, hidden retries, or accepting empty output. Logs now separate model resolution, generation, tool, and response failures and record safe HTTP status codes.
 
-See `docs/EXECUTION_RETRY_AUDIT.md` for evidence, constraints, and deterministic coverage. No paid generation is needed for these tests.
+See `../audits/2026-09/EXECUTION_RETRY_AUDIT.md` for evidence, constraints, and deterministic coverage. No paid generation is needed for these tests.
 
 ## Slow compatible gateways
 
@@ -160,7 +169,7 @@ Short criteria-list overflow can be grouped losslessly before approval: at most
 two adjacent checks per entry, with the existing entry and character bounds
 unchanged. Every check remains visible. Truly oversized plans still fail with a
 specific field/count diagnostic, without an automatic provider retry. See
-`docs/PLANNER_BOUNDS_AUDIT.md`. Reload the window after installation and confirm
+`../audits/2026-09/PLANNER_BOUNDS_AUDIT.md`. Reload the window after installation and confirm
 the activation log reports the new version before testing another task.
 
 ## Executor command checks (alpha.32)
@@ -168,7 +177,7 @@ the activation log reports the new version before testing another task.
 Executor can call the existing permission-gated `run_command` for scripts required
 by an approved task. Inspect the complete executable/argv and working directory
 before **Allow Once**; this is a local process, not an isolated sandbox. Deny and
-Abort remain available. See `docs/EXECUTOR_COMMAND_AUDIT.md` for limits and tests.
+Abort remain available. See `../audits/2026-09/EXECUTOR_COMMAND_AUDIT.md` for limits and tests.
 For a monorepo without root validation scripts, expect an actionable Validation
 failure, not a fabricated pass; select/configure validation deliberately before
 expecting a complete workflow. Reloaded History corrects the former skipped-only

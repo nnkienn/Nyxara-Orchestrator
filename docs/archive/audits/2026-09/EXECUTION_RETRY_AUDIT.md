@@ -1,5 +1,14 @@
 # Executor recovery audit — alpha.34
 
+> [!WARNING]
+> Historical document retained for engineering and research provenance.
+>
+> This document describes a previous Nyxara alpha baseline. It is not the
+> current product direction or the canonical architecture specification.
+> See `../../../ARCHITECTURE.md` and `../../../ROADMAP.md`.
+
+**Status:** Historical
+
 ## Observed failure versus inference
 
 The retained extension log records workflow `d1af0df5-b3b0-47d3-a926-2100174be01f` entering Planning, Approval, Running, Executing, then failing with `invalid_model`. The previously inspected history recorded an approved eleven-task plan and no completed Executor generation. The user subsequently cleared local history; it is not restored or reconstructed by this change.

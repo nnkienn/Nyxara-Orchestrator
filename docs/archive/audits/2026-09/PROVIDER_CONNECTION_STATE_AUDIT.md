@@ -1,5 +1,14 @@
 # Provider connection state after reload
 
+> [!WARNING]
+> Historical document retained for engineering and research provenance.
+>
+> This document describes a previous Nyxara alpha baseline. It is not the
+> current product direction or the canonical architecture specification.
+> See `../../../ARCHITECTURE.md` and `../../../ROADMAP.md`.
+
+**Status:** Historical
+
 Date: 2026-09-07. Prerelease: `0.1.0-alpha.26`.
 
 ## Root cause and persistence audit

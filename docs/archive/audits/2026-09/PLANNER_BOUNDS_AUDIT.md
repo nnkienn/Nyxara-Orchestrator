@@ -1,5 +1,14 @@
 # Planner criteria bounds — alpha.33
 
+> [!WARNING]
+> Historical document retained for engineering and research provenance.
+>
+> This document describes a previous Nyxara alpha baseline. It is not the
+> current product direction or the canonical architecture specification.
+> See `../../../ARCHITECTURE.md` and `../../../ROADMAP.md`.
+
+**Status:** Historical
+
 ## Evidence
 
 The September 7, 2026 local task `a4545b0e-c590-4fb2-9edd-dda39df01abd`

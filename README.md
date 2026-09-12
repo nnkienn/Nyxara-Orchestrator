@@ -686,56 +686,7 @@ Model      Gemini ...
 
 ## Architecture
 
-```text
-                         Developer
-                            │
-                            ▼
-                   CLI / VS Code
-                            │
-                            ▼
-                 ┌───────────────────┐
-                 │    Nyxara Core    │
-                 └─────────┬─────────┘
-                           │
-       ┌───────────────────┼───────────────────┐
-       │                   │                   │
-       ▼                   ▼                   ▼
- Context Engine      Workflow Engine      Rules Engine
-       │                   │                   │
-       └───────────────────┼───────────────────┘
-                           │
-                           ▼
-                      Agent Router
-                           │
-             ┌─────────────┼─────────────┐
-             ▼             ▼             ▼
-          Planner       Executor      Reviewer
-             │             │             │
-             └─────────────┼─────────────┘
-                           │
-                           ▼
-                      Model Router
-                           │
-       ┌───────────────────┼────────────────────┐
-       ▼                   ▼                    ▼
-     OpenAI             Anthropic             Google
-       │                   │                    │
-      Kimi                GLM                DeepSeek
-       │                   │                    │
-     Ollama            OpenRouter             Custom
-       │                   │                    │
-       └───────────────────┼────────────────────┘
-                           │
-                           ▼
-                          Tools
-                           │
-             ┌─────────────┼─────────────┐
-             ▼             ▼             ▼
-           Files          Git         Terminal
-                                         │
-                                         ▼
-                              Test / Lint / Build
-```
+The implementation source of truth is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). This root README keeps only the product overview; future context-ledger, continuation, and specialist-agent work belongs only in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
@@ -1034,68 +985,13 @@ Future integrations may include:
 
 ---
 
+## Documentation
+
+The documentation index is at [`docs/README.md`](docs/README.md). It links to the current [architecture](docs/ARCHITECTURE.md), proposed [roadmap](docs/ROADMAP.md), [research method](docs/RESEARCH.md), [benchmark contract](docs/BENCHMARKING.md), [local dogfood guide](docs/DOGFOOD.md), and [historical archive](docs/archive/README.md). The roadmap is the sole source of future direction; adaptive context, checkpoint continuation, and conditional specialists are not current features.
+
 ## Roadmap
 
-### Core
-
-* [ ] TypeScript monorepo
-* [ ] Nyxara Core
-* [ ] Workflow Engine
-* [ ] Event system
-* [ ] CLI
-
-### Providers
-
-* [ ] Provider SDK
-* [ ] OpenAI
-* [ ] Anthropic
-* [ ] OpenAI-compatible
-* [ ] Ollama
-* [ ] model discovery
-* [ ] secure credential storage
-
-### Engineering
-
-* [ ] repository tools
-* [ ] Context Engine
-* [ ] Planner
-* [ ] Executor
-* [ ] local validation
-* [ ] Reviewer
-* [ ] automatic repair loop
-* [ ] Engineering Rules Engine
-* [ ] token tracking
-* [ ] cost tracking
-* [ ] permission system
-
-### Release
-
-* [ ] npm release
-* [ ] public documentation
-* [ ] contribution guide
-
-### VS Code
-
-* [ ] VS Code extension
-* [ ] provider/model picker
-* [ ] realtime workflow status
-* [ ] diff integration
-* [ ] workflow graph
-* [ ] token/cost visualization
-
-### Providers & Integrations
-
-* [ ] Gemini
-* [ ] Kimi
-* [ ] GLM
-* [ ] DeepSeek
-* [ ] OpenRouter
-* [ ] Mistral
-* [ ] Groq
-* [ ] LM Studio
-* [ ] MCP
-* [ ] Figma
-* [ ] GitHub
+See the single canonical [Nyxara research and open-source roadmap](docs/ROADMAP.md). It is proposed direction, not a claim that future capabilities are implemented.
 
 ---
 

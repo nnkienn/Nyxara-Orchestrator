@@ -1,5 +1,14 @@
 # Provider / role assignment integrity audit
 
+> [!WARNING]
+> Historical document retained for engineering and research provenance.
+>
+> This document describes a previous Nyxara alpha baseline. It is not the
+> current product direction or the canonical architecture specification.
+> See `../../../ARCHITECTURE.md` and `../../../ROADMAP.md`.
+
+**Status:** Historical
+
 ## Root cause and evidence
 
 The pre-patch `apps/vscode/src/extension.ts` contained multiple callers of
